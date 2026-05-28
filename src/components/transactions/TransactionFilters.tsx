@@ -1,8 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { listAllCategories } from '@/api/categories';
 import { DatePicker } from '@/components/ui/DatePicker';
 import { Select } from '@/components/ui/Select';
-import { updateCategoryColors } from '@/lib/category-color';
 import { cn } from '@/lib/util';
 
 export interface FilterState {
@@ -16,6 +13,7 @@ export interface FilterState {
 interface TransactionFiltersProps {
   filters: FilterState;
   onChange: (filters: FilterState) => void;
+  categories: string[];
 }
 
 const inputBase = cn(
@@ -28,18 +26,10 @@ const inputBase = cn(
 export const TransactionFilters = ({
   filters,
   onChange,
+  categories,
 }: TransactionFiltersProps): React.JSX.Element => {
   const set = (patch: Partial<FilterState>) =>
     onChange({ ...filters, ...patch });
-
-  const { data: categoriesData = [] } = useQuery({
-    queryKey: ['categories'],
-    queryFn: listAllCategories,
-  });
-  if (categoriesData.length > 0) {
-    updateCategoryColors(categoriesData);
-  }
-  const categories = categoriesData.map((cat) => cat.name);
 
   return (
     <div className="flex items-center gap-3 flex-wrap">

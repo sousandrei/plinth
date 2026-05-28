@@ -111,6 +111,8 @@ pub fn run() {
             commands::training::get_training_device,
             commands::minilm::minilm_status,
             commands::minilm::ensure_minilm,
+            commands::settings::get_app_setting,
+            commands::settings::set_app_setting,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

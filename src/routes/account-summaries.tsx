@@ -19,6 +19,8 @@ import { Input } from '@/components/ui/Input';
 import { Pagination } from '@/components/ui/Pagination';
 import { Select } from '@/components/ui/Select';
 import { useAuth } from '@/context/AuthContext';
+import { getDemoAccountSummaries, getDemoAccounts } from '@/demo/generators';
+import { useDemoMode } from '@/hooks/useDemoMode';
 import { cn } from '@/lib/util';
 
 const PAGE_SIZE = 15;
@@ -29,6 +31,7 @@ export const Route = createFileRoute('/account-summaries')({
 
 function AccountSummaries(): React.JSX.Element {
   const { user } = useAuth();
+  const { isDemoMode } = useDemoMode();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(0);
 
@@ -38,9 +41,15 @@ function AccountSummaries(): React.JSX.Element {
   }, [page]);
 
   const { data, isLoading, isError, isFetching } = useQuery({
-    queryKey: ['account-summaries', user?.id, page],
-    queryFn: () => listAccountSummaries(user?.id ?? '', page, PAGE_SIZE),
-    enabled: !!user,
+    queryKey: ['account-summaries', isDemoMode ? 'demo' : user?.id, page],
+    queryFn: isDemoMode
+      ? () =>
+          getDemoAccountSummaries('demo').then((rows) => ({
+            rows: rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+            page_count: Math.max(1, Math.ceil(rows.length / PAGE_SIZE)),
+          }))
+      : () => listAccountSummaries(user?.id ?? '', page, PAGE_SIZE),
+    enabled: isDemoMode || !!user,
     placeholderData: (prev) => prev,
   });
 
@@ -48,9 +57,9 @@ function AccountSummaries(): React.JSX.Element {
   const pageCount = data?.page_count ?? 1;
 
   const { data: accounts = [] } = useQuery({
-    queryKey: ['accounts', user?.id],
-    queryFn: () => listAccounts(user?.id ?? ''),
-    enabled: !!user,
+    queryKey: ['accounts', isDemoMode ? 'demo' : user?.id],
+    queryFn: isDemoMode ? getDemoAccounts : () => listAccounts(user?.id ?? ''),
+    enabled: isDemoMode || !!user,
   });
 
   const accountMap = Object.fromEntries(accounts.map((a) => [a.id, a]));

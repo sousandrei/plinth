@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Separator } from '@/components/ui/Separator';
 import { Spinner } from '@/components/ui/Spinner';
+import { Switch } from '@/components/ui/Switch';
 import {
   Table,
   TableBody,
@@ -207,6 +208,7 @@ function TestPage(): React.JSX.Element {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
   const [toggleVal, setToggleVal] = useState<'a' | 'b'>('a');
+  const [switchVal, setSwitchVal] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
@@ -251,6 +253,21 @@ function TestPage(): React.JSX.Element {
         </div>
         <p className="mt-3 text-xs font-mono text-muted-foreground">
           Selected: {toggleVal}
+        </p>
+      </section>
+
+      <Separator />
+
+      {/* ── Switch ── */}
+      <section>
+        <SectionLabel label="Switch" code="Switch" />
+        <div className="mt-4 flex flex-wrap items-center gap-6">
+          <Switch checked={switchVal} onCheckedChange={setSwitchVal} />
+          <Switch checked={true} onCheckedChange={() => {}} disabled />
+          <Switch checked={false} onCheckedChange={() => {}} disabled />
+        </div>
+        <p className="mt-3 text-xs font-mono text-muted-foreground">
+          Checked: {String(switchVal)}
         </p>
       </section>
 

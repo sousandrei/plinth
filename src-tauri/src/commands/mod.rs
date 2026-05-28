@@ -3,6 +3,7 @@ pub mod accounts;
 pub mod aggregations;
 pub mod categories;
 pub mod minilm;
+pub mod settings;
 pub mod training;
 pub mod transactions;
 pub mod upload;

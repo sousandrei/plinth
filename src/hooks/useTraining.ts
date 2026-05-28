@@ -12,6 +12,8 @@ import {
   setActiveModel,
   stopTraining,
 } from '@/api/training';
+import { getDemoModels } from '@/demo/generators';
+import { useDemoMode } from '@/hooks/useDemoMode';
 import type {
   FinetuneConfig,
   FinetuneProgress,
@@ -60,6 +62,7 @@ export interface TrainingState {
 
 export function useTraining(userId: string | null): TrainingState {
   const queryClient = useQueryClient();
+  const { isDemoMode } = useDemoMode();
   const [isClassifierReady, setIsClassifierReady] = useState(false);
 
   // Check immediately in case the classifier finished loading before this
@@ -107,8 +110,8 @@ export function useTraining(userId: string | null): TrainingState {
   }, [queryClient]);
 
   const modelsQuery = useQuery({
-    queryKey: MODELS_KEY,
-    queryFn: listModels,
+    queryKey: [...MODELS_KEY, isDemoMode ? 'demo' : 'real'],
+    queryFn: isDemoMode ? getDemoModels : listModels,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });

@@ -5,18 +5,21 @@ import { listAccounts } from '@/api/accounts';
 import { AccountsTable } from '@/components/accounts/AccountsTable';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { useAuth } from '@/context/AuthContext';
+import { getDemoAccounts } from '@/demo/generators';
+import { useDemoMode } from '@/hooks/useDemoMode';
 
 function Accounts(): React.JSX.Element {
   const { user } = useAuth();
+  const { isDemoMode } = useDemoMode();
 
   const {
     data: accounts,
     isLoading,
     isError,
   } = useQuery({
-    queryKey: ['accounts', user?.id],
-    queryFn: () => listAccounts(user?.id ?? ''),
-    enabled: !!user,
+    queryKey: ['accounts', isDemoMode ? 'demo' : user?.id],
+    queryFn: isDemoMode ? getDemoAccounts : () => listAccounts(user?.id ?? ''),
+    enabled: isDemoMode || !!user,
   });
 
   return (

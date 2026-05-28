@@ -12,6 +12,8 @@ import { UploadDialog } from '@/components/transactions/UploadDialog';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Pagination } from '@/components/ui/Pagination';
 import { useAuth } from '@/context/AuthContext';
+import { getDemoCategories, getDemoTransactions } from '@/demo/generators';
+import { useDemoMode } from '@/hooks/useDemoMode';
 import { updateCategoryColors } from '@/lib/category-color';
 import { cn } from '@/lib/util';
 
@@ -19,6 +21,7 @@ const PAGE_SIZE = 15;
 
 function Transactions(): React.JSX.Element {
   const { user } = useAuth();
+  const { isDemoMode } = useDemoMode();
   const [page, setPage] = useState(0);
   const [filters, setFilters] = useState<FilterState>({
     search: '',
@@ -53,7 +56,7 @@ function Transactions(): React.JSX.Element {
   const { data, isLoading, isError, isFetching } = useQuery({
     queryKey: [
       'transactions',
-      user?.id,
+      isDemoMode ? 'demo' : user?.id,
       page,
       debouncedSearch,
       filters.approved,
@@ -61,27 +64,42 @@ function Transactions(): React.JSX.Element {
       filters.dateFrom,
       filters.dateTo,
     ],
-    queryFn: () =>
-      listTransactions({
-        userId: user?.id ?? '',
-        page,
-        limit: PAGE_SIZE,
-        search: debouncedSearch || undefined,
-        approved:
-          filters.approved === 'all'
-            ? undefined
-            : filters.approved === 'approved',
-        category: filters.category === 'all' ? undefined : filters.category,
-        dateFrom: filters.dateFrom || undefined,
-        dateTo: filters.dateTo || undefined,
-      }),
-    enabled: !!user,
+    queryFn: isDemoMode
+      ? () =>
+          getDemoTransactions({
+            userId: 'demo',
+            page,
+            limit: PAGE_SIZE,
+            search: debouncedSearch || undefined,
+            approved:
+              filters.approved === 'all'
+                ? undefined
+                : filters.approved === 'approved',
+            category: filters.category === 'all' ? undefined : filters.category,
+            dateFrom: filters.dateFrom || undefined,
+            dateTo: filters.dateTo || undefined,
+          })
+      : () =>
+          listTransactions({
+            userId: user?.id ?? '',
+            page,
+            limit: PAGE_SIZE,
+            search: debouncedSearch || undefined,
+            approved:
+              filters.approved === 'all'
+                ? undefined
+                : filters.approved === 'approved',
+            category: filters.category === 'all' ? undefined : filters.category,
+            dateFrom: filters.dateFrom || undefined,
+            dateTo: filters.dateTo || undefined,
+          }),
+    enabled: isDemoMode || !!user,
     placeholderData: (prev) => prev,
   });
 
   const { data: categoriesData = [] } = useQuery({
-    queryKey: ['categories'],
-    queryFn: listAllCategories,
+    queryKey: ['categories', isDemoMode ? 'demo' : 'real'],
+    queryFn: isDemoMode ? getDemoCategories : listAllCategories,
   });
   if (categoriesData.length > 0) {
     updateCategoryColors(categoriesData);
@@ -108,7 +126,11 @@ function Transactions(): React.JSX.Element {
       </div>
 
       <div className="animate-fade-in">
-        <TransactionFilters filters={filters} onChange={setFilters} />
+        <TransactionFilters
+          filters={filters}
+          onChange={setFilters}
+          categories={categories}
+        />
       </div>
 
       <div

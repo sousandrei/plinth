@@ -1,6 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { listAccounts } from '@/api/accounts';
 import { getAggregations } from '@/api/aggregations';
+import {
+  DEMO_CATEGORIES,
+  getDemoAccounts,
+  getDemoAggregations,
+} from '@/demo/generators';
+import { useDemoMode } from '@/hooks/useDemoMode';
+import { updateCategoryColors } from '@/lib/category-color';
 import type { Account, Aggregations } from '@/types';
 import { deriveAccounts } from './dashboard/deriveAccounts';
 import { deriveAllocation } from './dashboard/deriveAllocation';
@@ -55,16 +62,20 @@ export function useDashboard(userId: string | null): {
   isLoading: boolean;
   isError: boolean;
 } {
+  const { isDemoMode } = useDemoMode();
+
   const accountsQuery = useQuery({
-    queryKey: ['accounts', userId],
-    queryFn: () => listAccounts(userId ?? ''),
-    enabled: !!userId,
+    queryKey: ['accounts', isDemoMode ? 'demo' : userId],
+    queryFn: isDemoMode ? getDemoAccounts : () => listAccounts(userId ?? ''),
+    enabled: isDemoMode || !!userId,
   });
 
   const aggregationsQuery = useQuery({
-    queryKey: ['aggregations', userId],
-    queryFn: () => getAggregations(userId ?? ''),
-    enabled: !!userId,
+    queryKey: ['aggregations', isDemoMode ? 'demo' : userId],
+    queryFn: isDemoMode
+      ? getDemoAggregations
+      : () => getAggregations(userId ?? ''),
+    enabled: isDemoMode || !!userId,
   });
 
   const isLoading = accountsQuery.isLoading || aggregationsQuery.isLoading;
@@ -72,7 +83,10 @@ export function useDashboard(userId: string | null): {
 
   const data =
     accountsQuery.data && aggregationsQuery.data
-      ? deriveData(aggregationsQuery.data, accountsQuery.data)
+      ? (() => {
+          if (isDemoMode) updateCategoryColors(DEMO_CATEGORIES);
+          return deriveData(aggregationsQuery.data, accountsQuery.data);
+        })()
       : null;
 
   return { data, isLoading, isError };

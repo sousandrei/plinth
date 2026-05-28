@@ -2,6 +2,7 @@ version: '3'
 
 env:
   CUDARC_CUDA_VERSION: '12040'
+  WEBKIT_DISABLE_COMPOSITING_MODE: '1'
 
 vars:
   VERSION:

@@ -663,7 +663,7 @@ pub async fn delete_model(
     // If the deleted version was active, unload the classifier — no base model exists.
     // The user must train a new version to restore predictions.
     if active == version {
-        sqlx::query_file!("queries/training/delete_setting.sql", SETTING_ACTIVE_MODEL)
+        sqlx::query_file!("queries/settings/delete_setting.sql", SETTING_ACTIVE_MODEL)
             .execute(&*db)
             .await
             .map_err(|e| AppError::Db(format!("delete_active_model_setting: {e}")))?;
