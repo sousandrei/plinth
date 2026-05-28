@@ -70,17 +70,7 @@ tasks:
     cmds:
       - bun run tauri:dev:cuda
 
-  dev:metal:
-    desc: Run the desktop application in development mode with Metal enabled (macOS)
-    cmds:
-      - bun run tauri:dev:metal
-
   package:cuda:
     desc: Build and package the production desktop application with CUDA enabled
     cmds:
       - bun run tauri:build:cuda
-
-  package:metal:
-    desc: Build and package the production desktop application with Metal enabled (macOS)
-    cmds:
-      - bun run tauri:build:metal
