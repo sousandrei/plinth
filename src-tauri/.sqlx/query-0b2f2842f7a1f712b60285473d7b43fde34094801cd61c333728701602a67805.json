@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO transactions (\n    id, booking_date, value_date, reference, text,\n    currency, amount, balance, approved, note, category, account_id\n)\nVALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, '', ?9, ?10)\nON CONFLICT(id) DO NOTHING\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "0b2f2842f7a1f712b60285473d7b43fde34094801cd61c333728701602a67805"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO accounts (id, name, currency, account_type, account_source, user_id)\nVALUES (?1, ?2, ?3, ?4, ?5, ?6)\nON CONFLICT(id) DO NOTHING\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "ed0a981fb744240fd31f216fab3de13b36389ee00df0222aaff73cba9869ba0c"
+}

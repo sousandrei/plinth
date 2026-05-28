@@ -1,0 +1,51 @@
+{
+	"name": "julius",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"dev": "rsbuild dev",
+		"build": "rsbuild build",
+		"preview": "rsbuild preview",
+		"typecheck": "tsc --noEmit",
+		"check": "biome check --write",
+		"format": "biome format --write",
+		"tauri:dev": "tauri dev",
+		"tauri:dev:cuda": "tauri dev -- --features cuda",
+		"tauri:dev:metal": "tauri dev",
+		"tauri:build": "tauri build",
+		"tauri:build:cuda": "tauri build -- --features cuda",
+		"tauri:build:metal": "tauri build"
+	},
+	"dependencies": {
+		"@base-ui/react": "^1.5.0",
+		"@fontsource/geist": "^5.2.9",
+		"@fontsource/geist-mono": "^5.2.8",
+		"@monaco-editor/react": "^4.7.0",
+		"@phosphor-icons/react": "^2.1.10",
+		"@tanstack/react-query": "^5.100.14",
+		"@tanstack/react-router": "^1.170.8",
+		"@tauri-apps/api": "^2",
+		"@tauri-apps/plugin-dialog": "^2.7.1",
+		"@tauri-apps/plugin-opener": "^2",
+		"@uiw/react-json-view": "^2.0.0-alpha.43",
+		"clsx": "^2.1.1",
+		"react": "^19.1.0",
+		"react-dom": "^19.1.0",
+		"recharts": "^3.8.1",
+		"tailwind-merge": "^3.6.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.10",
+		"@rsbuild/core": "^2.0.7",
+		"@rsbuild/plugin-react": "^2.0.0",
+		"@tailwindcss/postcss": "^4.3.0",
+		"@tanstack/router-plugin": "^1.168.11",
+		"@tauri-apps/cli": "^2",
+		"@types/node": "^25.9.1",
+		"@types/react": "^19.1.8",
+		"@types/react-dom": "^19.1.6",
+		"tailwindcss": "^4.3.0",
+		"typescript": "~6.0.3"
+	}
+}

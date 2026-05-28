@@ -1,0 +1,75 @@
+[package]
+authors = ["you"]
+default-run = "desktop"
+description = "A Tauri App"
+edition = "2021"
+name = "desktop"
+version = "0.1.0"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+crate-type = ["staticlib", "cdylib", "rlib"]
+name = "desktop_lib"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+
+# SQLite — async pool with compile-time checked queries
+sqlx = { version = "0.9.0-alpha.1", features = [
+    "sqlite",
+    "runtime-tokio",
+    "macros",
+    "migrate",
+] }
+
+# Error handling
+thiserror = "2"
+
+# Password hashing
+rust-argon2 = "3.0.0"
+
+# Random salt generation
+getrandom = "0.4.2"
+
+# UUIDs for generated IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Date/time formatting
+chrono = { version = "0.4", features = ["serde"] }
+
+# Import pipeline
+boa_engine = "0.21"
+calamine = { version = "0.35", features = ["dates"] }
+csv = "1"
+md-5 = "0.11.0"
+pdf-extract = "0.10"
+tauri-plugin-dialog = "2"
+
+# Model inference
+# metal is compiled on macOS; on other platforms we compile without metal to avoid objc2 compilation errors on Linux/Windows.
+# cuda is opt-in: pass --features cuda at build time on Linux/Windows CUDA hosts.
+safetensors = "0.7.0"
+tokenizers = "0.23.1"
+hf-hub = { version = "0.5.0", features = ["tokio"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.10.2", features = ["metal"] }
+candle-nn = { version = "0.10.2", features = ["metal"] }
+candle-transformers = { version = "0.10.2", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+candle-core = { version = "0.10.2" }
+candle-nn = { version = "0.10.2" }
+candle-transformers = { version = "0.10.2" }
+
+[features]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]

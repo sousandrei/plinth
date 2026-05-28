@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions\nSET approved = ?, note = ?, category = ?\nWHERE id = ?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "75f4a65dba462a93146e31b8dfc657bdedb8f0f0d79bf2e7b53aedd7908cbd4f"
+}

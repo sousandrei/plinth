@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT pin_hash\nFROM users\nWHERE id = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "pin_hash",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "pin_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "d3d4bb68a67f5741b131cabce344fd0a5bd8b69204155e8ce44ecf3aad7b330e"
+}

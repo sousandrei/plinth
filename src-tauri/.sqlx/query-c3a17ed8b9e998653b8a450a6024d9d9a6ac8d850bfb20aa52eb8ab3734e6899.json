@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM account_summaries\nWHERE month = ?1 AND account_id = ?2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c3a17ed8b9e998653b8a450a6024d9d9a6ac8d850bfb20aa52eb8ab3734e6899"
+}

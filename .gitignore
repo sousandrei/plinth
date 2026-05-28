@@ -1,0 +1,18 @@
+data
+node_modules
+dist
+*.local
+.DS_Store
+
+# Generated Router files
+src/routeTree.gen.ts
+
+# SQLite Database Files
+*.db
+*.db-wal
+*.db-shm
+
+# Local Environment Secrets
+.env
+.env.*
+

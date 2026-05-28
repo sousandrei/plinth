@@ -1,0 +1,189 @@
+import {
+  Bar,
+  BarChart,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+} from 'recharts';
+import type {
+  NameType,
+  ValueType,
+} from 'recharts/types/component/DefaultTooltipContent';
+import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
+import { Card, CardBody } from '@/components/ui/Card';
+import type { CategoryMeta, SpendingPoint } from '@/hooks/dashboard/types';
+
+interface Props {
+  series: SpendingPoint[];
+  categories: CategoryMeta[];
+  currency?: string;
+}
+
+const fmt = (value: number, currency: string): string =>
+  new Intl.NumberFormat('sv-SE', {
+    style: 'currency',
+    currency,
+    maximumFractionDigits: 0,
+  }).format(value);
+
+const fmtMonth = (ym: string): string => {
+  const parts = ym.split('-');
+  if (parts.length < 2) return ym;
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  if (Number.isNaN(year) || Number.isNaN(month)) return ym;
+  return new Date(year, month - 1).toLocaleString(undefined, {
+    month: 'short',
+    year: '2-digit',
+  });
+};
+
+const SpendingTooltip = ({
+  active,
+  payload,
+  categories,
+  currency,
+}: TooltipContentProps<ValueType, NameType> & {
+  categories: CategoryMeta[];
+  currency: string;
+}): React.JSX.Element | null => {
+  if (!active || !payload?.length) return null;
+
+  const month = payload[0]?.payload?.month;
+
+  return (
+    <div
+      style={{
+        background: 'oklch(99.5% 0.002 80)',
+        border: '1px solid oklch(84% 0.005 240)',
+        fontSize: 11,
+        fontFamily: 'var(--font-mono)',
+        padding: '8px 10px',
+      }}
+    >
+      {month && (
+        <p
+          style={{
+            color: 'oklch(44% 0.006 264)',
+            marginBottom: 6,
+            fontWeight: 500,
+          }}
+        >
+          {fmtMonth(String(month))}
+        </p>
+      )}
+      {[...payload].reverse().map((entry) => {
+        const cat = categories.find((c) => c.name === entry.name);
+        return (
+          <div
+            key={entry.name}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              marginBottom: 3,
+            }}
+          >
+            <span
+              style={{
+                display: 'inline-block',
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: cat?.color ?? 'oklch(60% 0.08 264)',
+                flexShrink: 0,
+              }}
+            />
+            <span style={{ color: 'oklch(44% 0.006 264)', flex: 1 }}>
+              {entry.name}
+            </span>
+            <span style={{ color: 'oklch(8% 0.005 264)', marginLeft: 12 }}>
+              {fmt(Number(entry.value), currency)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+export const SpendingByCategory = ({
+  series,
+  categories,
+  currency = 'SEK',
+}: Props): React.JSX.Element => (
+  <Card className="flex flex-col h-full overflow-hidden">
+    <CardBody className="flex flex-col gap-0 flex-1 p-0">
+      {/* Header */}
+      <div className="px-5 pt-5 pb-4">
+        <span className="text-[10px] uppercase tracking-[0.18em] font-mono text-muted-foreground">
+          Spending by Category
+        </span>
+      </div>
+
+      {/* Chart */}
+      <div className="flex-1 min-h-0" style={{ minHeight: 200 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart
+            data={series}
+            margin={{ top: 4, right: 24, bottom: 8, left: 24 }}
+            barCategoryGap="25%"
+          >
+            <XAxis
+              dataKey="month"
+              tickFormatter={fmtMonth}
+              tick={{
+                fontSize: 10,
+                fontFamily: 'var(--font-mono)',
+                fill: 'oklch(44% 0.006 264)',
+              }}
+              axisLine={false}
+              tickLine={false}
+            />
+            <Tooltip
+              content={(props) => (
+                <SpendingTooltip
+                  {...props}
+                  categories={categories}
+                  currency={currency}
+                />
+              )}
+              cursor={false}
+              wrapperStyle={{ zIndex: 10 }}
+            />
+            <Legend
+              iconType="circle"
+              iconSize={6}
+              wrapperStyle={{
+                fontSize: 10,
+                fontFamily: 'var(--font-mono)',
+                paddingTop: 8,
+                paddingBottom: 8,
+              }}
+            />
+            {categories.map((cat) => (
+              <Bar
+                key={cat.name}
+                dataKey={cat.name}
+                stackId="spend"
+                fill={cat.color}
+                fillOpacity={0.85}
+                activeBar={{
+                  fillOpacity: 1,
+                  stroke: cat.color,
+                  strokeWidth: 1,
+                }}
+                radius={
+                  cat.name === categories[categories.length - 1].name
+                    ? [2, 2, 0, 0]
+                    : [0, 0, 0, 0]
+                }
+              />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </CardBody>
+  </Card>
+);

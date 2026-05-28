@@ -1,0 +1,85 @@
+version: '3'
+
+env:
+  CUDARC_CUDA_VERSION: '12040'
+
+vars:
+  VERSION:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo "dev"
+
+tasks:
+  default:
+    cmds:
+      - task: lint
+
+  lint:
+    desc: Run linters for both Tauri (backend) and UI (frontend) layers
+    cmds:
+      - task: lint:frontend
+      - task: lint:backend
+
+  lint:frontend:
+    desc: Run Biome lint checks and TypeScript compiler validation
+    cmds:
+      - bun run check
+      - bun run typecheck
+
+  lint:backend:
+    desc: Run Cargo Clippy (warnings as errors) and compiler checks
+    dir: src-tauri
+    cmds:
+      - cargo clippy -- -D warnings
+      - cargo check
+
+  format:
+    desc: Run auto-formatters for both Tauri (backend) and UI (frontend) layers
+    cmds:
+      - task: format:frontend
+      - task: format:backend
+
+  format:frontend:
+    desc: Format frontend code using Biome
+    cmds:
+      - bun run format
+
+  format:backend:
+    desc: Format backend Rust code using cargo fmt
+    dir: src-tauri
+    cmds:
+      - cargo fmt --all
+
+  sqlx:prepare:
+    desc: Regenerate SQLx offline query cache metadata (.sqlx json files)
+    dir: src-tauri
+    cmds:
+      - DATABASE_URL="sqlite:///${HOME}/.local/share/cloud.sousa.julius/julius.db" cargo sqlx prepare
+
+  package:
+    desc: Build and package the production desktop application (CPU)
+    cmds:
+      - bun run tauri:build
+
+  dev:
+    desc: Run the desktop application in development mode (CPU)
+    cmds:
+      - bun run tauri:dev
+
+  dev:cuda:
+    desc: Run the desktop application in development mode with CUDA enabled
+    cmds:
+      - bun run tauri:dev:cuda
+
+  dev:metal:
+    desc: Run the desktop application in development mode with Metal enabled (macOS)
+    cmds:
+      - bun run tauri:dev:metal
+
+  package:cuda:
+    desc: Build and package the production desktop application with CUDA enabled
+    cmds:
+      - bun run tauri:build:cuda
+
+  package:metal:
+    desc: Build and package the production desktop application with Metal enabled (macOS)
+    cmds:
+      - bun run tauri:build:metal
