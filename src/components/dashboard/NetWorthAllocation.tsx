@@ -9,15 +9,6 @@ interface Props {
   currency?: string;
 }
 
-const TYPE_COLORS: Record<string, string> = {
-  checking: 'oklch(50% 0.25 264)',
-  savings: 'oklch(48% 0.19 145)',
-  investment: 'oklch(70% 0.19 75)',
-  credit: 'oklch(52% 0.23 22)',
-  loan: 'oklch(52% 0.23 22)',
-  other: 'oklch(60% 0.08 264)',
-};
-
 const fmt = (value: number, currency: string): string =>
   new Intl.NumberFormat('sv-SE', {
     style: 'currency',
@@ -42,8 +33,8 @@ export const NetWorthAllocation = ({
     .map((account) => ({
       account,
       value: Number(latest?.[account.id] ?? 0),
-      color: TYPE_COLORS[account.account_type] ?? TYPE_COLORS.other,
-      fill: TYPE_COLORS[account.account_type] ?? TYPE_COLORS.other,
+      color: account.color,
+      fill: account.color,
       fillOpacity: 0.9,
     }))
     .filter((s) => s.value > 0);

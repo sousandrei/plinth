@@ -10,6 +10,7 @@ pub struct Account {
     pub currency: String,
     pub account_type: String,
     pub account_source: String,
+    pub color: String,
     pub user_id: String,
 }
 
@@ -30,15 +31,20 @@ pub async fn list_accounts(
 pub async fn update_account(
     id: String,
     name: String,
+    color: String,
     db: State<'_, DbPool>,
 ) -> Result<Account, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
     }
+    if color.trim().is_empty() {
+        return Err(AppError::InvalidInput("color cannot be empty".into()));
+    }
 
     let name = name.trim().to_string();
+    let color = color.trim().to_string();
 
-    let rows = sqlx::query_file!("queries/accounts/update_account.sql", name, id)
+    let rows = sqlx::query_file!("queries/accounts/update_account.sql", name, color, id)
         .execute(db.inner())
         .await
         .map_err(|e| AppError::Db(format!("update_account: {e}")))?

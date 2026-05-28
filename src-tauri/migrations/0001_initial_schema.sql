@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     currency       TEXT NOT NULL,
     account_type   TEXT NOT NULL,
     account_source TEXT NOT NULL,
+    color          TEXT NOT NULL DEFAULT '#6b7280',
     user_id        TEXT NOT NULL REFERENCES users (id)
 );
 

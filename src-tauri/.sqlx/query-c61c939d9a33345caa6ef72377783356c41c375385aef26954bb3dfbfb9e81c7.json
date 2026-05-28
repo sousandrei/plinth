@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name, currency, account_type, account_source, user_id\nFROM accounts\nWHERE user_id = ?\nORDER BY name ASC\n",
+  "query": "SELECT id, name, currency, account_type, account_source, color, user_id\nFROM accounts\nWHERE user_id = ?\nORDER BY name ASC\n",
   "describe": {
     "columns": [
       {
@@ -59,8 +59,19 @@
         }
       },
       {
-        "name": "user_id",
+        "name": "color",
         "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "color"
+          }
+        }
+      },
+      {
+        "name": "user_id",
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -79,8 +90,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "def5427370bcbe43e2ff13ece97f6c31000a1365a2320d50423ca6cbfdb661fd"
+  "hash": "c61c939d9a33345caa6ef72377783356c41c375385aef26954bb3dfbfb9e81c7"
 }

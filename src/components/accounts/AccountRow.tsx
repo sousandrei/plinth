@@ -12,6 +12,20 @@ import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/util';
 import type { Account } from '@/types';
 
+const PRESET_COLORS = [
+  '#22c55e', // Green
+  '#10b981', // Emerald
+  '#06b6d4', // Cyan
+  '#3b82f6', // Blue
+  '#6366f1', // Indigo
+  '#f97316', // Orange
+  '#ec4899', // Pink
+  '#8b5cf6', // Purple
+  '#eab308', // Yellow
+  '#ef4444', // Red
+  '#6b7280', // Gray
+];
+
 const TYPE_LABELS: Record<string, string> = {
   checking: 'Checking',
   savings: 'Savings',
@@ -35,16 +49,19 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(account.name);
+  const [selectedColor, setSelectedColor] = useState(account.color);
 
-  // Reset draft to current account name when modal opens
+  // Reset draft & color when modal opens
   useEffect(() => {
     if (open) {
       setDraft(account.name);
+      setSelectedColor(account.color);
     }
-  }, [open, account.name]);
+  }, [open, account.name, account.color]);
 
   const mutation = useMutation({
-    mutationFn: (name: string) => updateAccount(account.id, name),
+    mutationFn: ({ name, color }: { name: string; color: string }) =>
+      updateAccount(account.id, name, color),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
       setOpen(false);
@@ -54,20 +71,21 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
         `Update failed: ${err instanceof Error ? err.message : String(err)}`,
       );
       setDraft(account.name);
+      setSelectedColor(account.color);
     },
   });
 
   const commit = () => {
-    const trimmed = draft.trim();
-    if (!trimmed) {
+    const trimmedName = draft.trim();
+    if (!trimmedName) {
       setDraft(account.name);
       return;
     }
-    if (trimmed === account.name) {
+    if (trimmedName === account.name && selectedColor === account.color) {
       setOpen(false);
       return;
     }
-    mutation.mutate(trimmed);
+    mutation.mutate({ name: trimmedName, color: selectedColor });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -75,7 +93,7 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
       e.key === 'Enter' &&
       !mutation.isPending &&
       draft.trim() &&
-      draft.trim() !== account.name
+      (draft.trim() !== account.name || selectedColor !== account.color)
     ) {
       commit();
     }
@@ -89,8 +107,16 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
         'hover:bg-muted/40',
       )}
     >
-      {/* Name */}
-      <td className="px-6 py-4 font-medium text-foreground">{account.name}</td>
+      {/* Name with Color dot */}
+      <td className="px-6 py-4 font-medium text-foreground">
+        <div className="flex items-center gap-2.5">
+          <span
+            className="w-2.5 h-2.5 rounded-full shrink-0 border border-black/10 dark:border-white/10 shadow-sm"
+            style={{ backgroundColor: account.color }}
+          />
+          {account.name}
+        </div>
+      </td>
 
       {/* Type */}
       <td className="px-6 py-4 whitespace-nowrap">
@@ -128,7 +154,7 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
           />
           <DialogContent
             title="Edit Account"
-            description="Update account display name and view account details."
+            description="Update account display name, theme color, and view account details."
           >
             <div className="space-y-5">
               {/* Readonly info grid */}
@@ -186,6 +212,49 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
                 />
               </div>
 
+              {/* Theme Color Picker */}
+              <div className="space-y-2 text-left">
+                <span className="block text-[10px] font-mono uppercase tracking-widest text-muted-foreground font-bold">
+                  Theme Color
+                </span>
+                <div className="flex flex-wrap gap-2 items-center">
+                  {PRESET_COLORS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setSelectedColor(preset)}
+                      className={cn(
+                        'w-6 h-6 rounded-full cursor-pointer transition-all duration-150 border-2',
+                        selectedColor === preset
+                          ? 'border-foreground scale-110 shadow-sm'
+                          : 'border-transparent hover:scale-105',
+                      )}
+                      style={{ backgroundColor: preset }}
+                      aria-label={`Select color ${preset}`}
+                    />
+                  ))}
+                  {/* Custom color input */}
+                  <label
+                    className="w-6 h-6 rounded-full cursor-pointer border border-border-subtle hover:scale-105 transition-transform flex items-center justify-center overflow-hidden relative"
+                    style={{
+                      backgroundColor: PRESET_COLORS.includes(selectedColor)
+                        ? 'transparent'
+                        : selectedColor,
+                    }}
+                  >
+                    <span className="text-[10px] font-mono text-muted-foreground select-none">
+                      🎨
+                    </span>
+                    <input
+                      type="color"
+                      value={selectedColor}
+                      onChange={(e) => setSelectedColor(e.target.value)}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    />
+                  </label>
+                </div>
+              </div>
+
               {/* Actions Footer */}
               <div className="flex justify-end gap-2 pt-3 border-t border-border-subtle">
                 <DialogClose
@@ -204,7 +273,8 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
                   disabled={
                     mutation.isPending ||
                     !draft.trim() ||
-                    draft.trim() === account.name
+                    (draft.trim() === account.name &&
+                      selectedColor === account.color)
                   }
                   className="px-4 py-2 text-xs rounded-none h-9"
                 >

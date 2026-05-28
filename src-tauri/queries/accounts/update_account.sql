@@ -1,3 +1,3 @@
 UPDATE accounts
-SET name = ?
-WHERE id = ?
+SET name = ?1, color = ?2
+WHERE id = ?3

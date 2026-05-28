@@ -12,6 +12,7 @@ export interface Account {
   currency: string;
   account_type: string;
   account_source: string;
+  color: string;
   user_id: string;
 }
 
