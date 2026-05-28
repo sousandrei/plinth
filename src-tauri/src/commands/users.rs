@@ -142,9 +142,9 @@ pub async fn factory_reset(app: tauri::AppHandle, db: State<'_, DbPool>) -> Resu
         .app_data_dir()
         .map_err(|e| AppError::Internal(format!("factory_reset: resolve app path: {e}")))?;
 
-    let db_path = data_dir.join("julius.db");
-    let db_wal = data_dir.join("julius.db-wal");
-    let db_shm = data_dir.join("julius.db-shm");
+    let db_path = data_dir.join("plinth.db");
+    let db_wal = data_dir.join("plinth.db-wal");
+    let db_shm = data_dir.join("plinth.db-shm");
 
     // 3. Delete database files
     if db_path.exists() {

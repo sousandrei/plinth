@@ -51,7 +51,7 @@ pub fn scan(builtin_dir: &Path, user_dir: &Path) -> Vec<ParserUnit> {
                         }
                     }
                     Err(e) => {
-                        eprintln!("julius: skipping {}: {e}", path.display());
+                        eprintln!("plinth: skipping {}: {e}", path.display());
                     }
                 }
             }

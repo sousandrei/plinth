@@ -11,7 +11,7 @@ pub type DbPool = SqlitePool;
 pub async fn setup(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
-    let db_path = data_dir.join("julius.db");
+    let db_path = data_dir.join("plinth.db");
     let pool = init(&db_path).await?;
     app.manage(pool);
     Ok(())

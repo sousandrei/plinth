@@ -55,7 +55,7 @@ export const AppNav = (): React.JSX.Element => {
           <div className="flex items-stretch">
             <div className="flex items-center pr-8 border-r border-border-subtle shrink-0 gap-2.5 mr-2">
               <span className="text-sm font-semibold tracking-tight font-sans text-foreground">
-                Julius
+                Plinth
               </span>
               <span className="text-[10px] font-mono text-muted-foreground tracking-[0.2em] uppercase bg-muted px-1.5 py-0.5 border border-border-subtle">
                 Wealth

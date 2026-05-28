@@ -50,7 +50,7 @@ export const LoginPage = (): React.JSX.Element => {
     <div className="min-h-screen flex flex-col items-center justify-center bg-canvas">
       <div className="absolute top-8 left-1/2 -translate-x-1/2 flex items-center gap-2.5 animate-fade-in">
         <span className="text-sm font-semibold tracking-tight font-sans">
-          Julius
+          Plinth
         </span>
         <span className="text-[10px] font-mono text-muted-foreground tracking-[0.2em] uppercase bg-muted px-1.5 py-0.5 border border-border-subtle">
           Wealth

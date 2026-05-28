@@ -53,7 +53,7 @@ tasks:
     desc: Regenerate SQLx offline query cache metadata (.sqlx json files)
     dir: src-tauri
     cmds:
-      - DATABASE_URL="sqlite:///${HOME}/.local/share/cloud.sousa.julius/julius.db" cargo sqlx prepare
+      - DATABASE_URL="sqlite:///${HOME}/.local/share/plinth/plinth.db" cargo sqlx prepare
 
   package:
     desc: Build and package the production desktop application (CPU)

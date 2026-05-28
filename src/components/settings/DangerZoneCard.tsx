@@ -49,7 +49,7 @@ export function DangerZoneCard({
               <div className="space-y-5 text-left">
                 <div className="p-4 bg-expense/5 border border-expense/20 text-xs leading-relaxed text-expense font-sans">
                   You are about to delete all your application data. Your
-                  database will be wiped completely, and Julius will close and
+                  database will be wiped completely, and Plinth will close and
                   restart.
                 </div>
 

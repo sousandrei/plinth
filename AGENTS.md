@@ -1,4 +1,4 @@
-# Julius Desktop — Agent Development Guide
+# Plinth — Agent Development Guide
 
 Standards and workflows for developing the `desktop/` Tauri app.
 The app has two distinct layers — a **Rust backend** (`src-tauri/`) and a

@@ -61,7 +61,7 @@ export const RegisterForm = ({
     <div className="flex flex-col items-center gap-8 animate-slide-in-right">
       <div className="text-center">
         <h1 className="text-lg font-semibold tracking-tight">
-          Welcome to Julius
+          Welcome to Plinth
         </h1>
         <p className="text-xs font-mono text-muted-foreground mt-1">
           {step === 'name' && 'Create your profile to get started.'}
