@@ -108,15 +108,17 @@ export function ModelCardList({
                   </button>
 
                   {/* Action buttons — not part of the selection target */}
-                  {!m.is_active && (
+                  {(!m.is_active || !m.is_base) && (
                     <div className="flex flex-col justify-center gap-1 pr-3 py-3 shrink-0">
-                      <Button
-                        variant="secondary"
-                        onClick={() => onActivate(m.version)}
-                        className="text-[10px] px-2 h-7 rounded-none"
-                      >
-                        Activate
-                      </Button>
+                      {!m.is_active && (
+                        <Button
+                          variant="secondary"
+                          onClick={() => onActivate(m.version)}
+                          className="text-[10px] px-2 h-7 rounded-none"
+                        >
+                          Activate
+                        </Button>
+                      )}
                       {!m.is_base && (
                         <Button
                           variant="ghost"
