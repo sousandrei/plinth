@@ -94,9 +94,6 @@ export const LoginPage = (): React.JSX.Element => {
         <span className="text-sm font-semibold tracking-tight font-sans">
           Plinth
         </span>
-        <span className="text-[10px] font-mono text-muted-foreground tracking-[0.2em] uppercase bg-muted px-1.5 py-0.5 border border-border-subtle">
-          Wealth
-        </span>
       </div>
 
       <div className="w-full max-w-sm px-6">

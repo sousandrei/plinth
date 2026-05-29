@@ -67,9 +67,6 @@ export const AppNav = (): React.JSX.Element => {
               <span className="text-sm font-semibold tracking-tight font-sans text-foreground">
                 Plinth
               </span>
-              <span className="text-[10px] font-mono text-muted-foreground tracking-[0.2em] uppercase bg-muted px-1.5 py-0.5 border border-border-subtle">
-                Wealth
-              </span>
             </div>
 
             <nav className="flex items-stretch relative">
