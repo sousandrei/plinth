@@ -3,6 +3,7 @@ pub mod apply_guard;
 pub mod cert_match;
 pub mod changelog;
 pub mod conflict_detector;
+pub mod cursors;
 pub mod discovery;
 pub mod frame;
 pub mod identity;

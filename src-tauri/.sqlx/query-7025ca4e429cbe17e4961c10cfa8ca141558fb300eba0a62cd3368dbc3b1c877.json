@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Returns the last_seq we have applied from `peer_device_id` for\n-- the given space, or NULL if we have never synced from that peer\n-- in this space. Callers translate NULL to 0 (= request everything\n-- from seq 1).\nSELECT last_seq\nFROM sync_cursors\nWHERE space_id = ?1 AND peer_device_id = ?2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "last_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sync_cursors",
+            "name": "last_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7025ca4e429cbe17e4961c10cfa8ca141558fb300eba0a62cd3368dbc3b1c877"
+}
