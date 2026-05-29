@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE space_members SET role = ?1 WHERE space_id = ?2 AND user_id = ?3\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "0837386b58c2ddd19e7a21c18d78ea1b3a6fece71710e9d100920b67790fb694"
+}

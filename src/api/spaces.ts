@@ -24,3 +24,9 @@ export const removeSpaceMember = (userId: string): Promise<void> =>
 export const leaveSpace = (): Promise<void> => invoke<void>('leave_space');
 
 export const deleteSpace = (): Promise<void> => invoke<void>('delete_space');
+
+export const renameSpace = (name: string): Promise<void> =>
+  invoke<void>('rename_space', { name });
+
+export const updateMemberRole = (userId: string, role: string): Promise<void> =>
+  invoke<void>('update_member_role', { userId, role });

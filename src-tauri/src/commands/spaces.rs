@@ -130,15 +130,11 @@ pub async fn set_active_space(
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
-    let is_member = sqlx::query_file!(
-        "queries/spaces/get_member_role.sql",
-        space_id,
-        data.user_id
-    )
-    .fetch_optional(db.inner())
-    .await
-    .map_err(|e| AppError::Db(format!("set_active_space membership check: {e}")))?
-    .is_some();
+    let is_member = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, data.user_id)
+        .fetch_optional(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("set_active_space membership check: {e}")))?
+        .is_some();
 
     if !is_member {
         return Err(AppError::Forbidden);
@@ -277,16 +273,66 @@ pub async fn delete_space(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn rename_space(
+    name: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+) -> Result<(), AppError> {
+    let data = session.require()?;
+    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+
+    if name.trim().is_empty() {
+        return Err(AppError::InvalidInput("space name cannot be empty".into()));
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    sqlx::query_file!("queries/spaces/rename_space.sql", name, now, data.space_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("rename_space: {e}")))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_member_role(
+    user_id: String,
+    role: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+) -> Result<(), AppError> {
+    let data = session.require()?;
+    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+
+    if role != "owner" && role != "member" {
+        return Err(AppError::InvalidInput(
+            "role must be 'owner' or 'member'".into(),
+        ));
+    }
+
+    sqlx::query_file!(
+        "queries/spaces/update_member_role.sql",
+        role,
+        data.space_id,
+        user_id
+    )
+    .execute(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("update_member_role: {e}")))?;
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 
 async fn require_owner(space_id: &str, user_id: &str, db: &DbPool) -> Result<(), AppError> {
-    let row =
-        sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, user_id)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| AppError::Db(format!("require_owner: {e}")))?;
+    let row = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, user_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| AppError::Db(format!("require_owner: {e}")))?;
 
     match row {
         None => Err(AppError::Forbidden),

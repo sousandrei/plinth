@@ -1,5 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
+import { renameSpace } from '@/api/spaces';
 import { createUser, setPin } from '@/api/users';
 import { cn } from '@/lib/util';
 import type { User } from '@/types';
@@ -14,19 +15,32 @@ export const RegisterForm = ({
 }: RegisterFormProps): React.JSX.Element => {
   const [name, setName] = useState('');
   const [pin, setPin_] = useState('');
-  const [step, setStep] = useState<'name' | 'pin' | 'confirm'>('name');
+  const [spaceName, setSpaceName] = useState('');
+  const [step, setStep] = useState<'name' | 'pin' | 'confirm' | 'space'>(
+    'name',
+  );
   const [nameError, setNameError] = useState('');
   const [pinError, setPinError] = useState('');
+  const [spaceError, setSpaceError] = useState('');
   const nameRef = useRef<HTMLInputElement>(null);
+  const spaceRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     nameRef.current?.focus();
   }, []);
 
+  useEffect(() => {
+    if (step === 'space') spaceRef.current?.focus();
+  }, [step]);
+
   const createMutation = useMutation({
     mutationFn: async () => {
       const user = await createUser(name.trim());
       await setPin(user.id, pin);
+      const defaultName = `${name.trim()}'s Space`;
+      if (spaceName.trim() !== defaultName) {
+        await renameSpace(spaceName.trim());
+      }
       return user;
     },
     onSuccess: (user) => onCreated(user),
@@ -54,6 +68,17 @@ export const RegisterForm = ({
       setPin_('');
       return;
     }
+    setSpaceName(`${name.trim()}'s Space`);
+    setStep('space');
+  };
+
+  const submitSpace = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!spaceName.trim()) {
+      setSpaceError('Space name is required');
+      return;
+    }
+    setSpaceError('');
     createMutation.mutate();
   };
 
@@ -67,6 +92,7 @@ export const RegisterForm = ({
           {step === 'name' && 'Create your profile to get started.'}
           {step === 'pin' && 'Choose a 4-digit PIN to secure your data.'}
           {step === 'confirm' && 'Confirm your PIN.'}
+          {step === 'space' && 'Name your space.'}
         </p>
       </div>
 
@@ -129,10 +155,8 @@ export const RegisterForm = ({
         <div className="flex flex-col items-center gap-4 animate-slide-in-right">
           <PinInput
             onComplete={handleConfirmComplete}
-            error={
-              createMutation.error ? String(createMutation.error) : undefined
-            }
-            disabled={createMutation.isPending}
+            error={undefined}
+            disabled={false}
             key="confirm-pin"
           />
           <button
@@ -149,10 +173,46 @@ export const RegisterForm = ({
         </div>
       )}
 
-      {createMutation.isPending && (
-        <p className="text-xs font-mono text-muted-foreground animate-fade-in">
-          Setting up…
-        </p>
+      {step === 'space' && (
+        <form
+          onSubmit={submitSpace}
+          className="flex flex-col gap-3 w-64 animate-slide-in-right"
+        >
+          <input
+            ref={spaceRef}
+            value={spaceName}
+            onChange={(e) => setSpaceName(e.target.value)}
+            placeholder="My Space"
+            className={cn(
+              'w-full px-4 py-2.5 text-sm font-mono',
+              'bg-canvas border border-border-muted',
+              'placeholder:text-muted-foreground',
+              'focus:outline-none focus:border-accent focus:shadow-[0_0_0_3px_var(--color-accent-muted)]',
+              'transition-all duration-150',
+              spaceError && 'border-expense',
+            )}
+          />
+          {spaceError && (
+            <p className="text-xs font-mono text-expense">{spaceError}</p>
+          )}
+          {createMutation.error && (
+            <p className="text-xs font-mono text-expense">
+              {String(createMutation.error)}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={createMutation.isPending}
+            className={cn(
+              'w-full px-4 py-2.5 text-xs font-mono uppercase tracking-widest',
+              'bg-foreground text-canvas',
+              'transition-all duration-150 active:scale-[0.98] hover:opacity-90',
+              'disabled:opacity-50 disabled:pointer-events-none',
+            )}
+          >
+            {createMutation.isPending ? 'Setting up…' : 'Get started'}
+          </button>
+        </form>
       )}
     </div>
   );

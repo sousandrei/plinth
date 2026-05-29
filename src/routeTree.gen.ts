@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TransactionsRouteImport } from './routes/transactions'
 import { Route as TrainingRouteImport } from './routes/training'
 import { Route as TestRouteImport } from './routes/test'
+import { Route as SpacesRouteImport } from './routes/spaces'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ImportRouteImport } from './routes/import'
@@ -33,6 +34,11 @@ const TrainingRoute = TrainingRouteImport.update({
 const TestRoute = TestRouteImport.update({
   id: '/test',
   path: '/test',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SpacesRoute = SpacesRouteImport.update({
+  id: '/spaces',
+  path: '/spaces',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -79,6 +85,7 @@ export interface FileRoutesByFullPath {
   '/import': typeof ImportRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/spaces': typeof SpacesRoute
   '/test': typeof TestRoute
   '/training': typeof TrainingRoute
   '/transactions': typeof TransactionsRoute
@@ -91,6 +98,7 @@ export interface FileRoutesByTo {
   '/import': typeof ImportRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/spaces': typeof SpacesRoute
   '/test': typeof TestRoute
   '/training': typeof TrainingRoute
   '/transactions': typeof TransactionsRoute
@@ -104,6 +112,7 @@ export interface FileRoutesById {
   '/import': typeof ImportRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/spaces': typeof SpacesRoute
   '/test': typeof TestRoute
   '/training': typeof TrainingRoute
   '/transactions': typeof TransactionsRoute
@@ -118,6 +127,7 @@ export interface FileRouteTypes {
     | '/import'
     | '/login'
     | '/settings'
+    | '/spaces'
     | '/test'
     | '/training'
     | '/transactions'
@@ -130,6 +140,7 @@ export interface FileRouteTypes {
     | '/import'
     | '/login'
     | '/settings'
+    | '/spaces'
     | '/test'
     | '/training'
     | '/transactions'
@@ -142,6 +153,7 @@ export interface FileRouteTypes {
     | '/import'
     | '/login'
     | '/settings'
+    | '/spaces'
     | '/test'
     | '/training'
     | '/transactions'
@@ -155,6 +167,7 @@ export interface RootRouteChildren {
   ImportRoute: typeof ImportRoute
   LoginRoute: typeof LoginRoute
   SettingsRoute: typeof SettingsRoute
+  SpacesRoute: typeof SpacesRoute
   TestRoute: typeof TestRoute
   TrainingRoute: typeof TrainingRoute
   TransactionsRoute: typeof TransactionsRoute
@@ -181,6 +194,13 @@ declare module '@tanstack/react-router' {
       path: '/test'
       fullPath: '/test'
       preLoaderRoute: typeof TestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/spaces': {
+      id: '/spaces'
+      path: '/spaces'
+      fullPath: '/spaces'
+      preLoaderRoute: typeof SpacesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -243,6 +263,7 @@ const rootRouteChildren: RootRouteChildren = {
   ImportRoute: ImportRoute,
   LoginRoute: LoginRoute,
   SettingsRoute: SettingsRoute,
+  SpacesRoute: SpacesRoute,
   TestRoute: TestRoute,
   TrainingRoute: TrainingRoute,
   TransactionsRoute: TransactionsRoute,

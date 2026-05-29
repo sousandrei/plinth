@@ -171,6 +171,8 @@ pub fn run() {
             commands::spaces::remove_space_member,
             commands::spaces::leave_space,
             commands::spaces::delete_space,
+            commands::spaces::rename_space,
+            commands::spaces::update_member_role,
             commands::accounts::list_accounts,
             commands::accounts::update_account,
             commands::transactions::list_transactions,
