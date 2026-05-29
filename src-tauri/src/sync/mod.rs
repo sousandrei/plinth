@@ -2,6 +2,7 @@ pub mod apply;
 pub mod apply_guard;
 pub mod cert_match;
 pub mod changelog;
+pub mod client;
 pub mod conflict_detector;
 pub mod cursors;
 pub mod discovery;
