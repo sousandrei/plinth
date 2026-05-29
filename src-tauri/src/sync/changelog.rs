@@ -1,6 +1,7 @@
 use sqlx::SqlitePool;
 
 use crate::error::AppError;
+use crate::sync::payloads;
 use crate::sync::wire::ChangeRow;
 
 /// Hard ceiling on rows returned by `read_since` in one call. A peer
@@ -31,20 +32,31 @@ pub async fn read_since(
     .await
     .map_err(|e| AppError::Db(format!("read_since: {e}")))?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| ChangeRow {
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        // Decode the trigger's JSON snapshot once at the read boundary
+        // so the rest of the pipeline stays typed. Deletes have a NULL
+        // payload by design.
+        let payload = match r.payload {
+            Some(json) => Some(
+                payloads::from_json(&r.table_name, &json)
+                    .map_err(|e| AppError::Db(format!("read_since: decode payload: {e}")))?,
+            ),
+            None => None,
+        };
+        out.push(ChangeRow {
             id: r.id,
             space_id: r.space_id,
             table_name: r.table_name,
             row_id: r.row_id,
             operation: r.operation,
-            payload: r.payload,
+            payload,
             seq: r.seq,
             device_id: r.device_id,
             changed_at: r.changed_at,
-        })
-        .collect())
+        });
+    }
+    Ok(out)
 }
 
 /// Highest `seq` currently stored for `(space_id, device_id)`, or 0

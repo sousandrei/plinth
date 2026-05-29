@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::sync::payloads::TablePayload;
+
 /// Protocol version, sent in `Hello`. Bumped on any wire-incompatible
 /// change. A mismatch terminates the session immediately.
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -33,8 +35,11 @@ pub struct Cursors {
 }
 
 /// A single change_log row in transit. Field names mirror the SQLite
-/// table so callers can map straight through. `payload` is the JSON
-/// snapshot written by the trigger (None for deletes).
+/// table so callers can map straight through. `payload` is the typed
+/// snapshot decoded from the trigger's JSON at the read boundary
+/// (`None` for deletes — only the row identity is needed to apply).
+/// Postcard encodes the variant tag compactly, so the wire form is
+/// strictly smaller than shipping JSON-in-postcard.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangeRow {
     pub id: String,
@@ -42,7 +47,7 @@ pub struct ChangeRow {
     pub table_name: String,
     pub row_id: String,
     pub operation: String,
-    pub payload: Option<String>,
+    pub payload: Option<TablePayload>,
     pub seq: i64,
     pub device_id: String,
     pub changed_at: String,

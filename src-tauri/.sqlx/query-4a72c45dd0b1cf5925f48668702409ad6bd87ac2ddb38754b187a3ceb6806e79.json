@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM app_settings WHERE key = 'applying_as_device'\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "4a72c45dd0b1cf5925f48668702409ad6bd87ac2ddb38754b187a3ceb6806e79"
+}

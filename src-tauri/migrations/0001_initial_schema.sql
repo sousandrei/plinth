@@ -219,7 +219,19 @@ CREATE INDEX IF NOT EXISTS idx_sync_conflicts_unresolved
 -- Every INSERT/UPDATE/DELETE on a synced table writes a row to change_log
 -- with a fresh UUID, a snapshot of the row as JSON, and a monotonic seq
 -- read from app_settings('sync_seq') and bumped atomically in the same
--- statement. device_id is read from app_settings('device_id').
+-- statement.
+--
+-- device_id resolution: the trigger stamps device_id from the override
+-- key app_settings('applying_as_device') if set, else from
+-- app_settings('device_id'). The override is used by the sync engine
+-- when applying a peer's change_log row locally: the resulting log
+-- entry then carries the originating peer's device_id, which keeps
+-- (a) cursors meaningful for the original author and (b) replication
+-- non-echoing — shipping queries filter on device_id = ours, so rows
+-- stamped with a peer's id are never re-shipped.
+--
+-- The override must always be set/cleared inside the same SQLite
+-- transaction as the data write — see sync::apply_guard.
 --
 -- Synced tables:
 --   spaces, space_members, accounts, categories, transactions,
@@ -249,7 +261,10 @@ AFTER INSERT ON spaces BEGIN
             'created_at', new.created_at, 'updated_at', new.updated_at
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -266,7 +281,10 @@ AFTER UPDATE ON spaces BEGIN
             'created_at', new.created_at, 'updated_at', new.updated_at
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -279,7 +297,10 @@ AFTER DELETE ON spaces BEGIN
         lower(hex(randomblob(16))),
         old.id, 'spaces', old.id, 'delete', NULL,
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -307,7 +328,10 @@ AFTER INSERT ON space_members BEGIN
             )
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -331,7 +355,10 @@ AFTER UPDATE ON space_members BEGIN
             )
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -344,7 +371,10 @@ AFTER DELETE ON space_members BEGIN
         lower(hex(randomblob(16))),
         old.space_id, 'space_members', old.space_id || ':' || old.user_id, 'delete', NULL,
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -369,7 +399,10 @@ AFTER UPDATE ON users BEGIN
         ),
         -- one shared seq for the batch; bump once below
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq') + 1,
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     FROM space_members sm WHERE sm.user_id = new.id;
 
     UPDATE app_settings SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
@@ -392,7 +425,10 @@ AFTER INSERT ON accounts BEGIN
             'color', new.color, 'space_id', new.space_id
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -410,7 +446,10 @@ AFTER UPDATE ON accounts BEGIN
             'color', new.color, 'space_id', new.space_id
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -423,7 +462,10 @@ AFTER DELETE ON accounts BEGIN
         lower(hex(randomblob(16))),
         old.space_id, 'accounts', old.id, 'delete', NULL,
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -438,7 +480,10 @@ AFTER INSERT ON categories BEGIN
         new.space_id, 'categories', new.id, 'insert',
         json_object('id', new.id, 'name', new.name, 'color', new.color, 'space_id', new.space_id),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -452,7 +497,10 @@ AFTER UPDATE ON categories BEGIN
         new.space_id, 'categories', new.id, 'update',
         json_object('id', new.id, 'name', new.name, 'color', new.color, 'space_id', new.space_id),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -465,7 +513,10 @@ AFTER DELETE ON categories BEGIN
         lower(hex(randomblob(16))),
         old.space_id, 'categories', old.id, 'delete', NULL,
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -486,7 +537,10 @@ AFTER INSERT ON transactions BEGIN
             'note', new.note, 'category', new.category, 'account_id', new.account_id
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -506,7 +560,10 @@ AFTER UPDATE ON transactions BEGIN
             'note', new.note, 'category', new.category, 'account_id', new.account_id
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -520,7 +577,10 @@ AFTER DELETE ON transactions BEGIN
         (SELECT space_id FROM accounts WHERE id = old.account_id),
         'transactions', old.id, 'delete', NULL,
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -536,7 +596,10 @@ AFTER INSERT ON account_summaries BEGIN
         'account_summaries', new.account_id || ':' || new.month, 'insert',
         json_object('month', new.month, 'account_id', new.account_id, 'balance', new.balance),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -551,7 +614,10 @@ AFTER UPDATE ON account_summaries BEGIN
         'account_summaries', new.account_id || ':' || new.month, 'update',
         json_object('month', new.month, 'account_id', new.account_id, 'balance', new.balance),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -565,7 +631,10 @@ AFTER DELETE ON account_summaries BEGIN
         (SELECT space_id FROM accounts WHERE id = old.account_id),
         'account_summaries', old.account_id || ':' || old.month, 'delete', NULL,
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -580,7 +649,10 @@ AFTER INSERT ON space_settings BEGIN
         new.space_id, 'space_settings', new.space_id || ':' || new.key, 'insert',
         json_object('space_id', new.space_id, 'key', new.key, 'value', new.value),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -594,7 +666,10 @@ AFTER UPDATE ON space_settings BEGIN
         new.space_id, 'space_settings', new.space_id || ':' || new.key, 'update',
         json_object('space_id', new.space_id, 'key', new.key, 'value', new.value),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -607,7 +682,10 @@ AFTER DELETE ON space_settings BEGIN
         lower(hex(randomblob(16))),
         old.space_id, 'space_settings', old.space_id || ':' || old.key, 'delete', NULL,
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -626,7 +704,10 @@ AFTER INSERT ON trusted_devices BEGIN
             'sync_enabled', new.sync_enabled, 'paired_at', new.paired_at
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -644,7 +725,10 @@ AFTER UPDATE ON trusted_devices BEGIN
             'sync_enabled', new.sync_enabled, 'paired_at', new.paired_at
         ),
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
 
@@ -657,6 +741,9 @@ AFTER DELETE ON trusted_devices BEGIN
         lower(hex(randomblob(16))),
         old.space_id, 'trusted_devices', old.id, 'delete', NULL,
         (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),
-        (SELECT value FROM app_settings WHERE key = 'device_id')
+        COALESCE(
+            (SELECT value FROM app_settings WHERE key = 'applying_as_device'),
+            (SELECT value FROM app_settings WHERE key = 'device_id')
+        )
     );
 END;
