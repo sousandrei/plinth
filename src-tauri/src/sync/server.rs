@@ -68,7 +68,7 @@ async fn handle_connection(
         .map_err(|e| AppError::Io(format!("tls accept: {e}")))?;
 
     let peer = extract_peer(&tls, &db).await?;
-    session::handle_inbound(tls, peer).await
+    session::handle_inbound(tls, peer, db).await
 }
 
 /// Read the peer's leaf cert off the completed handshake and look it up
