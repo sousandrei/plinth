@@ -5,6 +5,7 @@ import { CashFlowChart } from '@/components/dashboard/CashFlowChart';
 import { NetWorthAllocation } from '@/components/dashboard/NetWorthAllocation';
 import { NetWorthHero } from '@/components/dashboard/NetWorthHero';
 import { SpendingByCategory } from '@/components/dashboard/SpendingByCategory';
+import { Avatar } from '@/components/ui/Avatar';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
@@ -16,6 +17,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
+import { Pagination } from '@/components/ui/Pagination';
 import { Select } from '@/components/ui/Select';
 import { Separator } from '@/components/ui/Separator';
 import { Spinner } from '@/components/ui/Spinner';
@@ -32,7 +34,21 @@ import {
 import { Tabs } from '@/components/ui/Tabs';
 import { Toggle } from '@/components/ui/Toggle';
 import { Tooltip } from '@/components/ui/Tooltip';
-import { categoryChipStyle } from '@/lib/category-color';
+import { categoryChipStyle, updateCategoryColors } from '@/lib/category-color';
+
+// Seed the color map so category chips render with their real colours on this page
+updateCategoryColors([
+  { name: 'Food & Drinks', color: '#f59e0b' },
+  { name: 'Transport', color: '#3b82f6' },
+  { name: 'Shopping', color: '#8b5cf6' },
+  { name: 'Leisure', color: '#ec4899' },
+  { name: 'Health & Beauty', color: '#10b981' },
+  { name: 'Household & Services', color: '#64748b' },
+  { name: 'Salary', color: '#22c55e' },
+  { name: 'Other Income', color: '#a3e635' },
+  { name: 'Savings & Investments', color: '#06b6d4' },
+  { name: 'Other', color: '#6b7280' },
+]);
 
 export const Route = createFileRoute('/test')({
   component: TestPage,
@@ -43,7 +59,7 @@ const TRANSACTIONS = [
     id: '001',
     date: '2026-05-01',
     text: 'Löneinsättning',
-    category: 'Income',
+    category: 'Salary',
     amount: 45000,
     balance: 82340,
   },
@@ -51,7 +67,7 @@ const TRANSACTIONS = [
     id: '002',
     date: '2026-05-03',
     text: 'ICA Maxi Solna',
-    category: 'Groceries',
+    category: 'Food & Drinks',
     amount: -1243,
     balance: 81097,
   },
@@ -59,7 +75,7 @@ const TRANSACTIONS = [
     id: '003',
     date: '2026-05-07',
     text: 'Spotify Premium',
-    category: 'Subscriptions',
+    category: 'Leisure',
     amount: -129,
     balance: 80968,
   },
@@ -74,11 +90,11 @@ const TRANSACTIONS = [
 ];
 
 const CATEGORIES = [
-  { value: 'income', label: 'Income' },
-  { value: 'groceries', label: 'Groceries' },
+  { value: 'food', label: 'Food & Drinks' },
   { value: 'transport', label: 'Transport' },
-  { value: 'subscriptions', label: 'Subscriptions' },
-  { value: 'dining', label: 'Dining' },
+  { value: 'shopping', label: 'Shopping' },
+  { value: 'leisure', label: 'Leisure' },
+  { value: 'health', label: 'Health & Beauty' },
 ];
 
 const fmt = (n: number): string =>
@@ -211,6 +227,7 @@ function TestPage(): React.JSX.Element {
   const [switchVal, setSwitchVal] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [page, setPage] = useState(0);
 
   return (
     <div className="max-w-[1200px] mx-auto px-6 py-10 space-y-12">
@@ -226,9 +243,7 @@ function TestPage(): React.JSX.Element {
           </Button>
         </div>
       </section>
-
       <Separator />
-
       {/* ── Toggle ── */}
       <section>
         <SectionLabel label="Toggle" code="Toggle" />
@@ -255,9 +270,7 @@ function TestPage(): React.JSX.Element {
           Selected: {toggleVal}
         </p>
       </section>
-
       <Separator />
-
       {/* ── Switch ── */}
       <section>
         <SectionLabel label="Switch" code="Switch" />
@@ -270,9 +283,7 @@ function TestPage(): React.JSX.Element {
           Checked: {String(switchVal)}
         </p>
       </section>
-
       <Separator />
-
       {/* ── Badges ── */}
       <section>
         <SectionLabel label="Badges" code="Badge" />
@@ -285,9 +296,7 @@ function TestPage(): React.JSX.Element {
           <Badge variant="highlight">Premium</Badge>
         </div>
       </section>
-
       <Separator />
-
       {/* ── Input ── */}
       <section>
         <SectionLabel label="Input" code="Input" />
@@ -300,9 +309,7 @@ function TestPage(): React.JSX.Element {
           <Input placeholder="Disabled input" disabled />
         </div>
       </section>
-
       <Separator />
-
       {/* ── Select ── */}
       <section>
         <SectionLabel label="Select" code="Select" />
@@ -320,9 +327,7 @@ function TestPage(): React.JSX.Element {
           )}
         </div>
       </section>
-
       <Separator />
-
       {/* ── Tooltip ── */}
       <section>
         <SectionLabel label="Tooltip" code="Tooltip" />
@@ -337,9 +342,7 @@ function TestPage(): React.JSX.Element {
           </Tooltip>
         </div>
       </section>
-
       <Separator />
-
       {/* ── Dialog ── */}
       <section>
         <SectionLabel label="Dialog" code="Dialog" />
@@ -364,9 +367,7 @@ function TestPage(): React.JSX.Element {
           </Dialog>
         </div>
       </section>
-
       <Separator />
-
       {/* ── Cards ── */}
       <section>
         <SectionLabel label="Cards" code="Card / CardHeader / CardBody" />
@@ -417,9 +418,7 @@ function TestPage(): React.JSX.Element {
           </Card>
         </div>
       </section>
-
       <Separator />
-
       {/* ── Spinner ── */}
       <section>
         <SectionLabel label="Spinner" code="Spinner" />
@@ -434,28 +433,22 @@ function TestPage(): React.JSX.Element {
           ))}
         </div>
       </section>
-
       <Separator />
-
       {/* ── Category Colors ── */}
       <section>
         <SectionLabel label="Category Colors" code="categoryChipStyle(name)" />
         <div className="mt-4 flex flex-wrap gap-2">
           {[
-            'Income',
-            'Groceries',
+            'Food & Drinks',
             'Transport',
-            'Subscriptions',
-            'Dining',
-            'Rent',
-            'Utilities',
-            'Healthcare',
-            'Entertainment',
-            'Travel',
-            'Savings',
-            'Insurance',
-            'Education',
             'Shopping',
+            'Leisure',
+            'Health & Beauty',
+            'Household & Services',
+            'Salary',
+            'Other Income',
+            'Savings & Investments',
+            'Other',
           ].map((cat) => (
             <span
               key={cat}
@@ -467,9 +460,7 @@ function TestPage(): React.JSX.Element {
           ))}
         </div>
       </section>
-
       <Separator />
-
       {/* ── Table ── */}
       <section>
         <SectionLabel label="Table" code="Table / Th / Td / TdMono" />
@@ -510,9 +501,7 @@ function TestPage(): React.JSX.Element {
           </Table>
         </div>
       </section>
-
       <Separator />
-
       {/* ── Tabs ── */}
       <section>
         <SectionLabel
@@ -546,9 +535,7 @@ function TestPage(): React.JSX.Element {
           </Tabs.Root>
         </div>
       </section>
-
       <Separator />
-
       {/* ── DatePicker ── */}
       <section>
         <SectionLabel label="DatePicker" code="DatePicker" />
@@ -567,9 +554,7 @@ function TestPage(): React.JSX.Element {
           </p>
         )}
       </section>
-
       <Separator />
-
       {/* ── Separator itself ── */}
       <section>
         <SectionLabel label="Separator" code="Separator" />
@@ -587,8 +572,33 @@ function TestPage(): React.JSX.Element {
         </div>
       </section>
       <Separator />
-
-      {/* ── NetWorthHero ── */}
+      {/* ── Avatar ── */}
+      <section>
+        <SectionLabel label="Avatar" code="Avatar" />
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          <Avatar name="Anna Svensson" />
+          <Avatar name="Bo Karlsson" />
+          <Avatar name="X" />
+          <Avatar name="Demo User" onClick={() => {}} />
+        </div>
+      </section>
+      <Separator />
+      {/* ── Pagination ── */}
+      <section>
+        <SectionLabel label="Pagination" code="Pagination" />
+        <div className="mt-4 max-w-sm space-y-4">
+          <Pagination page={page} pageCount={8} onPageChange={setPage} />
+          <p className="text-xs font-mono text-muted-foreground">
+            Current page: {page + 1}
+          </p>
+          <Pagination page={0} pageCount={1} onPageChange={() => {}} />
+          <p className="text-xs font-mono text-muted-foreground">
+            pageCount=1 → renders nothing
+          </p>
+        </div>
+      </section>
+      <Separator />
+      {/* ── NetWorthHero ── */}{' '}
       <section>
         <SectionLabel label="NetWorthHero" code="dashboard/NetWorthHero" />
         <div className="mt-4 max-w-md h-56">
@@ -599,9 +609,7 @@ function TestPage(): React.JSX.Element {
           />
         </div>
       </section>
-
       <Separator />
-
       {/* ── CashFlowChart ── */}
       <section>
         <SectionLabel label="CashFlowChart" code="dashboard/CashFlowChart" />
@@ -609,9 +617,7 @@ function TestPage(): React.JSX.Element {
           <CashFlowChart series={CASH_FLOW_SERIES} currency="SEK" />
         </div>
       </section>
-
       <Separator />
-
       {/* ── AccountsTable ── */}
       <section>
         <SectionLabel label="AccountsTable" code="dashboard/AccountsTable" />
@@ -619,9 +625,7 @@ function TestPage(): React.JSX.Element {
           <AccountsTable accountSeries={ACCOUNT_SERIES} currency="SEK" />
         </div>
       </section>
-
       <Separator />
-
       {/* ── NetWorthAllocation ── */}
       <section>
         <SectionLabel
@@ -636,9 +640,7 @@ function TestPage(): React.JSX.Element {
           />
         </div>
       </section>
-
       <Separator />
-
       {/* ── SpendingByCategory ── */}
       <section>
         <SectionLabel
