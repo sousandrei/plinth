@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(MAX(seq), 0) AS \"max_seq!: i64\"\nFROM change_log\nWHERE space_id = ?1\n  AND device_id = ?2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "max_seq!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fbd4defe78953c2d70e9b8dd93b68f66a6751e0252787da1f7e235f615a380c8"
+}

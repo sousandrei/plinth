@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    id          AS \"id!\",\n    space_id    AS \"space_id!\",\n    table_name  AS \"table_name!\",\n    row_id      AS \"row_id!\",\n    operation   AS \"operation!\",\n    payload     AS \"payload\",\n    seq         AS \"seq!: i64\",\n    device_id   AS \"device_id!\",\n    changed_at  AS \"changed_at!\"\nFROM change_log\nWHERE space_id = ?1\n  AND device_id = ?2\n  AND seq > ?3\nORDER BY seq ASC\nLIMIT ?4\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "space_id!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "table_name!",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "table_name"
+          }
+        }
+      },
+      {
+        "name": "row_id!",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "row_id"
+          }
+        }
+      },
+      {
+        "name": "operation!",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "operation"
+          }
+        }
+      },
+      {
+        "name": "payload",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "name": "seq!: i64",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "name": "device_id!",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "changed_at!",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "changed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cd7b2088abd945bcd2f99df8fa73632e4e4b53536a58f3452f0e2fa492e465a6"
+}
