@@ -72,6 +72,38 @@ pub struct ChangeBatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bye {}
 
+/// One entry in a `ModelVersionSummary` — the sender's active trained
+/// model version for one shared space. Version 0 means no finetuned
+/// model exists (only the shipped base model).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelVersionEntry {
+    pub space_id: String,
+    pub version: u32,
+}
+
+/// Sent by each side after all `Batch` frames are exhausted. Lets both
+/// peers compare their active model versions and decide who needs to
+/// receive a `ModelData` transfer. One entry per shared space.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelVersionSummary {
+    pub entries: Vec<ModelVersionEntry>,
+}
+
+/// Carries the binary weights and JSON card for one model version.
+/// Transferred by the peer with the higher version immediately after
+/// both `ModelVersionSummary` frames have been exchanged. The receiver
+/// writes the files atomically (temp-file + rename) and updates its
+/// `space_settings` active model version. See data/PLAN.md §8.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelData {
+    pub space_id: String,
+    pub version: u32,
+    /// Raw bytes of `model_v{version}.safetensors`.
+    pub weights: Vec<u8>,
+    /// Raw bytes of `model_v{version}.json` (the `ModelCard`).
+    pub card: Vec<u8>,
+}
+
 /// Tagged envelope so a single byte stream can carry any frame type.
 /// Postcard encodes the variant tag compactly; the wire size overhead
 /// is one byte per frame.
@@ -80,5 +112,7 @@ pub enum Frame {
     Hello(Hello),
     Cursors(Cursors),
     Batch(ChangeBatch),
+    ModelVersionSummary(ModelVersionSummary),
+    ModelData(ModelData),
     Bye(Bye),
 }

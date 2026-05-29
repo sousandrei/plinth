@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use sqlx::SqlitePool;
+use tauri::AppHandle;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
@@ -20,7 +21,7 @@ pub struct ServerHandle {
 /// loop in the background. Each accepted connection runs through mTLS
 /// and, if the peer cert matches `trusted_devices`, is dispatched to
 /// `session::handle_inbound`.
-pub async fn spawn(db: SqlitePool, acceptor: TlsAcceptor) -> Result<ServerHandle, AppError> {
+pub async fn spawn(db: SqlitePool, acceptor: TlsAcceptor, app: AppHandle) -> Result<ServerHandle, AppError> {
     let listener = TcpListener::bind("0.0.0.0:0")
         .await
         .map_err(|e| AppError::Io(format!("sync listen: {e}")))?;
@@ -28,14 +29,12 @@ pub async fn spawn(db: SqlitePool, acceptor: TlsAcceptor) -> Result<ServerHandle
         .local_addr()
         .map_err(|e| AppError::Io(format!("sync addr: {e}")))?;
 
-    let task = tokio::spawn(accept_loop(listener, acceptor, db));
+    let task = tokio::spawn(accept_loop(listener, acceptor, db, app));
 
     Ok(ServerHandle { local_addr, task })
 }
 
-/// Pull connections off the listener forever, dispatching each to a
-/// dedicated task so a slow handshake can't starve other peers.
-async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, db: SqlitePool) {
+async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, db: SqlitePool, app: AppHandle) {
     loop {
         let (stream, peer_addr) = match listener.accept().await {
             Ok(pair) => pair,
@@ -46,21 +45,20 @@ async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, db: SqlitePoo
         };
         let acceptor = acceptor.clone();
         let db = db.clone();
+        let app = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, acceptor, db).await {
+            if let Err(e) = handle_connection(stream, acceptor, db, app).await {
                 eprintln!("sync conn from {peer_addr}: {e}");
             }
         });
     }
 }
 
-/// One TCP connection: complete the TLS handshake, resolve the peer
-/// against `trusted_devices`, and either reject or hand to the session
-/// dispatcher.
 async fn handle_connection(
     tcp: TcpStream,
     acceptor: TlsAcceptor,
     db: SqlitePool,
+    app: AppHandle,
 ) -> Result<(), AppError> {
     let tls = acceptor
         .accept(tcp)
@@ -68,7 +66,7 @@ async fn handle_connection(
         .map_err(|e| AppError::Io(format!("tls accept: {e}")))?;
 
     let peer = extract_peer(&tls, &db).await?;
-    session::handle_inbound(tls, peer, db).await
+    session::handle_inbound(tls, peer, db, app).await
 }
 
 /// Read the peer's leaf cert off the completed handshake and look it up

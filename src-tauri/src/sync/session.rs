@@ -1,12 +1,15 @@
 use sqlx::SqlitePool;
+use tauri::AppHandle;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
 use crate::error::AppError;
 use crate::sync::apply_guard::{run_as_device, GuardedFuture};
 use crate::sync::cert_match::PeerIdentity;
-use crate::sync::wire::{Bye, ChangeBatch, CursorEntry, Cursors, Frame, Hello, PROTOCOL_VERSION};
-use crate::sync::{apply, changelog, cursors};
+use crate::sync::wire::{
+    Bye, ChangeBatch, CursorEntry, Cursors, Frame, Hello, ModelVersionSummary, PROTOCOL_VERSION,
+};
+use crate::sync::{apply, changelog, cursors, model_sync};
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -19,44 +22,50 @@ pub async fn handle_inbound<S>(
     stream: tokio_rustls::server::TlsStream<S>,
     peer: PeerIdentity,
     db: SqlitePool,
+    app: AppHandle,
 ) -> Result<(), AppError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let local_device_id = read_device_id(&db).await?;
     let (rd, wr) = tokio::io::split(stream);
-    run_session(rd, wr, db, local_device_id, peer).await
+    run_session(rd, wr, db, app, local_device_id, peer).await
 }
 
-/// Handle an outbound mTLS session (called by the dialer in step 5.7).
+/// Handle an outbound mTLS session (called by the dialer in `sync/client.rs`).
 pub async fn handle_outbound<S>(
     stream: tokio_rustls::client::TlsStream<S>,
     peer: PeerIdentity,
     db: SqlitePool,
+    app: AppHandle,
 ) -> Result<(), AppError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let local_device_id = read_device_id(&db).await?;
     let (rd, wr) = tokio::io::split(stream);
-    run_session(rd, wr, db, local_device_id, peer).await
+    run_session(rd, wr, db, app, local_device_id, peer).await
 }
 
 // ---------------------------------------------------------------------------
 // Core session
 // ---------------------------------------------------------------------------
 
-/// Run the full delta-exchange protocol over a split async stream. The send
-/// and receive halves run concurrently: each side exchanges Hello and
-/// Cursors, then the sender ships change batches while the receiver applies
-/// incoming ones. Both sides close gracefully with a Bye frame.
+/// Run the full delta-exchange + model-sync protocol over a split async
+/// stream. Send and receive halves run concurrently. Protocol order:
 ///
-/// `local_device_id` is this device's stable id (from `app_settings`).
-/// `peer` carries the cert-resolved peer device_id and shared space ids.
+///   Hello ↔ Hello
+///   Cursors ↔ Cursors
+///   ChangeBatch* (from us to peer, per peer's cursors)
+///   ↕ simultaneous with peer shipping their batches to us
+///   ModelVersionSummary ↔ ModelVersionSummary
+///   ModelData* (from us if our version > peer's, received if peer's > ours)
+///   Bye ↔ Bye
 async fn run_session<R, W>(
     read_half: R,
     write_half: W,
     db: SqlitePool,
+    app: AppHandle,
     local_device_id: String,
     peer: PeerIdentity,
 ) -> Result<(), AppError>
@@ -64,29 +73,33 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    // Channels for the send half to learn the peer's Hello and Cursors
-    // from the receive half once they arrive.
     let (hello_tx, hello_rx) = oneshot::channel::<Hello>();
     let (cursors_tx, cursors_rx) = oneshot::channel::<Cursors>();
+    let (model_versions_tx, model_versions_rx) = oneshot::channel::<ModelVersionSummary>();
 
     let db_recv = db.clone();
+    let app_recv = app.clone();
     let peer_recv = peer.clone();
 
     let send_fut = send_half(
         write_half,
         db.clone(),
+        app.clone(),
         local_device_id.clone(),
         peer.clone(),
         hello_rx,
         cursors_rx,
+        model_versions_rx,
     );
     let recv_fut = recv_half(
         read_half,
         db_recv,
+        app_recv,
         local_device_id,
         peer_recv,
         hello_tx,
         cursors_tx,
+        model_versions_tx,
     );
 
     let (send_res, recv_res) = tokio::join!(send_fut, recv_fut);
@@ -96,27 +109,30 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Send half — Hello, read peer Hello, Cursors, batches, Bye
+// Send half
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn send_half<W>(
     mut wr: W,
     db: SqlitePool,
+    app: AppHandle,
     local_device_id: String,
     peer: PeerIdentity,
     hello_rx: oneshot::Receiver<Hello>,
     cursors_rx: oneshot::Receiver<Cursors>,
+    model_versions_rx: oneshot::Receiver<ModelVersionSummary>,
 ) -> Result<(), AppError>
 where
     W: AsyncWrite + Unpin,
 {
-    // Send our Hello immediately.
+    // --- Hello handshake ---
     write_frame(&mut wr, &Frame::Hello(Hello {
         protocol_version: PROTOCOL_VERSION,
         device_id: local_device_id.clone(),
-    })).await?;
+    }))
+    .await?;
 
-    // Wait for the peer's Hello (delivered by recv_half via channel).
     let peer_hello = hello_rx.await.map_err(|_| {
         AppError::Internal("session: recv half dropped before sending Hello".into())
     })?;
@@ -133,8 +149,7 @@ where
         )));
     }
 
-    // Send our Cursors — our high-water marks for each shared space, keyed
-    // by how far we have consumed from the peer (not from ourselves).
+    // --- Cursor exchange ---
     let mut cursor_entries = Vec::new();
     for space_id in &peer.shared_space_ids {
         let last_seq = cursors::get(&db, space_id, &peer.device_id).await?;
@@ -145,32 +160,20 @@ where
     }
     write_frame(&mut wr, &Frame::Cursors(Cursors {
         entries: cursor_entries,
-    })).await?;
+    }))
+    .await?;
 
-    // Wait for the peer's Cursors to arrive (they tell us how much of our
-    // own log they have already seen).
     let peer_cursors = cursors_rx.await.map_err(|_| {
         AppError::Internal("session: recv half dropped before sending Cursors".into())
     })?;
 
-    // Ship our change batches for each space the peer is behind on.
+    // --- Change batches ---
     for entry in &peer_cursors.entries {
         if !peer.shared_space_ids.contains(&entry.space_id) {
-            // Peer sent a cursor for a space we don't share — ignore.
             continue;
         }
-        ship_batches(
-            &mut wr,
-            &db,
-            &entry.space_id,
-            &local_device_id,
-            entry.last_seq,
-        )
-        .await?;
+        ship_batches(&mut wr, &db, &entry.space_id, &local_device_id, entry.last_seq).await?;
     }
-
-    // Also ship for shared spaces the peer didn't mention at all
-    // (no cursor row = they want everything from 0).
     let mentioned: std::collections::HashSet<_> =
         peer_cursors.entries.iter().map(|e| e.space_id.as_str()).collect();
     for space_id in &peer.shared_space_ids {
@@ -179,16 +182,45 @@ where
         }
     }
 
-    // Graceful close.
+    // --- Model version exchange ---
+    let local_summary = model_sync::local_summary(&db, &peer.shared_space_ids).await;
+    write_frame(&mut wr, &Frame::ModelVersionSummary(local_summary)).await?;
+
+    let peer_summary = model_versions_rx.await.map_err(|_| {
+        AppError::Internal("session: recv half dropped before sending ModelVersionSummary".into())
+    })?;
+
+    // Push our model to the peer for any space where our version is higher.
+    for peer_entry in &peer_summary.entries {
+        if !peer.shared_space_ids.contains(&peer_entry.space_id) {
+            continue;
+        }
+        let local_ver = model_sync::local_version(&db, &peer_entry.space_id).await;
+        if local_ver > peer_entry.version {
+            match model_sync::read_model(&app, &peer_entry.space_id, local_ver)? {
+                Some(data) => {
+                    write_frame(&mut wr, &Frame::ModelData(data)).await?;
+                }
+                None => {
+                    eprintln!(
+                        "session: model v{local_ver} for space {} missing on disk, skipping",
+                        peer_entry.space_id
+                    );
+                }
+            }
+        }
+    }
+
+    // --- Close ---
     write_frame(&mut wr, &Frame::Bye(Bye {})).await?;
-    wr.flush().await.map_err(|e| AppError::Io(format!("session flush: {e}")))?;
+    wr.flush()
+        .await
+        .map_err(|e| AppError::Io(format!("session flush: {e}")))?;
     Ok(())
 }
 
-/// Ship all of our change_log rows for `(space_id, local_device_id)` with
-/// seq > peer_last_seq, in batches of `changelog::DEFAULT_BATCH_LIMIT`.
-/// Terminates each space with a final_seq so the peer can advance its cursor
-/// even if no rows need to be sent.
+/// Ship change_log rows for `(space_id, local_device_id)` with seq >
+/// peer_last_seq in batches of `DEFAULT_BATCH_LIMIT`.
 async fn ship_batches<W>(
     wr: &mut W,
     db: &SqlitePool,
@@ -202,9 +234,6 @@ where
     let final_seq = changelog::max_seq(db, space_id, local_device_id).await?;
     let min_seq = changelog::min_seq(db, space_id, local_device_id).await?;
 
-    // If the peer's cursor is behind our oldest retained row we can't serve
-    // the delta — they need a full snapshot (step 7). Log and send an empty
-    // batch so the peer can at least record the final_seq.
     if peer_last_seq > 0 && min_seq > 0 && peer_last_seq < min_seq {
         eprintln!(
             "session: peer cursor {peer_last_seq} < min_seq {min_seq} for space {space_id}; \
@@ -236,7 +265,6 @@ where
         } else {
             rows.last().map(|r| r.seq).unwrap_or(final_seq)
         };
-
         if let Some(last) = rows.last() {
             last_sent = last.seq;
         }
@@ -256,43 +284,76 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Receive half — read Hello, Cursors, apply ChangeBatch loop, Bye
+// Receive half
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn recv_half<R>(
     mut rd: R,
     db: SqlitePool,
+    app: AppHandle,
     local_device_id: String,
     peer: PeerIdentity,
     hello_tx: oneshot::Sender<Hello>,
     cursors_tx: oneshot::Sender<Cursors>,
+    model_versions_tx: oneshot::Sender<ModelVersionSummary>,
 ) -> Result<(), AppError>
 where
     R: AsyncRead + Unpin,
 {
-    // Read peer Hello.
+    // Hello
     let hello = expect_hello(&mut rd).await?;
     hello_tx.send(hello).map_err(|_| {
         AppError::Internal("session: send half dropped before receiving Hello".into())
     })?;
 
-    // Read peer Cursors.
+    // Cursors
     let peer_cursors = expect_cursors(&mut rd).await?;
     cursors_tx.send(peer_cursors).map_err(|_| {
         AppError::Internal("session: send half dropped before receiving Cursors".into())
     })?;
 
-    // Apply incoming ChangeBatch frames until Bye.
+    // Frame loop: ChangeBatch* then ModelVersionSummary then ModelData* then Bye
+    let mut peer_model_summary_sent = false;
+    let mut model_versions_tx = Some(model_versions_tx);
     loop {
         let frame = crate::sync::frame::read_frame(&mut rd).await?;
         match frame {
             Frame::Batch(batch) => {
                 apply_batch(&db, &local_device_id, &peer, batch).await?;
             }
+            Frame::ModelVersionSummary(summary) => {
+                if let Some(tx) = model_versions_tx.take() {
+                    tx.send(summary).map_err(|_| {
+                        AppError::Internal(
+                            "session: send half dropped before receiving ModelVersionSummary".into(),
+                        )
+                    })?;
+                }
+                peer_model_summary_sent = true;
+            }
+            Frame::ModelData(data) => {
+                if !peer_model_summary_sent {
+                    return Err(AppError::Internal(
+                        "session: ModelData arrived before ModelVersionSummary".into(),
+                    ));
+                }
+                if peer.shared_space_ids.contains(&data.space_id) {
+                    let local_ver = model_sync::local_version(&db, &data.space_id).await;
+                    if data.version > local_ver {
+                        if let Err(e) = model_sync::apply_model(&app, &db, &data).await {
+                            eprintln!(
+                                "session: apply model v{} for space {}: {e}",
+                                data.version, data.space_id
+                            );
+                        }
+                    }
+                }
+            }
             Frame::Bye(_) => break,
             other => {
                 return Err(AppError::Internal(format!(
-                    "session: unexpected frame {:?} after Cursors",
+                    "session: unexpected frame {:?}",
                     std::mem::discriminant(&other)
                 )));
             }
@@ -301,8 +362,7 @@ where
     Ok(())
 }
 
-/// Apply one `ChangeBatch`: for each row, run apply_guard → apply_change,
-/// then advance the cursor to `batch.final_seq` inside the same transaction.
+/// Apply one `ChangeBatch` atomically with its cursor advance.
 async fn apply_batch(
     db: &SqlitePool,
     local_device_id: &str,
@@ -310,7 +370,6 @@ async fn apply_batch(
     batch: ChangeBatch,
 ) -> Result<(), AppError> {
     if !peer.shared_space_ids.contains(&batch.space_id) {
-        // Peer sent a batch for a space we don't share — silently drop.
         return Ok(());
     }
 
@@ -334,7 +393,7 @@ async fn apply_batch(
 }
 
 // ---------------------------------------------------------------------------
-// Frame helpers
+// Frame + settings helpers
 // ---------------------------------------------------------------------------
 
 async fn write_frame<W>(wr: &mut W, frame: &Frame) -> Result<(), AppError>
@@ -369,10 +428,6 @@ where
         ))),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Settings helper
-// ---------------------------------------------------------------------------
 
 async fn read_device_id(db: &SqlitePool) -> Result<String, AppError> {
     let key = "device_id";

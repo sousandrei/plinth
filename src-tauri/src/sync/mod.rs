@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod debounce;
 pub mod apply_guard;
 pub mod cert_match;
 pub mod changelog;
@@ -9,6 +10,7 @@ pub mod discovery;
 pub mod frame;
 pub mod gc;
 pub mod identity;
+pub mod model_sync;
 pub mod pairing;
 pub mod payloads;
 pub mod scheduler;

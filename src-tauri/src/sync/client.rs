@@ -1,4 +1,5 @@
 use sqlx::SqlitePool;
+use tauri::AppHandle;
 use tokio::net::TcpStream;
 
 use crate::error::AppError;
@@ -8,18 +9,11 @@ use crate::sync::identity::DeviceIdentity;
 use crate::sync::session;
 use crate::sync::tls;
 
-/// Dial one discovered peer, complete the mTLS handshake, resolve the
-/// peer identity from the server cert, and run a full delta-exchange
-/// session. Returns normally when the session completes (both sides
-/// have exchanged Bye) or errors on any transport or protocol failure.
-///
-/// This is called from the periodic scheduler in `sync/scheduler.rs`.
-/// One dial attempt per peer per tick; the scheduler is responsible for
-/// retry backoff.
 pub async fn dial(
     peer: &PeerInfo,
     db: &SqlitePool,
     identity: &DeviceIdentity,
+    app: AppHandle,
 ) -> Result<(), AppError> {
     let addr = format!("{}:{}", peer.host, peer.port);
 
@@ -42,13 +36,9 @@ pub async fn dial(
 
     let peer_identity = extract_peer_identity(&tls, db).await?;
 
-    session::handle_outbound(tls, peer_identity, db.clone()).await
+    session::handle_outbound(tls, peer_identity, db.clone(), app).await
 }
 
-/// Read the server's leaf cert off the completed client-side handshake
-/// and resolve it against `trusted_devices`. The TLS verifier has already
-/// rejected untrusted certs, but we need the resolved identity to carry
-/// `device_id` and `shared_space_ids` into the session.
 async fn extract_peer_identity<S>(
     tls: &tokio_rustls::client::TlsStream<S>,
     db: &SqlitePool,
