@@ -6,6 +6,20 @@ export interface User {
   updated_at: string;
 }
 
+export interface Space {
+  id: string;
+  name: string;
+  role: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SpaceMember {
+  user_id: string;
+  name: string;
+  role: string;
+}
+
 export interface Account {
   id: string;
   name: string;
@@ -13,7 +27,7 @@ export interface Account {
   account_type: string;
   account_source: string;
   color: string;
-  user_id: string;
+  space_id: string;
 }
 
 export interface Transaction {
@@ -43,7 +57,6 @@ export interface TransactionPage {
 }
 
 export interface ListTransactionsParams {
-  userId: string;
   page?: number;
   limit?: number;
   search?: string;

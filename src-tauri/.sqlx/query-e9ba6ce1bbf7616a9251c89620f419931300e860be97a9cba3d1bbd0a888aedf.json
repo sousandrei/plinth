@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.month, s.account_id, s.balance\nFROM account_summaries s\nINNER JOIN accounts a ON a.id = s.account_id\nWHERE a.space_id = ?\nORDER BY s.month ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "month",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "month"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "balance",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "balance"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e9ba6ce1bbf7616a9251c89620f419931300e860be97a9cba3d1bbd0a888aedf"
+}

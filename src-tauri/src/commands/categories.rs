@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::{db::DbPool, error::AppError};
+use crate::{db::DbPool, error::AppError, Session};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Category {
@@ -12,11 +12,20 @@ pub struct Category {
 }
 
 #[tauri::command]
-pub async fn list_all_categories(db: State<'_, DbPool>) -> Result<Vec<Category>, AppError> {
-    let categories = sqlx::query_file_as!(Category, "queries/categories/list_categories.sql")
-        .fetch_all(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("list_all_categories: {e}")))?;
+pub async fn list_all_categories(
+    db: State<'_, DbPool>,
+    session: State<'_, Session>,
+) -> Result<Vec<Category>, AppError> {
+    let active = session.require()?;
+
+    let categories = sqlx::query_file_as!(
+        Category,
+        "queries/categories/list_categories.sql",
+        active.space_id
+    )
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("list_all_categories: {e}")))?;
 
     Ok(categories)
 }
@@ -26,7 +35,10 @@ pub async fn create_category(
     name: String,
     color: String,
     db: State<'_, DbPool>,
+    session: State<'_, Session>,
 ) -> Result<Category, AppError> {
+    let active = session.require()?;
+
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
     }
@@ -37,33 +49,55 @@ pub async fn create_category(
     let color = color.trim().to_string();
     let id = Uuid::new_v4().to_string();
 
-    sqlx::query_file!("queries/categories/create_category.sql", id, name, color)
-        .execute(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("create_category: {e}")))?;
+    sqlx::query_file!(
+        "queries/categories/create_category.sql",
+        id,
+        name,
+        color,
+        active.space_id
+    )
+    .execute(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("create_category: {e}")))?;
 
     Ok(Category { id, name, color })
 }
 
 #[tauri::command]
-pub async fn delete_category(id: String, db: State<'_, DbPool>) -> Result<(), AppError> {
-    let category = sqlx::query_file_as!(Category, "queries/categories/get_category_by_id.sql", id)
-        .fetch_one(db.inner())
-        .await
-        .map_err(|e| AppError::NotFound(format!("category {id} not found: {e}")))?;
+pub async fn delete_category(
+    id: String,
+    db: State<'_, DbPool>,
+    session: State<'_, Session>,
+) -> Result<(), AppError> {
+    let active = session.require()?;
+
+    let category = sqlx::query_file_as!(
+        Category,
+        "queries/categories/get_category_by_id.sql",
+        id,
+        active.space_id
+    )
+    .fetch_one(db.inner())
+    .await
+    .map_err(|e| AppError::NotFound(format!("category {id} not found: {e}")))?;
 
     sqlx::query_file!(
         "queries/categories/clear_transaction_category.sql",
-        category.name
+        category.name,
+        active.space_id
     )
     .execute(db.inner())
     .await
     .map_err(|e| AppError::Db(format!("clear transactions category: {e}")))?;
 
-    sqlx::query_file!("queries/categories/delete_category.sql", id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("delete_category: {e}")))?;
+    sqlx::query_file!(
+        "queries/categories/delete_category.sql",
+        id,
+        active.space_id
+    )
+    .execute(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("delete_category: {e}")))?;
 
     Ok(())
 }
@@ -74,7 +108,10 @@ pub async fn update_category(
     name: String,
     color: String,
     db: State<'_, DbPool>,
+    session: State<'_, Session>,
 ) -> Result<Category, AppError> {
+    let active = session.require()?;
+
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
     }
@@ -84,17 +121,22 @@ pub async fn update_category(
     let new_name = name.trim().to_string();
     let new_color = color.trim().to_string();
 
-    let old_category =
-        sqlx::query_file_as!(Category, "queries/categories/get_category_by_id.sql", id)
-            .fetch_one(db.inner())
-            .await
-            .map_err(|e| AppError::NotFound(format!("category {id} not found: {e}")))?;
+    let old_category = sqlx::query_file_as!(
+        Category,
+        "queries/categories/get_category_by_id.sql",
+        id,
+        active.space_id
+    )
+    .fetch_one(db.inner())
+    .await
+    .map_err(|e| AppError::NotFound(format!("category {id} not found: {e}")))?;
 
     if old_category.name != new_name {
         sqlx::query_file!(
             "queries/categories/update_transaction_categories.sql",
             old_category.name,
-            new_name
+            new_name,
+            active.space_id
         )
         .execute(db.inner())
         .await
@@ -105,7 +147,8 @@ pub async fn update_category(
         "queries/categories/update_category.sql",
         new_name,
         new_color,
-        id
+        id,
+        active.space_id
     )
     .execute(db.inner())
     .await

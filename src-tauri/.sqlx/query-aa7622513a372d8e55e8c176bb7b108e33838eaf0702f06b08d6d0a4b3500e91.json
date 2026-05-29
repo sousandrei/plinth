@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO space_members (space_id, user_id, role, joined_at)\nVALUES (?1, ?2, ?3, ?4)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "aa7622513a372d8e55e8c176bb7b108e33838eaf0702f06b08d6d0a4b3500e91"
+}

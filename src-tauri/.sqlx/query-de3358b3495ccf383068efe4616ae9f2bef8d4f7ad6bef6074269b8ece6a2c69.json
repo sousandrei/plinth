@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE categories\nSET name = ?1, color = ?2\nWHERE id = ?3 AND space_id = ?4\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "de3358b3495ccf383068efe4616ae9f2bef8d4f7ad6bef6074269b8ece6a2c69"
+}

@@ -1,4 +1,7 @@
+import { useQuery } from '@tanstack/react-query';
 import { Link, useRouterState } from '@tanstack/react-router';
+import { listMySpaces, logout, setActiveSpace } from '@/api/spaces';
+import { useAuth } from '@/context/AuthContext';
 import { useDemoMode } from '@/hooks/useDemoMode';
 import { cn } from '@/lib/util';
 
@@ -32,6 +35,14 @@ export const AppNav = (): React.JSX.Element => {
   const routerState = useRouterState();
   const currentPath = routerState.location.pathname;
   const { isDemoMode } = useDemoMode();
+  const { spaceId, setSpaceId, setUser } = useAuth();
+
+  const { data: spaces = [] } = useQuery({
+    queryKey: ['my-spaces'],
+    queryFn: listMySpaces,
+  });
+
+  const currentSpace = spaces.find((s) => s.id === spaceId);
 
   const isFinanceActive = [
     '/transactions',
@@ -194,7 +205,70 @@ export const AppNav = (): React.JSX.Element => {
           </div>
 
           {/* Right Aligned Items */}
-          <div className="flex items-stretch">
+          <div className="flex items-stretch gap-1">
+            {!isDemoMode && currentSpace && (
+              <div className="relative h-full group">
+                <button type="button" className={cn(navLinkBase, 'gap-2')}>
+                  <span className="text-foreground">{currentSpace.name}</span>
+                  {spaces.length > 1 && (
+                    <svg
+                      className="w-3 h-3 transition-transform duration-200 text-muted-foreground group-hover:rotate-180"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      role="img"
+                      aria-label="Switch space"
+                    >
+                      <title>Switch space</title>
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M19 9l-7 7-7-7"
+                      />
+                    </svg>
+                  )}
+                </button>
+
+                {spaces.length > 1 && (
+                  <div className="absolute right-0 w-52 bg-canvas-raised border border-border-muted shadow-lg z-50 hidden group-hover:flex flex-col py-1 animate-in fade-in slide-in-from-top-1 duration-150">
+                    {spaces.map((space) => (
+                      <button
+                        key={space.id}
+                        type="button"
+                        onClick={() =>
+                          setActiveSpace(space.id).then(() =>
+                            setSpaceId(space.id),
+                          )
+                        }
+                        className={cn(
+                          dropdownItemBase,
+                          space.id === spaceId && dropdownItemActive,
+                          'text-left w-full',
+                        )}
+                      >
+                        {space.name}
+                      </button>
+                    ))}
+                    <div className="border-t border-border-subtle mt-1 pt-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          logout().then(() => {
+                            setSpaceId(null);
+                            setUser(null);
+                          })
+                        }
+                        className={cn(dropdownItemBase, 'text-left w-full')}
+                      >
+                        Log out
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <Link
               to="/settings"
               className={navLinkBase}

@@ -20,6 +20,7 @@ use crate::{
     db::DbPool,
     error::AppError,
     ClassifierState,
+    Session,
 };
 
 // ---------------------------------------------------------------------------
@@ -120,12 +121,13 @@ pub struct TrainingSample {
 // Filesystem helpers
 // ---------------------------------------------------------------------------
 
-fn models_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+fn models_dir(app: &AppHandle, space_id: &str) -> Result<PathBuf, AppError> {
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| AppError::Internal(format!("app_data_dir: {e}")))?
-        .join("models");
+        .join("models")
+        .join(space_id);
     std::fs::create_dir_all(&dir).map_err(|e| AppError::Io(format!("create models dir: {e}")))?;
     Ok(dir)
 }
@@ -236,8 +238,8 @@ fn epoch_days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 // Active model helpers (stored in app_settings)
 // ---------------------------------------------------------------------------
 
-async fn get_active_version(pool: &DbPool) -> u32 {
-    sqlx::query_file!("queries/training/get_setting.sql", SETTING_ACTIVE_MODEL)
+async fn get_active_version(pool: &DbPool, space_id: &str) -> u32 {
+    sqlx::query_file!("queries/training/get_setting.sql", space_id, SETTING_ACTIVE_MODEL)
         .fetch_optional(pool)
         .await
         .ok()
@@ -246,10 +248,11 @@ async fn get_active_version(pool: &DbPool) -> u32 {
         .unwrap_or(0)
 }
 
-async fn set_active_version(pool: &DbPool, version: u32) -> Result<(), AppError> {
+async fn set_active_version(pool: &DbPool, space_id: &str, version: u32) -> Result<(), AppError> {
     let v = version.to_string();
     sqlx::query_file!(
         "queries/training/upsert_setting.sql",
+        space_id,
         SETTING_ACTIVE_MODEL,
         v
     )
@@ -265,14 +268,17 @@ async fn set_active_version(pool: &DbPool, version: u32) -> Result<(), AppError>
 
 #[tauri::command]
 pub async fn fine_tune(
-    user_id: String,
     config: FinetuneConfig,
     app: AppHandle,
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
     history: State<'_, TrainingHistory>,
     cancel: State<'_, CancelToken>,
+    session: State<'_, Session>,
 ) -> Result<FinetuneResult, AppError> {
+    let active_session = session.require()?;
+    let space_id = active_session.space_id.clone();
+
     let resource = resource_dir(&app)?;
     let resource2 = resource.clone();
     let app_data = app
@@ -280,11 +286,11 @@ pub async fn fine_tune(
         .app_data_dir()
         .map_err(|e| AppError::Internal(format!("app_data_dir: {e}")))?;
     let app_data2 = app_data.clone();
-    let dir = models_dir(&app)?;
+    let dir = models_dir(&app, &space_id)?;
     let version = next_version(&dir);
 
     // Resolve starting weights: active finetuned version, or base.
-    let active = get_active_version(&db).await;
+    let active = get_active_version(&db, &space_id).await;
     let start_weights = if active > 0 {
         weights_path(&dir, active)
     } else {
@@ -319,7 +325,7 @@ pub async fn fine_tune(
             (tokenizer, classes)
         }
     };
-    let samples = load_approved(&db, &user_id, &tokenizer, &classes).await?;
+    let samples = load_approved(&db, &space_id, &tokenizer, &classes).await?;
 
     if samples.len() < MIN_SAMPLES {
         return Err(AppError::InvalidInput(format!(
@@ -495,6 +501,8 @@ pub async fn fine_tune(
         }
     }
 
+    set_active_version(&db, &space_id, version).await?;
+
     // Notify the UI that the model list has changed.
     let _ = app.emit("training://done", ());
 
@@ -515,9 +523,11 @@ pub async fn get_training_progress(
 pub async fn list_models(
     app: AppHandle,
     db: State<'_, DbPool>,
+    session: State<'_, Session>,
 ) -> Result<Vec<ModelCard>, AppError> {
-    let dir = models_dir(&app)?;
-    let active = get_active_version(&db).await;
+    let active_session = session.require()?;
+    let dir = models_dir(&app, &active_session.space_id)?;
+    let active = get_active_version(&db, &active_session.space_id).await;
 
     let mut cards: Vec<ModelCard> = Vec::new();
 
@@ -551,8 +561,10 @@ pub async fn set_active_model(
     app: AppHandle,
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
+    session: State<'_, Session>,
 ) -> Result<(), AppError> {
-    let dir = models_dir(&app)?;
+    let active_session = session.require()?;
+    let dir = models_dir(&app, &active_session.space_id)?;
 
     let p = weights_path(&dir, version);
     if !p.exists() {
@@ -560,7 +572,7 @@ pub async fn set_active_model(
     }
     let weights = p;
 
-    set_active_version(&db, version).await?;
+    set_active_version(&db, &active_session.space_id, version).await?;
     let mut guard = classifier
         .lock()
         .map_err(|e| AppError::Internal(format!("lock: {e}")))?;
@@ -573,26 +585,29 @@ pub async fn set_active_model(
 
 #[tauri::command]
 pub async fn get_training_samples(
-    user_id: String,
     limit: i64,
     version: Option<u32>,
     app: AppHandle,
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
+    session: State<'_, Session>,
 ) -> Result<Vec<TrainingSample>, AppError> {
-    let rows = sqlx::query_file!("queries/training/get_training_samples.sql", user_id, limit)
+    let active_session = session.require()?;
+    let space_id = active_session.space_id.clone();
+
+    let rows = sqlx::query_file!("queries/training/get_training_samples.sql", space_id, limit)
         .fetch_all(&*db)
         .await
         .map_err(|e| AppError::Db(format!("get_training_samples: {e}")))?;
 
     // Resolve the active version before acquiring the classifier lock (no await inside lock).
-    let active_version = get_active_version(&db).await;
+    let active_version = get_active_version(&db, &space_id).await;
     let requested = version.unwrap_or(active_version);
     let swapped = requested != active_version;
 
     // Pre-resolve paths before the lock so we don't hold it across any awaits.
     let requested_weights = if swapped {
-        let dir = models_dir(&app)?;
+        let dir = models_dir(&app, &space_id)?;
         let weights = weights_path(&dir, requested);
         if !weights.exists() {
             return Err(AppError::NotFound(format!(
@@ -604,7 +619,7 @@ pub async fn get_training_samples(
         None
     };
     let active_weights_path = if swapped {
-        let dir = models_dir(&app)?;
+        let dir = models_dir(&app, &space_id)?;
         Some(weights_path(&dir, active_version))
     } else {
         None
@@ -659,13 +674,17 @@ pub async fn is_classifier_ready(classifier: State<'_, ClassifierState>) -> Resu
 
 #[tauri::command]
 pub async fn count_approved_transactions(
-    user_id: String,
     db: State<'_, DbPool>,
+    session: State<'_, Session>,
 ) -> Result<i64, AppError> {
-    let row = sqlx::query_file!("queries/training/count_approved_transactions.sql", user_id)
-        .fetch_one(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("count_approved_transactions: {e}")))?;
+    let active_session = session.require()?;
+    let row = sqlx::query_file!(
+        "queries/training/count_approved_transactions.sql",
+        active_session.space_id
+    )
+    .fetch_one(&*db)
+    .await
+    .map_err(|e| AppError::Db(format!("count_approved_transactions: {e}")))?;
     Ok(row.count)
 }
 
@@ -681,6 +700,7 @@ pub async fn delete_model(
     app: AppHandle,
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
+    session: State<'_, Session>,
 ) -> Result<(), AppError> {
     if version == 0 {
         return Err(AppError::InvalidInput(
@@ -688,8 +708,10 @@ pub async fn delete_model(
         ));
     }
 
-    let dir = models_dir(&app)?;
-    let active = get_active_version(&db).await;
+    let active_session = session.require()?;
+    let space_id = active_session.space_id.clone();
+    let dir = models_dir(&app, &space_id)?;
+    let active = get_active_version(&db, &space_id).await;
 
     let w = weights_path(&dir, version);
     let c = card_path(&dir, version);
@@ -704,7 +726,7 @@ pub async fn delete_model(
     // If the deleted version was active, unload the classifier — no base model exists.
     // The user must train a new version to restore predictions.
     if active == version {
-        sqlx::query_file!("queries/settings/delete_setting.sql", SETTING_ACTIVE_MODEL)
+        sqlx::query_file!("queries/training/delete_setting.sql", space_id, SETTING_ACTIVE_MODEL)
             .execute(&*db)
             .await
             .map_err(|e| AppError::Db(format!("delete_active_model_setting: {e}")))?;

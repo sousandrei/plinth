@@ -12,10 +12,8 @@ import {
 } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
-import { useAuth } from '@/context/AuthContext';
 
 export function UploadDialog(): React.JSX.Element {
-  const { user } = useAuth();
   const queryClient = useQueryClient();
   const [filePath, setFilePath] = useState('');
   const [parserKey, setParserKey] = useState('');
@@ -30,7 +28,7 @@ export function UploadDialog(): React.JSX.Element {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: () => uploadFile(user?.id ?? '', filePath, parserKey),
+    mutationFn: () => uploadFile(filePath, parserKey),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['accounts'] });

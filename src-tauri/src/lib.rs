@@ -12,6 +12,88 @@ use tauri::{Emitter, Manager};
 
 pub type ClassifierState = Arc<Mutex<Option<classifier::Classifier>>>;
 
+// ---------------------------------------------------------------------------
+// Session state
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct SessionData {
+    pub user_id: String,
+    pub space_id: Option<String>,
+}
+
+/// Fully resolved session — both user and active space are present.
+#[derive(Debug, Clone)]
+pub struct ActiveSession {
+    pub user_id: String,
+    pub space_id: String,
+}
+
+pub struct Session(Mutex<Option<SessionData>>);
+
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Session {
+    pub fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    pub fn set(&self, user_id: String, space_id: Option<String>) {
+        let mut guard = self.0.lock().unwrap();
+        *guard = Some(SessionData { user_id, space_id });
+    }
+
+    pub fn set_space(&self, space_id: String) {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(ref mut data) = *guard {
+            data.space_id = Some(space_id);
+        }
+    }
+
+    pub fn clear_space(&self) {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(ref mut data) = *guard {
+            data.space_id = None;
+        }
+    }
+
+    pub fn clear(&self) {
+        let mut guard = self.0.lock().unwrap();
+        *guard = None;
+    }
+
+    /// Returns a fully resolved session (user + active space).
+    /// Fails with Unauthorized if not logged in, InvalidInput if no space selected.
+    pub fn require(&self) -> Result<ActiveSession, AppError> {
+        let guard = self.0.lock().unwrap();
+        match &*guard {
+            None => Err(AppError::Unauthorized),
+            Some(d) => match &d.space_id {
+                None => Err(AppError::InvalidInput("no active space selected".into())),
+                Some(space_id) => Ok(ActiveSession {
+                    user_id: d.user_id.clone(),
+                    space_id: space_id.clone(),
+                }),
+            },
+        }
+    }
+
+    /// Returns session data even if no space is selected yet.
+    /// Use only for commands that don't need a space (e.g. list_my_spaces).
+    pub fn require_user(&self) -> Result<SessionData, AppError> {
+        let guard = self.0.lock().unwrap();
+        guard.clone().ok_or(AppError::Unauthorized)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tauri app entry
+// ---------------------------------------------------------------------------
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -22,8 +104,6 @@ pub fn run() {
             let handle2 = handle.clone();
             tauri::async_runtime::block_on(async move { db::setup(&handle).await })?;
 
-            // Classifier starts as None; a background task loads it and emits
-            // classifier://ready (or classifier://error) when done.
             let classifier_state: ClassifierState = Arc::new(Mutex::new(None));
             app.manage(classifier_state.clone());
 
@@ -71,6 +151,7 @@ pub fn run() {
 
             app.manage(commands::training::TrainingHistory::default());
             app.manage(commands::training::CancelToken::default());
+            app.manage(Session::new());
 
             Ok(())
         })
@@ -81,6 +162,15 @@ pub fn run() {
             commands::users::verify_pin,
             commands::users::update_user_name,
             commands::users::factory_reset,
+            commands::spaces::list_my_spaces,
+            commands::spaces::create_space,
+            commands::spaces::set_active_space,
+            commands::spaces::logout,
+            commands::spaces::list_space_members,
+            commands::spaces::add_space_member,
+            commands::spaces::remove_space_member,
+            commands::spaces::leave_space,
+            commands::spaces::delete_space,
             commands::accounts::list_accounts,
             commands::accounts::update_account,
             commands::transactions::list_transactions,

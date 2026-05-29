@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.id, t.text, t.amount, t.booking_date, t.category AS \"category!\"\nFROM transactions t\nJOIN accounts a ON t.account_id = a.id\nWHERE a.space_id = ?1\n  AND t.approved = 1\n  AND t.category IS NOT NULL\n  AND t.category != ''\nORDER BY RANDOM()\nLIMIT ?2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "text",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "text"
+          }
+        }
+      },
+      {
+        "name": "amount",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "amount"
+          }
+        }
+      },
+      {
+        "name": "booking_date",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "booking_date"
+          }
+        }
+      },
+      {
+        "name": "category!",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "category"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "997566a1cf2fba7c1e76cfcb55f0cb67701d875ef3fa3d819ab506978d71e9c8"
+}

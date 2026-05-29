@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions\nSET category = NULL\nWHERE category = ?1\n  AND account_id IN (\n    SELECT id FROM accounts WHERE space_id = ?2\n  )\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f912d1ec8d5841d30dc6d651606082082d3a3eb4207678b44113d7433121ff7b"
+}

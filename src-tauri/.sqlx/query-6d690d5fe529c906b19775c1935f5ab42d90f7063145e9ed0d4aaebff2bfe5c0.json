@@ -1,0 +1,40 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT strftime('%Y-%m', t.value_date) AS \"month!: String\",\n       t.category                      AS \"category!: String\",\n       SUM(t.amount)                   AS \"amount!: i64\"\nFROM transactions t\nINNER JOIN accounts a ON a.id = t.account_id\nWHERE a.space_id = ?\n  AND t.approved = 1\n  AND t.category IS NOT NULL\nGROUP BY \"month!: String\", t.category\nORDER BY \"month!: String\" ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "month!: String",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "category!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "name": "amount!: i64",
+        "ordinal": 2,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null,
+      true,
+      null
+    ]
+  },
+  "hash": "6d690d5fe529c906b19775c1935f5ab42d90f7063145e9ed0d4aaebff2bfe5c0"
+}

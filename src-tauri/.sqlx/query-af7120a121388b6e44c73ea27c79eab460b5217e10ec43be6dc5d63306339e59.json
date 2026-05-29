@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS count\nFROM transactions t\nJOIN accounts a ON t.account_id = a.id\nWHERE a.space_id = ?1\n  AND t.approved = 1\n  AND t.category IS NOT NULL\n  AND t.category != ''\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "count",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "af7120a121388b6e44c73ea27c79eab460b5217e10ec43be6dc5d63306339e59"
+}

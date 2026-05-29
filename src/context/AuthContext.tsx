@@ -4,7 +4,9 @@ import type { User } from '@/types';
 
 interface AuthState {
   user: User | null;
+  spaceId: string | null;
   setUser: (user: User | null) => void;
+  setSpaceId: (spaceId: string | null) => void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -17,9 +19,10 @@ export const AuthProvider = ({
   children,
 }: AuthProviderProps): React.JSX.Element => {
   const [user, setUser] = useState<User | null>(null);
+  const [spaceId, setSpaceId] = useState<string | null>(null);
 
   return (
-    <AuthContext.Provider value={{ user, setUser }}>
+    <AuthContext.Provider value={{ user, spaceId, setUser, setSpaceId }}>
       {children}
     </AuthContext.Provider>
   );

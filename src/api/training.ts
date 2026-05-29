@@ -7,11 +7,8 @@ import type {
   TrainingSample,
 } from '@/types';
 
-export const fineTune = (
-  userId: string,
-  config: FinetuneConfig,
-): Promise<FinetuneResult> =>
-  invoke<FinetuneResult>('fine_tune', { userId, config });
+export const fineTune = (config: FinetuneConfig): Promise<FinetuneResult> =>
+  invoke<FinetuneResult>('fine_tune', { config });
 
 export const getTrainingProgress = (): Promise<FinetuneProgress[]> =>
   invoke<FinetuneProgress[]>('get_training_progress');
@@ -23,14 +20,13 @@ export const setActiveModel = (version: number): Promise<void> =>
   invoke<void>('set_active_model', { version });
 
 export const getTrainingSamples = (
-  userId: string,
   limit: number,
   version?: number,
 ): Promise<TrainingSample[]> =>
-  invoke<TrainingSample[]>('get_training_samples', { userId, limit, version });
+  invoke<TrainingSample[]>('get_training_samples', { limit, version });
 
-export const countApprovedTransactions = (userId: string): Promise<number> =>
-  invoke<number>('count_approved_transactions', { userId });
+export const countApprovedTransactions = (): Promise<number> =>
+  invoke<number>('count_approved_transactions');
 
 export const stopTraining = (): Promise<void> => invoke<void>('stop_training');
 

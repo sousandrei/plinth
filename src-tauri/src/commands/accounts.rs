@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::{db::DbPool, error::AppError};
+use crate::{db::DbPool, error::AppError, Session};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Account {
@@ -11,18 +11,21 @@ pub struct Account {
     pub account_type: String,
     pub account_source: String,
     pub color: String,
-    pub user_id: String,
+    pub space_id: String,
 }
 
 #[tauri::command]
 pub async fn list_accounts(
-    user_id: String,
+    session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<Vec<Account>, AppError> {
-    let accounts = sqlx::query_file_as!(Account, "queries/accounts/list_accounts.sql", user_id)
-        .fetch_all(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("list_accounts: {e}")))?;
+    let data = session.require()?;
+
+    let accounts =
+        sqlx::query_file_as!(Account, "queries/accounts/list_accounts.sql", data.space_id)
+            .fetch_all(db.inner())
+            .await
+            .map_err(|e| AppError::Db(format!("list_accounts: {e}")))?;
 
     Ok(accounts)
 }
@@ -32,6 +35,7 @@ pub async fn update_account(
     id: String,
     name: String,
     color: String,
+    session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<Account, AppError> {
     if name.trim().is_empty() {
@@ -41,14 +45,21 @@ pub async fn update_account(
         return Err(AppError::InvalidInput("color cannot be empty".into()));
     }
 
+    let data = session.require()?;
     let name = name.trim().to_string();
     let color = color.trim().to_string();
 
-    let rows = sqlx::query_file!("queries/accounts/update_account.sql", name, color, id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("update_account: {e}")))?
-        .rows_affected();
+    let rows = sqlx::query!(
+        "UPDATE accounts SET name = ?1, color = ?2 WHERE id = ?3 AND space_id = ?4",
+        name,
+        color,
+        id,
+        data.space_id
+    )
+    .execute(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("update_account: {e}")))?
+    .rows_affected();
 
     if rows == 0 {
         return Err(AppError::NotFound(format!("account {id}")));

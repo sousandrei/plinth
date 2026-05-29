@@ -4,7 +4,6 @@ import { CashFlowChart } from '@/components/dashboard/CashFlowChart';
 import { NetWorthAllocation } from '@/components/dashboard/NetWorthAllocation';
 import { NetWorthHero } from '@/components/dashboard/NetWorthHero';
 import { SpendingByCategory } from '@/components/dashboard/SpendingByCategory';
-import { useAuth } from '@/context/AuthContext';
 import { useDashboard } from '@/hooks/useDashboard';
 
 export const Route = createFileRoute('/')({
@@ -12,8 +11,7 @@ export const Route = createFileRoute('/')({
 });
 
 function Dashboard(): React.JSX.Element {
-  const { user } = useAuth();
-  const { data } = useDashboard(user?.id ?? null);
+  const { data } = useDashboard();
 
   return (
     <div className="max-w-[1200px] mx-auto px-6 py-10 space-y-4">

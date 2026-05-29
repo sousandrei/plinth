@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT sm.user_id AS \"user_id!: String\", sm.role AS \"role!: String\", u.name AS \"name!: String\"\nFROM space_members sm\nINNER JOIN users u ON u.id = sm.user_id\nWHERE sm.space_id = ?1\nORDER BY sm.joined_at ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "name": "role!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "name": "name!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b6c6723dbdc5bcbe9209f9454cd34eac0b90113aae8299e57bc2711aa3ae6533"
+}

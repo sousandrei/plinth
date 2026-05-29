@@ -7,11 +7,10 @@ export interface AccountSummaryPage {
 }
 
 export const listAccountSummaries = (
-  userId: string,
   page: number,
   limit: number,
 ): Promise<AccountSummaryPage> =>
-  invoke<AccountSummaryPage>('list_account_summaries', { userId, page, limit });
+  invoke<AccountSummaryPage>('list_account_summaries', { page, limit });
 
 export const upsertAccountSummary = (
   month: string,

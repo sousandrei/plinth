@@ -8,9 +8,9 @@ export const Route = createRootRoute({
 });
 
 function RootLayout(): React.JSX.Element {
-  const { user } = useAuth();
+  const { user, spaceId } = useAuth();
 
-  if (!user) {
+  if (!user || !spaceId) {
     return <LoginPage />;
   }
 

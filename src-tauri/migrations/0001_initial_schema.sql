@@ -1,4 +1,4 @@
--- V001: initial schema
+-- V001: initial schema (spaces-based multi-user)
 --
 -- SQLite translation of the PostgreSQL schema with improvements:
 --   - TIMESTAMPTZ  -> TEXT     (ISO 8601 "YYYY-MM-DD"; sorts lexicographically)
@@ -8,6 +8,9 @@
 --   - aggregated_months dropped — aggregations computed live from transactions
 --   - pg_trgm full-text search replaced by FTS5 virtual table + sync triggers
 --   - app_settings added for local preferences
+--   - spaces + space_members + space_settings added for multi-user tenancy
+--   - accounts.user_id replaced by accounts.space_id
+--   - categories scoped per-space; default categories seeded at space creation
 
 CREATE TABLE IF NOT EXISTS users (
     id         TEXT PRIMARY KEY NOT NULL,
@@ -17,23 +20,36 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
-CREATE TABLE IF NOT EXISTS categories (
-    id    TEXT PRIMARY KEY NOT NULL,
-    name  TEXT UNIQUE NOT NULL,
-    color TEXT NOT NULL DEFAULT '#6b7280'
+CREATE TABLE IF NOT EXISTS spaces (
+    id         TEXT PRIMARY KEY NOT NULL,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
-INSERT OR IGNORE INTO categories (id, name, color) VALUES
-    ('cat_salary', 'Salary', '#22c55e'),
-    ('cat_other_income', 'Other Income', '#10b981'),
-    ('cat_savings_investments', 'Savings & Investments', '#06b6d4'),
-    ('cat_household_services', 'Household & Services', '#3b82f6'),
-    ('cat_transport', 'Transport', '#6366f1'),
-    ('cat_food_drinks', 'Food & Drinks', '#f97316'),
-    ('cat_shopping', 'Shopping', '#ec4899'),
-    ('cat_health_beauty', 'Health & Beauty', '#8b5cf6'),
-    ('cat_leisure', 'Leisure', '#eab308'),
-    ('cat_other', 'Other', '#6b7280');
+CREATE TABLE IF NOT EXISTS space_members (
+    space_id  TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    user_id   TEXT NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+    role      TEXT NOT NULL DEFAULT 'member',   -- 'owner' | 'member'
+    joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (space_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS space_settings (
+    space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    key      TEXT NOT NULL,
+    value    TEXT NOT NULL,
+    PRIMARY KEY (space_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id       TEXT PRIMARY KEY NOT NULL,
+    name     TEXT NOT NULL,
+    color    TEXT NOT NULL DEFAULT '#6b7280',
+    space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    UNIQUE (space_id, name)
+);
+
 
 CREATE TABLE IF NOT EXISTS accounts (
     id             TEXT PRIMARY KEY NOT NULL,
@@ -42,7 +58,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     account_type   TEXT NOT NULL,
     account_source TEXT NOT NULL,
     color          TEXT NOT NULL DEFAULT '#6b7280',
-    user_id        TEXT NOT NULL REFERENCES users (id)
+    space_id       TEXT NOT NULL REFERENCES spaces (id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -56,13 +72,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     balance      INTEGER NOT NULL,
     approved     INTEGER NOT NULL DEFAULT 0,    -- 0 = false, 1 = true
     note         TEXT    NOT NULL DEFAULT '',
-    category     TEXT    REFERENCES categories (name), -- Nullable (can be uncategorized)
-    account_id   TEXT    NOT NULL REFERENCES accounts (id)
+    category     TEXT,                          -- nullable; references categories.name within the space
+    account_id   TEXT    NOT NULL REFERENCES accounts (id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS account_summaries (
     month      TEXT    NOT NULL,
-    account_id TEXT    NOT NULL REFERENCES accounts (id),
+    account_id TEXT    NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
     balance    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (month, account_id)
 );
@@ -101,6 +117,11 @@ CREATE TRIGGER IF NOT EXISTS users_au AFTER UPDATE ON users BEGIN
     UPDATE users SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = new.id;
 END;
 
+-- Trigger to keep spaces.updated_at current
+CREATE TRIGGER IF NOT EXISTS spaces_au AFTER UPDATE ON spaces BEGIN
+    UPDATE spaces SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = new.id;
+END;
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_transactions_account_value_date
     ON transactions (account_id, value_date DESC, text ASC);
@@ -114,5 +135,11 @@ CREATE INDEX IF NOT EXISTS idx_transactions_category
 CREATE INDEX IF NOT EXISTS idx_transactions_value_date
     ON transactions (account_id, value_date);
 
-CREATE INDEX IF NOT EXISTS idx_accounts_user_id
-    ON accounts (user_id);
+CREATE INDEX IF NOT EXISTS idx_accounts_space_id
+    ON accounts (space_id);
+
+CREATE INDEX IF NOT EXISTS idx_categories_space_id
+    ON categories (space_id);
+
+CREATE INDEX IF NOT EXISTS idx_space_members_user_id
+    ON space_members (user_id);

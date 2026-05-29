@@ -58,7 +58,7 @@ function deriveData(
   };
 }
 
-export function useDashboard(userId: string | null): {
+export function useDashboard(): {
   data: DashboardData | null;
   isLoading: boolean;
   isError: boolean;
@@ -72,17 +72,15 @@ export function useDashboard(userId: string | null): {
   });
 
   const accountsQuery = useQuery({
-    queryKey: ['accounts', isDemoMode ? 'demo' : userId],
-    queryFn: isDemoMode ? getDemoAccounts : () => listAccounts(userId ?? ''),
-    enabled: isDemoMode || !!userId,
+    queryKey: ['accounts', isDemoMode ? 'demo' : 'live'],
+    queryFn: isDemoMode ? getDemoAccounts : listAccounts,
+    enabled: true,
   });
 
   const aggregationsQuery = useQuery({
-    queryKey: ['aggregations', isDemoMode ? 'demo' : userId],
-    queryFn: isDemoMode
-      ? getDemoAggregations
-      : () => getAggregations(userId ?? ''),
-    enabled: isDemoMode || !!userId,
+    queryKey: ['aggregations', isDemoMode ? 'demo' : 'live'],
+    queryFn: isDemoMode ? getDemoAggregations : getAggregations,
+    enabled: true,
   });
 
   const isLoading = accountsQuery.isLoading || aggregationsQuery.isLoading;

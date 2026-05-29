@@ -38,11 +38,11 @@ fn clean_text(text: &str) -> String {
 
 pub async fn load_approved(
     pool: &DbPool,
-    user_id: &str,
+    space_id: &str,
     tokenizer: &Tokenizer,
     classes: &[String],
 ) -> Result<Vec<TransactionSample>, AppError> {
-    let rows = sqlx::query_file!("queries/training/get_approved_transactions.sql", user_id)
+    let rows = sqlx::query_file!("queries/training/get_approved_transactions.sql", space_id)
         .fetch_all(pool)
         .await
         .map_err(|e| AppError::Db(format!("load_approved: {e}")))?;

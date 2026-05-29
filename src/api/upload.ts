@@ -21,12 +21,10 @@ export const listParsers = (): Promise<ParserInfo[]> =>
   invoke<ParserInfo[]>('list_parsers');
 
 export const uploadFile = (
-  userId: string,
   filePath: string,
   parserKey: string,
 ): Promise<UploadResult> =>
   invoke<UploadResult>('upload_file', {
-    userId,
     filePath,
     parserKey,
   });

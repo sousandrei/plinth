@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM categories\nWHERE id = ?1 AND space_id = ?2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d8d567a0398a659d44708a3ab3dc54a0907301385a255c95066fcbb96d8ae62f"
+}

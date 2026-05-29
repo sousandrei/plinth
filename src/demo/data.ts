@@ -39,7 +39,7 @@ export const DEMO_ACCOUNTS: Account[] = [
     account_type: 'checking',
     account_source: 'import',
     color: '#3b82f6',
-    user_id: 'demo',
+    space_id: 'demo',
   },
   {
     id: 'demo-savings',
@@ -48,7 +48,7 @@ export const DEMO_ACCOUNTS: Account[] = [
     account_type: 'savings',
     account_source: 'import',
     color: '#10b981',
-    user_id: 'demo',
+    space_id: 'demo',
   },
   {
     id: 'demo-invest',
@@ -57,7 +57,7 @@ export const DEMO_ACCOUNTS: Account[] = [
     account_type: 'investment',
     account_source: 'import',
     color: '#8b5cf6',
-    user_id: 'demo',
+    space_id: 'demo',
   },
 ];
 

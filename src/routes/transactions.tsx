@@ -11,7 +11,6 @@ import { TransactionTable } from '@/components/transactions/TransactionTable';
 import { UploadDialog } from '@/components/transactions/UploadDialog';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Pagination } from '@/components/ui/Pagination';
-import { useAuth } from '@/context/AuthContext';
 import { getDemoCategories, getDemoTransactions } from '@/demo/generators';
 import { useDemoMode } from '@/hooks/useDemoMode';
 import { updateCategoryColors } from '@/lib/category-color';
@@ -20,7 +19,6 @@ import { cn } from '@/lib/util';
 const PAGE_SIZE = 15;
 
 function Transactions(): React.JSX.Element {
-  const { user } = useAuth();
   const { isDemoMode } = useDemoMode();
   const [page, setPage] = useState(0);
   const [filters, setFilters] = useState<FilterState>({
@@ -56,7 +54,7 @@ function Transactions(): React.JSX.Element {
   const { data, isLoading, isError, isFetching } = useQuery({
     queryKey: [
       'transactions',
-      isDemoMode ? 'demo' : user?.id,
+      isDemoMode ? 'demo' : 'live',
       page,
       debouncedSearch,
       filters.approved,
@@ -67,7 +65,6 @@ function Transactions(): React.JSX.Element {
     queryFn: isDemoMode
       ? () =>
           getDemoTransactions({
-            userId: 'demo',
             page,
             limit: PAGE_SIZE,
             search: debouncedSearch || undefined,
@@ -81,7 +78,6 @@ function Transactions(): React.JSX.Element {
           })
       : () =>
           listTransactions({
-            userId: user?.id ?? '',
             page,
             limit: PAGE_SIZE,
             search: debouncedSearch || undefined,
@@ -93,7 +89,7 @@ function Transactions(): React.JSX.Element {
             dateFrom: filters.dateFrom || undefined,
             dateTo: filters.dateTo || undefined,
           }),
-    enabled: isDemoMode || !!user,
+    enabled: true,
     placeholderData: (prev) => prev,
   });
 

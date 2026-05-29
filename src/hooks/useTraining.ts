@@ -24,11 +24,10 @@ import type {
 
 const MODELS_KEY = ['models'] as const;
 const PROGRESS_KEY = ['training-progress'] as const;
-const APPROVED_COUNT_KEY = (userId: string) =>
-  ['approved-count', userId] as const;
+const APPROVED_COUNT_KEY = ['approved-count'] as const;
 const SAMPLES_KEY_PREFIX = ['training-samples'] as const;
-const SAMPLES_KEY = (userId: string, limit: number, version: number | null) =>
-  ['training-samples', userId, limit, version] as const;
+const SAMPLES_KEY = (limit: number, version: number | null) =>
+  ['training-samples', limit, version] as const;
 
 const DEFAULT_CONFIG: FinetuneConfig = {
   epochs: 10,
@@ -62,7 +61,6 @@ export interface TrainingState {
 }
 
 export function useTraining(
-  userId: string | null,
   selectedVersion: number | null = null,
 ): TrainingState {
   const queryClient = useQueryClient();
@@ -127,26 +125,22 @@ export function useTraining(
   });
 
   const samplesQuery = useQuery({
-    queryKey: SAMPLES_KEY(userId ?? '', SAMPLES_LIMIT, selectedVersion),
+    queryKey: SAMPLES_KEY(SAMPLES_LIMIT, selectedVersion),
     queryFn: () =>
-      getTrainingSamples(
-        userId ?? '',
-        SAMPLES_LIMIT,
-        selectedVersion ?? undefined,
-      ),
-    enabled: !!userId && isClassifierReady,
+      getTrainingSamples(SAMPLES_LIMIT, selectedVersion ?? undefined),
+    enabled: isClassifierReady,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
 
   const approvedCountQuery = useQuery({
-    queryKey: APPROVED_COUNT_KEY(userId ?? ''),
-    queryFn: () => countApprovedTransactions(userId ?? ''),
-    enabled: !!userId,
+    queryKey: APPROVED_COUNT_KEY,
+    queryFn: countApprovedTransactions,
+    enabled: true,
   });
 
   const trainMutation = useMutation({
-    mutationFn: (config: FinetuneConfig) => fineTune(userId ?? '', config),
+    mutationFn: (config: FinetuneConfig) => fineTune(config),
     onMutate: () => {
       queryClient.setQueryData(PROGRESS_KEY, []);
     },
@@ -203,9 +197,9 @@ export function useTraining(
 
   const handleRefreshSamples = useCallback(() => {
     queryClient.invalidateQueries({
-      queryKey: SAMPLES_KEY(userId ?? '', SAMPLES_LIMIT, selectedVersion),
+      queryKey: SAMPLES_KEY(SAMPLES_LIMIT, selectedVersion),
     });
-  }, [queryClient, userId, selectedVersion]);
+  }, [queryClient, selectedVersion]);
 
   const mutationError =
     trainMutation.error ?? activateMutation.error ?? deleteMutation.error;

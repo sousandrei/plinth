@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT role AS \"role!: String\"\nFROM space_members\nWHERE space_id = ?1 AND user_id = ?2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "role!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "role"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b2c6e9ef7dd8d99a014cef445184f3db155bc7ba6e952deaefed6e9cd758af4a"
+}

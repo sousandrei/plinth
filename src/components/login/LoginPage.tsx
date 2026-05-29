@@ -1,17 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import { listMySpaces } from '@/api/spaces';
 import { listUsers } from '@/api/users';
 import { useAuth } from '@/context/AuthContext';
 import type { User } from '@/types';
 import { PinStage } from './PinStage';
 import { RegisterForm } from './RegisterForm';
+import { SpacePickerStage } from './SpacePickerStage';
 import { UserSelect } from './UserSelect';
 
-type Stage = 'loading' | 'register' | 'select' | 'pin';
+type Stage = 'loading' | 'register' | 'select' | 'pin' | 'space';
 type Direction = 'forward' | 'back';
 
 export const LoginPage = (): React.JSX.Element => {
-  const { setUser } = useAuth();
+  const { setUser, setSpaceId } = useAuth();
   const [stage, setStage] = useState<Stage>('loading');
   const [direction, setDirection] = useState<Direction>('forward');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -41,6 +43,46 @@ export const LoginPage = (): React.JSX.Element => {
     setStage('select');
   };
 
+  const handlePinSuccess = async (user: User) => {
+    // After PIN, check how many spaces this user has.
+    // The backend auto-selects when there is exactly one, so we only
+    // need to show the picker when there are multiple.
+    try {
+      const spaces = await listMySpaces();
+      if (spaces.length === 1) {
+        // Backend already set the active space — mirror it in the frontend.
+        setUser(user);
+        setSpaceId(spaces[0].id);
+      } else {
+        // Multiple spaces: show the picker (session is set, no space yet).
+        setSelectedUser(user);
+        setDirection('forward');
+        setStage('space');
+      }
+    } catch {
+      // Fallback: enter the app anyway; commands will return Unauthorized if
+      // something is wrong server-side.
+      setUser(user);
+    }
+  };
+
+  const handleSpaceSelected = (spaceId: string) => {
+    if (!selectedUser) return;
+    setSpaceId(spaceId);
+    setUser(selectedUser);
+  };
+
+  const handleRegistered = async (user: User) => {
+    // createUser auto-creates exactly one space and sets the full session.
+    try {
+      const spaces = await listMySpaces();
+      setUser(user);
+      setSpaceId(spaces[0]?.id ?? null);
+    } catch {
+      setUser(user);
+    }
+  };
+
   const animClass =
     direction === 'forward'
       ? 'animate-slide-in-right'
@@ -66,13 +108,7 @@ export const LoginPage = (): React.JSX.Element => {
           </div>
         )}
 
-        {stage === 'register' && (
-          <RegisterForm
-            onCreated={(user) => {
-              setUser(user);
-            }}
-          />
-        )}
+        {stage === 'register' && <RegisterForm onCreated={handleRegistered} />}
 
         {stage === 'select' && users && (
           <div key="select" className={animClass}>
@@ -85,8 +121,14 @@ export const LoginPage = (): React.JSX.Element => {
             <PinStage
               user={selectedUser}
               onBack={users && users.length > 1 ? goBack : undefined}
-              onSuccess={setUser}
+              onSuccess={handlePinSuccess}
             />
+          </div>
+        )}
+
+        {stage === 'space' && (
+          <div key="space" className={animClass}>
+            <SpacePickerStage onSuccess={handleSpaceSelected} />
           </div>
         )}
       </div>

@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.month AS \"month!: String\",\n       s.account_id AS \"account_id!: String\",\n       s.balance AS \"balance!: i64\"\nFROM account_summaries s\nINNER JOIN accounts a ON a.id = s.account_id\nWHERE a.space_id = ?\nORDER BY s.month DESC, a.name ASC\nLIMIT ? OFFSET ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "month!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "month"
+          }
+        }
+      },
+      {
+        "name": "account_id!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "balance!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "balance"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6151b73aab3e502573fb22828504a75da172e12276bedb4041180627e255ecba"
+}

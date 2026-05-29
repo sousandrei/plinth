@@ -9,7 +9,7 @@ use crate::import::{
     extract::extract,
     registry::{find, scan, ParserUnit},
 };
-use crate::AppError;
+use crate::{AppError, Session};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -82,13 +82,14 @@ pub async fn list_parsers(app: AppHandle) -> Result<Vec<ParserUnitInfo>, AppErro
 
 #[tauri::command]
 pub async fn upload_file(
-    user_id: String,
     file_path: String,
     parser_key: String,
     app: AppHandle,
+    session: State<'_, Session>,
     db: State<'_, DbPool>,
     classifier: State<'_, crate::ClassifierState>,
 ) -> Result<UploadResult, AppError> {
+    let space_id = session.require()?.space_id;
     let path = PathBuf::from(&file_path);
     let mut logs = Vec::new();
 
@@ -141,7 +142,7 @@ pub async fn upload_file(
             logs.push("Ensuring target account exists in database...".to_string());
             ensure_account_exists(
                 db.inner(),
-                &user_id,
+                &space_id,
                 &account_id,
                 &account_id,
                 account_type,
@@ -173,7 +174,7 @@ pub async fn upload_file(
             logs.push("Ensuring target account exists in database...".to_string());
             ensure_account_exists(
                 db.inner(),
-                &user_id,
+                &space_id,
                 &account_id,
                 &account_id,
                 account_type,
@@ -206,7 +207,7 @@ pub async fn upload_file(
             logs.push("Ensuring target account exists in database...".to_string());
             ensure_account_exists(
                 db.inner(),
-                &user_id,
+                &space_id,
                 &account_id,
                 &account_id,
                 "investment",
@@ -247,7 +248,7 @@ pub async fn upload_file(
 
 async fn ensure_account_exists(
     db: &DbPool,
-    user_id: &str,
+    space_id: &str,
     account_id: &str,
     name: &str,
     account_type: &str,
@@ -261,7 +262,7 @@ async fn ensure_account_exists(
         currency,
         account_type,
         account_source,
-        user_id
+        space_id
     )
     .execute(db)
     .await

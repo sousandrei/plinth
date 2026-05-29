@@ -1,0 +1,45 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT month                    AS \"month!: String\",\n       account_id               AS \"account_id!: String\",\n       balance                  AS \"balance!: i64\"\nFROM (\n    SELECT strftime('%Y-%m', t.value_date)                         AS month,\n           t.account_id                                            AS account_id,\n           t.balance                                               AS balance,\n           MAX(t.value_date) OVER (\n               PARTITION BY t.account_id, strftime('%Y-%m', t.value_date)\n           )                                                       AS max_date,\n           t.value_date\n    FROM transactions t\n    INNER JOIN accounts a ON a.id = t.account_id\n    WHERE a.space_id = ?\n      AND a.account_type IN ('checking', 'savings')\n)\nWHERE value_date = max_date\nORDER BY month ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "month!: String",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "account_id!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "balance!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "balance"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "ccc2f8dcfbd8ce24393c1e45021801fa3e97702658570cbf4540cb870d41c396"
+}

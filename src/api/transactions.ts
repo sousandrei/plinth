@@ -6,7 +6,6 @@ export const listTransactions = (
 ): Promise<TransactionPage> =>
   invoke<TransactionPage>('list_transactions', {
     params: {
-      user_id: params.userId,
       page: params.page,
       limit: params.limit,
       search: params.search,

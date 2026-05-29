@@ -8,7 +8,6 @@ import { ModelDetail } from '@/components/training/ModelDetail';
 import { ProgressChart } from '@/components/training/ProgressChart';
 import { SamplePredictions } from '@/components/training/SamplePredictions';
 import { TrainingControls } from '@/components/training/TrainingControls';
-import { useAuth } from '@/context/AuthContext';
 import { useTraining } from '@/hooks/useTraining';
 import type { ModelCard } from '@/types';
 
@@ -17,9 +16,8 @@ export const Route = createFileRoute('/training')({
 });
 
 function TrainingPage(): React.JSX.Element {
-  const { user } = useAuth();
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
-  const training = useTraining(user?.id ?? null, selectedVersion);
+  const training = useTraining(selectedVersion);
 
   // Fetch active compile-time training hardware
   const { data: device = 'CPU' } = useQuery({

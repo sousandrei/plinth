@@ -3,6 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { factoryReset, updateUserName } from '@/api/users';
 import { DangerZoneCard } from '@/components/settings/DangerZoneCard';
 import { ProfileSettingsCard } from '@/components/settings/ProfileSettingsCard';
+import { SpaceCard } from '@/components/settings/SpaceCard';
 import { Switch } from '@/components/ui/Switch';
 import { useAuth } from '@/context/AuthContext';
 import { useDemoMode } from '@/hooks/useDemoMode';
@@ -63,6 +64,8 @@ function Settings(): React.JSX.Element {
           onSave={(newName) => updateMutation.mutate(newName)}
           isPending={updateMutation.isPending}
         />
+
+        <SpaceCard />
 
         {/* Demo Mode */}
         <div className="border border-border-muted bg-canvas-raised">

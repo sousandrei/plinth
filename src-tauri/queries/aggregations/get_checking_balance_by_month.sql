@@ -11,7 +11,7 @@ FROM (
            t.value_date
     FROM transactions t
     INNER JOIN accounts a ON a.id = t.account_id
-    WHERE a.user_id = ?
+    WHERE a.space_id = ?
       AND a.account_type IN ('checking', 'savings')
 )
 WHERE value_date = max_date

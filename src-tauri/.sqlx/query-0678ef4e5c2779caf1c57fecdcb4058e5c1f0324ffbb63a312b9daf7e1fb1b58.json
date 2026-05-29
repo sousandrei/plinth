@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions SET approved = ?1, note = ?2, category = ?3\n         WHERE id = ?4\n           AND account_id IN (SELECT id FROM accounts WHERE space_id = ?5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "0678ef4e5c2779caf1c57fecdcb4058e5c1f0324ffbb63a312b9daf7e1fb1b58"
+}
