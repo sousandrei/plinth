@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- 10.3 Hard 90-day cap: delete any change_log row older than 90 days\n-- regardless of cursor state. A device offline for >90 days will fall\n-- through to the full-snapshot fallback (data/PLAN.md §7.3) instead of\n-- catching up via delta. See data/PLAN.md §10.3.\nDELETE FROM change_log\nWHERE changed_at < datetime('now', '-90 days')\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "09f849dcf87ddd90aae953f5046da99d5ba83c13659282fd77c050f59c718c26"
+}

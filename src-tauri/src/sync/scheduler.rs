@@ -8,6 +8,7 @@ use tokio::time::sleep;
 
 use crate::sync::client;
 use crate::sync::discovery::PeerRegistry;
+use crate::sync::gc;
 use crate::sync::identity::DeviceIdentity;
 
 /// How often the scheduler wakes and attempts to sync with every known peer.
@@ -53,8 +54,15 @@ async fn run(peers: PeerRegistry, db: SqlitePool, identity: Arc<DeviceIdentity>)
             let device_id = peer.device_id.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = client::dial(&peer, &db, &identity).await {
-                    eprintln!("scheduler: dial {} failed: {e}", peer.device_id);
+                match client::dial(&peer, &db, &identity).await {
+                    Ok(()) => {
+                        if let Err(e) = gc::run(&db).await {
+                            eprintln!("scheduler: gc after dial {}: {e}", peer.device_id);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("scheduler: dial {} failed: {e}", peer.device_id);
+                    }
                 }
                 in_flight.lock().unwrap().remove(&device_id);
             });

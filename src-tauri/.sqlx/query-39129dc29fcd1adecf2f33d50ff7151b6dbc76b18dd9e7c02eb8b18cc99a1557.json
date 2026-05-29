@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- 10.1 Compaction: for each (space_id, table_name, row_id) tuple, keep\n-- only the highest-seq entry. Earlier inserts/updates are redundant once\n-- a newer change exists for the same logical row. Runs after every\n-- successful sync session. See data/PLAN.md §10.1.\nDELETE FROM change_log\nWHERE id NOT IN (\n    SELECT id\n    FROM change_log\n    GROUP BY space_id, table_name, row_id\n    HAVING seq = MAX(seq)\n)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "39129dc29fcd1adecf2f33d50ff7151b6dbc76b18dd9e7c02eb8b18cc99a1557"
+}

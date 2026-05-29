@@ -7,6 +7,7 @@ pub mod conflict_detector;
 pub mod cursors;
 pub mod discovery;
 pub mod frame;
+pub mod gc;
 pub mod identity;
 pub mod pairing;
 pub mod payloads;

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- 10.2 All-peers-consumed GC: delete change_log rows that every active\n-- (sync_enabled = 1) trusted peer for the same space has already consumed,\n-- i.e. their sync_cursors.last_seq >= the row's seq.\n--\n-- Guard: only GC rows where at least one trusted+enabled peer exists for\n-- the space. With no peers the subquery would trivially match everything\n-- and silently erase un-synced history.\n--\n-- A missing sync_cursors row (peer hasn't synced yet) is treated as\n-- last_seq = -1 so those rows are never deleted. See data/PLAN.md §10.2.\nDELETE FROM change_log\nWHERE (\n    SELECT COUNT(*)\n    FROM trusted_devices td\n    WHERE td.space_id  = change_log.space_id\n      AND td.sync_enabled = 1\n) > 0\nAND NOT EXISTS (\n    SELECT 1\n    FROM trusted_devices td\n    WHERE td.space_id  = change_log.space_id\n      AND td.sync_enabled = 1\n      AND COALESCE(\n              (SELECT sc.last_seq\n               FROM sync_cursors sc\n               WHERE sc.space_id       = change_log.space_id\n                 AND sc.peer_device_id = td.device_id),\n              -1\n          ) < change_log.seq\n)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "c4f4ab35e96f640272b80a7e307c023ca441725be2eb1fa7f6676a27fecd963f"
+}
