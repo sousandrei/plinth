@@ -10,6 +10,7 @@ pub mod frame;
 pub mod identity;
 pub mod pairing;
 pub mod payloads;
+pub mod scheduler;
 pub mod server;
 pub mod session;
 pub mod startup;
