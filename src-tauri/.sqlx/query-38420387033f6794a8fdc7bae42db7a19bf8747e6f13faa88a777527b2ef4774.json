@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO trusted_devices (id, space_id, device_id, display_name, cert_pem)\nVALUES (?1, ?2, ?3, ?4, ?5)\nON CONFLICT (space_id, device_id) DO UPDATE SET\n    display_name = excluded.display_name,\n    cert_pem     = excluded.cert_pem,\n    sync_enabled = 1\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "38420387033f6794a8fdc7bae42db7a19bf8747e6f13faa88a777527b2ef4774"
+}

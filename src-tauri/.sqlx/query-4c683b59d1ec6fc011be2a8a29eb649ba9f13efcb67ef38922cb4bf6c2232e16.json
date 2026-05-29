@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Read this device's persistent identity (cert + key + device_id) at once.\n-- All three rows are initialized at first launch by db::init_sync_settings\n-- and lazily filled by sync::identity::ensure_identity on first pairing.\nSELECT key AS \"key!\", value AS \"value!\"\nFROM app_settings\nWHERE key IN ('device_id', 'device_cert_pem', 'device_key_pem')\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "key!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_settings",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "name": "value!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "app_settings",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4c683b59d1ec6fc011be2a8a29eb649ba9f13efcb67ef38922cb4bf6c2232e16"
+}

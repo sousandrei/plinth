@@ -49,11 +49,27 @@ tasks:
     cmds:
       - cargo fmt --all
 
+  db:setup:
+    desc: Create the local dev SQLite DB and apply migrations
+    dir: src-tauri
+    cmds:
+      - cargo sqlx database create
+      - cargo sqlx migrate run
+
+  db:reset:
+    desc: Drop, recreate, and re-migrate the local dev SQLite DB
+    dir: src-tauri
+    cmds:
+      - cargo sqlx database drop -y
+      - cargo sqlx database create
+      - cargo sqlx migrate run
+
   sqlx:prepare:
     desc: Regenerate SQLx offline query cache metadata (.sqlx json files)
     dir: src-tauri
     cmds:
-      - DATABASE_URL="sqlite:///${HOME}/.local/share/plinth/plinth.db" cargo sqlx prepare
+      - task: db:reset
+      - cargo sqlx prepare
 
   package:
     desc: Build and package the production desktop application (CPU)

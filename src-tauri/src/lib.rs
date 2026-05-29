@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod error;
 mod import;
+mod sync;
 
 pub use error::AppError;
 use std::sync::{Arc, Mutex};
@@ -153,6 +154,12 @@ pub fn run() {
             app.manage(commands::training::CancelToken::default());
             app.manage(Session::new());
 
+            let peer_registry = sync::PeerRegistry::new();
+            app.manage(peer_registry.clone());
+            app.manage(Arc::new(sync::PairingState::new()));
+            let db = app.state::<db::DbPool>().inner().clone();
+            sync::discovery::spawn(app.handle().clone(), db, peer_registry);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -205,6 +212,12 @@ pub fn run() {
             commands::minilm::ensure_minilm,
             commands::settings::get_app_setting,
             commands::settings::set_app_setting,
+            commands::sync::list_peers,
+            commands::sync::list_trusted_devices,
+            commands::sync::remove_trusted_device,
+            commands::sync::set_trusted_device_sync,
+            commands::sync::generate_pair_token,
+            commands::sync::accept_pair_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

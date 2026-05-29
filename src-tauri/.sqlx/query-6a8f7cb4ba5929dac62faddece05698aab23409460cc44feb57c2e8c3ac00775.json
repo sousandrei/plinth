@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    id           AS \"id!\",\n    space_id     AS \"space_id!\",\n    device_id    AS \"device_id!\",\n    display_name AS \"display_name!\",\n    sync_enabled AS \"sync_enabled!\",\n    paired_at    AS \"paired_at!\"\nFROM trusted_devices\nWHERE space_id = ?1\nORDER BY paired_at\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "space_id!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "device_id!",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "display_name!",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "sync_enabled!",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "sync_enabled"
+          }
+        }
+      },
+      {
+        "name": "paired_at!",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "paired_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6a8f7cb4ba5929dac62faddece05698aab23409460cc44feb57c2e8c3ac00775"
+}

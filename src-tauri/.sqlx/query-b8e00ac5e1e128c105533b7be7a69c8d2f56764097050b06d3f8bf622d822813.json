@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app_settings (key, value) VALUES ('sync_seq', '0')\nON CONFLICT (key) DO NOTHING\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "b8e00ac5e1e128c105533b7be7a69c8d2f56764097050b06d3f8bf622d822813"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO space_members (space_id, user_id, role)\nVALUES (?1, ?2, ?3)\nON CONFLICT (space_id, user_id) DO UPDATE SET role = excluded.role\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "1a0e3013280331e713a3bf86a46e0dfa0027c1ecef995668bb6324c89dc53687"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "-- All space IDs known on this device. Advertised over mDNS so peers can\n-- decide whether to attempt a sync session with us.\n--\n-- In Step 3 this will narrow to spaces with at least one\n-- trusted_devices row where sync_enabled = 1, so untrusted spaces are\n-- never advertised.\nSELECT id AS \"id!\"\nFROM spaces\nORDER BY id\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "060b2c9aa614fa72337a8e037d455c42070b5f29ba0c7ad0ee647f9b653df7e6"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM trusted_devices\nWHERE space_id = ?1 AND id = ?2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "9700f8a0c97e8041a758affbc91046bd59b619e982dfee5cf5c03e71cd1d8a4e"
+}

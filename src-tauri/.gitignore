@@ -2,7 +2,6 @@
 /gen/schemas
 /node_modules/
 
-.env
 dev.db
 dev.db-wal
 dev.db-shm

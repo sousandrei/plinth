@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app_settings (key, value) VALUES ('device_id', ?1)\nON CONFLICT (key) DO NOTHING\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "614334b621e3dfdf3d64d3a57d6d6355d88c17398ccd1471c89837efd157549d"
+}
