@@ -264,7 +264,7 @@ pub async fn delete_space(
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
 
-    sqlx::query!("DELETE FROM spaces WHERE id = ?1", data.space_id)
+    sqlx::query_file!("queries/spaces/delete_space.sql", data.space_id)
         .execute(db.inner())
         .await
         .map_err(|e| AppError::Db(format!("delete_space: {e}")))?;

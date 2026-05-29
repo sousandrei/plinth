@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Byte-identical today to `queries/account_summaries/upsert_account_summary.sql`,\n-- intentionally duplicated. App queries enforce caller-side invariants\n-- and can evolve with UI requirements; apply queries must stay bit-stable\n-- across versions so LWW semantics never silently shift. The full set\n-- of statements that run under `applying_as_device` lives in this\n-- directory and nowhere else.\nINSERT INTO account_summaries (month, account_id, balance)\nVALUES (?1, ?2, ?3)\nON CONFLICT(month, account_id) DO UPDATE SET\n    balance = excluded.balance;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "29074cd936a0ef3002bb1c60fbb825013620a0baff1fc2874801ab099014be15"
+}

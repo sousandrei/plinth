@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Fetches the current category/note for a transaction, used as the\n-- \"local\" side of hot-field conflict detection. Returns no rows if\n-- the transaction hasn't been seen yet on this device.\nSELECT category, note\nFROM transactions\nWHERE id = ?1;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "category",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "name": "note",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "note"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "4b633418d8bab4522bf89d19201e494c84f08c106dc39a865fafabed9417d08f"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Apply a `users` upsert ridden inside a `space_members` payload.\n-- Users never have their own change_log entries; their rows propagate\n-- via the embedded UserSnapshot inside SpaceMember payloads\n-- (`data/PLAN.md §4`). Triggers fire for the wrapping space_members\n-- write, not for this row.\nINSERT INTO users (id, name, pin_hash, created_at, updated_at)\nVALUES (?1, ?2, ?3, ?4, ?5)\nON CONFLICT(id) DO UPDATE SET\n    name       = excluded.name,\n    pin_hash   = excluded.pin_hash,\n    updated_at = excluded.updated_at;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "9ee7462c8d55f1d7746018791ad08c6fc022ee9acc055db1ce71bae704f26176"
+}

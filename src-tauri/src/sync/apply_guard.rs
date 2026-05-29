@@ -70,12 +70,14 @@ mod tests {
             .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         // Seed the device_id/sync_seq keys the same way db.rs does on
-        // first launch.
-        sqlx::query("INSERT INTO app_settings (key, value) VALUES ('device_id', 'local-device')")
+        // first launch. Reusing the production init queries keeps the
+        // test surface aligned with real startup behavior.
+        let device_id = "local-device";
+        sqlx::query_file!("queries/settings/init_device_id.sql", device_id)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO app_settings (key, value) VALUES ('sync_seq', '0')")
+        sqlx::query_file!("queries/settings/init_sync_seq.sql")
             .execute(&pool)
             .await
             .unwrap();
@@ -89,11 +91,10 @@ mod tests {
             .await
             .unwrap();
 
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM app_settings WHERE key = 'applying_as_device'")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
+        let row = sqlx::query_file!("queries/tests/get_apply_override.sql")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
         assert!(row.is_none(), "override leaked after successful apply");
     }
 
@@ -106,11 +107,10 @@ mod tests {
         .await;
         assert!(result.is_err());
 
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM app_settings WHERE key = 'applying_as_device'")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
+        let row = sqlx::query_file!("queries/tests/get_apply_override.sql")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
         assert!(row.is_none(), "override leaked after rolled-back apply");
     }
 
@@ -120,34 +120,52 @@ mod tests {
 
         // Insert a space without the guard — it should be attributed
         // to the local device.
-        sqlx::query("INSERT INTO spaces (id, name, created_at, updated_at) VALUES ('s1', 'local space', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')")
-            .execute(&pool).await.unwrap();
+        let s1_id = "s1";
+        let s1_name = "local space";
+        let ts = "2024-01-01T00:00:00Z";
+        sqlx::query_file!(
+            "queries/tests/insert_space_fixture.sql",
+            s1_id,
+            s1_name,
+            ts,
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // Insert a space inside the guard — should be attributed to
         // the peer.
         run_as_device(&pool, "peer-xyz", |tx| {
             Box::pin(async move {
-                sqlx::query("INSERT INTO spaces (id, name, created_at, updated_at) VALUES ('s2', 'peer space', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')")
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|e| AppError::Db(e.to_string()))?;
+                let s2_id = "s2";
+                let s2_name = "peer space";
+                let ts = "2024-01-01T00:00:00Z";
+                sqlx::query_file!(
+                    "queries/tests/insert_space_fixture.sql",
+                    s2_id,
+                    s2_name,
+                    ts,
+                    ts
+                )
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(e.to_string()))?;
                 Ok(())
             })
         })
         .await
         .unwrap();
 
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT row_id, device_id FROM change_log WHERE table_name = 'spaces' ORDER BY seq",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let rows = sqlx::query_file!("queries/tests/list_spaces_change_log.sql")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, "s1");
-        assert_eq!(rows[0].1, "local-device");
-        assert_eq!(rows[1].0, "s2");
-        assert_eq!(rows[1].1, "peer-xyz");
+        assert_eq!(rows[0].row_id, "s1");
+        assert_eq!(rows[0].device_id, "local-device");
+        assert_eq!(rows[1].row_id, "s2");
+        assert_eq!(rows[1].device_id, "peer-xyz");
     }
 }

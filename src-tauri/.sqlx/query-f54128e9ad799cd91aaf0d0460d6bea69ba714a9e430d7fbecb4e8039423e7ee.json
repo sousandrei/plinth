@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Record a hot-field conflict surfaced by `conflict_detector` so the\n-- UI can show a resolution panel. `resolved` defaults to 0 and\n-- `created_at` to the current ISO 8601 timestamp via column defaults.\nINSERT INTO sync_conflicts (\n    id, space_id, table_name, row_id, field,\n    local_value, remote_value, local_changed_at, remote_changed_at\n) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "f54128e9ad799cd91aaf0d0460d6bea69ba714a9e430d7fbecb4e8039423e7ee"
+}

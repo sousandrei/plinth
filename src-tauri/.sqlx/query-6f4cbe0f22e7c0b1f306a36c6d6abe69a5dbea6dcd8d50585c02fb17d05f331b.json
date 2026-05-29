@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Ownership check: returns 1 if the given account belongs to the\n-- given space, 0 otherwise. Used by space-scoped commands as a\n-- gatekeeper before performing writes on an account or its summaries.\nSELECT COUNT(*) FROM accounts WHERE id = ?1 AND space_id = ?2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "COUNT(*)",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6f4cbe0f22e7c0b1f306a36c6d6abe69a5dbea6dcd8d50585c02fb17d05f331b"
+}

@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Most recent change_log entry for a given (table, row), excluding\n-- entries authored by the incoming peer. Used by the conflict\n-- detector to compare `changed_at` and `device_id` for the\n-- 60-second tolerance window check.\n--\n-- Ordering by changed_at DESC then seq DESC handles same-second\n-- writes deterministically — within one device the seq is monotonic.\nSELECT changed_at, device_id\nFROM change_log\nWHERE table_name = ?1\n  AND row_id     = ?2\n  AND device_id != ?3\nORDER BY changed_at DESC, seq DESC\nLIMIT 1;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "changed_at",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "name": "device_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "change_log",
+            "name": "device_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "cf5652c26a86da72bc39576ac6d87659a800fd2c040b41ba28da59d51110ba2a"
+}

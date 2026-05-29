@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Byte-identical today to `queries/account_summaries/delete_account_summary.sql`,\n-- intentionally duplicated. See `apply/upsert_account_summary.sql` for\n-- the rationale (apply queries form a stable, single-surface audit\n-- target independent of app-layer SQL evolution).\nDELETE FROM account_summaries WHERE month = ?1 AND account_id = ?2;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "b36e8b230274436600643d7ecceb50e01a052a9ae35f35231cf8db7d2d3d6df7"
+}

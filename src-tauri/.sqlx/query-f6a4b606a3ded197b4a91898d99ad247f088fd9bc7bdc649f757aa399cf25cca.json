@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Byte-identical today to `queries/spaces/upsert_space_setting.sql`,\n-- intentionally duplicated. See `apply/upsert_account_summary.sql` for\n-- the rationale.\nINSERT INTO space_settings (space_id, key, value)\nVALUES (?1, ?2, ?3)\nON CONFLICT(space_id, key) DO UPDATE SET\n    value = excluded.value;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f6a4b606a3ded197b4a91898d99ad247f088fd9bc7bdc649f757aa399cf25cca"
+}

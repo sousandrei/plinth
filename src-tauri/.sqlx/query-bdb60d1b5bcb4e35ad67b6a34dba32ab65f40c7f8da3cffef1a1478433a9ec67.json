@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM space_settings WHERE space_id = ?1 AND key = ?2;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "bdb60d1b5bcb4e35ad67b6a34dba32ab65f40c7f8da3cffef1a1478433a9ec67"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Byte-identical today to `queries/spaces/remove_space_member.sql`,\n-- intentionally duplicated. See `apply/upsert_account_summary.sql` for\n-- the rationale.\nDELETE FROM space_members WHERE space_id = ?1 AND user_id = ?2;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "63a4db4618546495e2156401a1d26b337c6fca5c9170c631d539c1655cc2d7c5"
+}

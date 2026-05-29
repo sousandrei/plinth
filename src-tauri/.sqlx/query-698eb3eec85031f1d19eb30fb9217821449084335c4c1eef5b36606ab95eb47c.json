@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO accounts (\n    id, name, currency, account_type, account_source, color, space_id\n) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)\nON CONFLICT(id) DO UPDATE SET\n    name           = excluded.name,\n    currency       = excluded.currency,\n    account_type   = excluded.account_type,\n    account_source = excluded.account_source,\n    color          = excluded.color,\n    space_id       = excluded.space_id;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "698eb3eec85031f1d19eb30fb9217821449084335c4c1eef5b36606ab95eb47c"
+}

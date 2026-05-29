@@ -1,3 +1,4 @@
+pub mod apply;
 pub mod apply_guard;
 pub mod cert_match;
 pub mod changelog;

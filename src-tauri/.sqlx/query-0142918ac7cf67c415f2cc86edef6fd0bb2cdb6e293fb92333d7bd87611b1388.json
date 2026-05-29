@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE accounts\nSET name = ?1, color = ?2\nWHERE id = ?3 AND space_id = ?4\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "0142918ac7cf67c415f2cc86edef6fd0bb2cdb6e293fb92333d7bd87611b1388"
+}

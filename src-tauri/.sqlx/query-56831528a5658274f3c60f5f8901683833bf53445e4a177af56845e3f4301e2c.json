@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO transactions (\n    id, booking_date, value_date, reference, text, currency,\n    amount, balance, approved, note, category, account_id\n) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)\nON CONFLICT(id) DO UPDATE SET\n    booking_date = excluded.booking_date,\n    value_date   = excluded.value_date,\n    reference    = excluded.reference,\n    text         = excluded.text,\n    currency     = excluded.currency,\n    amount       = excluded.amount,\n    balance      = excluded.balance,\n    approved     = excluded.approved,\n    note         = excluded.note,\n    category     = excluded.category,\n    account_id   = excluded.account_id;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "56831528a5658274f3c60f5f8901683833bf53445e4a177af56845e3f4301e2c"
+}

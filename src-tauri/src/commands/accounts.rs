@@ -49,8 +49,8 @@ pub async fn update_account(
     let name = name.trim().to_string();
     let color = color.trim().to_string();
 
-    let rows = sqlx::query!(
-        "UPDATE accounts SET name = ?1, color = ?2 WHERE id = ?3 AND space_id = ?4",
+    let rows = sqlx::query_file!(
+        "queries/accounts/update_account.sql",
         name,
         color,
         id,

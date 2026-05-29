@@ -142,10 +142,8 @@ pub async fn update_transaction(
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
-    let rows = sqlx::query!(
-        "UPDATE transactions SET approved = ?1, note = ?2, category = ?3
-         WHERE id = ?4
-           AND account_id IN (SELECT id FROM accounts WHERE space_id = ?5)",
+    let rows = sqlx::query_file!(
+        "queries/transactions/update_transaction.sql",
         approved,
         note,
         category,

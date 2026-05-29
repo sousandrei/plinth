@@ -60,8 +60,8 @@ pub async fn upsert_account_summary(
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
-    let owned = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM accounts WHERE id = ?1 AND space_id = ?2",
+    let owned = sqlx::query_file_scalar!(
+        "queries/accounts/count_account_in_space.sql",
         account_id,
         data.space_id
     )
@@ -95,8 +95,8 @@ pub async fn delete_account_summary(
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
-    let owned = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM accounts WHERE id = ?1 AND space_id = ?2",
+    let owned = sqlx::query_file_scalar!(
+        "queries/accounts/count_account_in_space.sql",
         account_id,
         data.space_id
     )
