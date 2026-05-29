@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    space_id  AS \"space_id!\",\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM trusted_devices\nWHERE sync_enabled = 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "device_id!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "cert_pem!",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "cert_pem"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "442390334195d670d431bc08f94bb90afd40de3093226888fe5141ceffb1f05f"
+}

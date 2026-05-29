@@ -154,11 +154,13 @@ pub fn run() {
             app.manage(commands::training::CancelToken::default());
             app.manage(Session::new());
 
-            let peer_registry = sync::PeerRegistry::new();
-            app.manage(peer_registry.clone());
-            app.manage(Arc::new(sync::PairingState::new()));
             let db = app.state::<db::DbPool>().inner().clone();
-            sync::discovery::spawn(app.handle().clone(), db, peer_registry);
+            let app_handle = app.handle().clone();
+            let runtime = tauri::async_runtime::block_on(async move {
+                sync::startup::start(app_handle, db).await
+            })?;
+            app.manage(runtime.peers.clone());
+            app.manage(runtime.pairing.clone());
 
             Ok(())
         })

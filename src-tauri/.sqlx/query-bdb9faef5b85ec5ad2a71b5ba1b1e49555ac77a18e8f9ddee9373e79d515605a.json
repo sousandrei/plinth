@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM trusted_devices\nWHERE sync_enabled = 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "cert_pem!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "cert_pem"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "bdb9faef5b85ec5ad2a71b5ba1b1e49555ac77a18e8f9ddee9373e79d515605a"
+}

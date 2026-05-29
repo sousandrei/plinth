@@ -87,14 +87,15 @@ async fn read_advertised_space_ids(db: &SqlitePool) -> Result<Vec<String>, AppEr
 }
 
 /// Starts the mDNS discovery background task. Registers this device's
-/// service record under `_plinth._tcp.local` and subscribes to the same
-/// service type to populate the peer registry.
+/// service record under `_plinth._tcp.local` advertising `port` as the
+/// mTLS listening port, and subscribes to the same service type to
+/// populate the peer registry.
 ///
 /// Returns immediately after spawning. The returned `PeerRegistry` is
 /// managed as Tauri state and queried by the `list_peers` command.
-pub fn spawn(app: AppHandle, db: SqlitePool, registry: PeerRegistry) {
+pub fn spawn(app: AppHandle, db: SqlitePool, registry: PeerRegistry, port: u16) {
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = run(app, db, registry).await {
+        if let Err(e) = run(app, db, registry, port).await {
             eprintln!("sync::discovery: {e}");
         }
     });
@@ -104,15 +105,13 @@ async fn run(
     _app: AppHandle,
     db: SqlitePool,
     registry: PeerRegistry,
+    port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let device_id = read_device_id(&db).await?;
     let space_ids = read_advertised_space_ids(&db).await.unwrap_or_default();
 
     let daemon = ServiceDaemon::new()?;
 
-    // Choose an ephemeral port for the future mTLS listener. For now this
-    // is just advertised; the listener arrives in Step 5.
-    let port: u16 = pick_ephemeral_port();
     let hostname = gethostname::gethostname().to_string_lossy().into_owned();
     let host_record = format!("{}.local.", sanitize_host(&hostname));
 
@@ -195,17 +194,6 @@ async fn run(
     });
 
     Ok(())
-}
-
-/// Picks an ephemeral TCP port by binding to 0 and closing immediately.
-/// The OS is allowed to reassign this port — the Step 5 mTLS listener
-/// will bind a fresh port anyway. For now the value advertised is just
-/// a placeholder so peers see something concrete.
-fn pick_ephemeral_port() -> u16 {
-    std::net::TcpListener::bind("0.0.0.0:0")
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(0)
 }
 
 /// mDNS hostnames can only contain letters, digits, and hyphens.
