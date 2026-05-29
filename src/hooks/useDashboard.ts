@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { listAccounts } from '@/api/accounts';
 import { getAggregations } from '@/api/aggregations';
+import { listAllCategories } from '@/api/categories';
 import {
   DEMO_CATEGORIES,
   getDemoAccounts,
@@ -64,6 +65,12 @@ export function useDashboard(userId: string | null): {
 } {
   const { isDemoMode } = useDemoMode();
 
+  const categoriesQuery = useQuery({
+    queryKey: ['categories'],
+    queryFn: listAllCategories,
+    enabled: !isDemoMode,
+  });
+
   const accountsQuery = useQuery({
     queryKey: ['accounts', isDemoMode ? 'demo' : userId],
     queryFn: isDemoMode ? getDemoAccounts : () => listAccounts(userId ?? ''),
@@ -85,6 +92,8 @@ export function useDashboard(userId: string | null): {
     accountsQuery.data && aggregationsQuery.data
       ? (() => {
           if (isDemoMode) updateCategoryColors(DEMO_CATEGORIES);
+          else if (categoriesQuery.data)
+            updateCategoryColors(categoriesQuery.data);
           return deriveData(aggregationsQuery.data, accountsQuery.data);
         })()
       : null;

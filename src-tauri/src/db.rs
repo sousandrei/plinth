@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
     SqlitePool,
 };
 use tauri::Manager;
@@ -26,7 +26,10 @@ async fn init(path: &Path) -> Result<DbPool, Box<dyn std::error::Error>> {
         .foreign_keys(true)
         .busy_timeout(std::time::Duration::from_secs(5));
 
-    let pool = SqlitePool::connect_with(opts).await?;
+    let pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .connect_with(opts)
+        .await?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
 
