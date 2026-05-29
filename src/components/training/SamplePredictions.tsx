@@ -99,7 +99,7 @@ export function SamplePredictions({
               type="button"
               onClick={onRefresh}
               disabled={isLoading}
-              className="flex items-center gap-1.5 text-[10px] font-mono text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 text-[10px] font-mono text-canvas/60 hover:text-canvas transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Refresh predictions"
             >
               <svg
