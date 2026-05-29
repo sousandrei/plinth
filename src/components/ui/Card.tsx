@@ -9,6 +9,7 @@ interface CardHeaderProps extends HTMLAttributes<HTMLDivElement> {
   children?: ReactNode;
   label?: string;
   meta?: string;
+  action?: ReactNode;
 }
 
 interface CardBodyProps extends HTMLAttributes<HTMLDivElement> {
@@ -38,6 +39,7 @@ export const Card = ({
 export const CardHeader = ({
   label,
   meta,
+  action,
   className,
   children,
   ...props
@@ -57,11 +59,14 @@ export const CardHeader = ({
             {label}
           </span>
         )}
-        {meta && (
-          <span className="text-xs font-mono text-canvas font-semibold">
-            {meta}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {meta && (
+            <span className="text-xs font-mono text-canvas font-semibold">
+              {meta}
+            </span>
+          )}
+          {action}
+        </div>
       </>
     ) : (
       children

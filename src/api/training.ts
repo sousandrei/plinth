@@ -25,8 +25,9 @@ export const setActiveModel = (version: number): Promise<void> =>
 export const getTrainingSamples = (
   userId: string,
   limit: number,
+  version?: number,
 ): Promise<TrainingSample[]> =>
-  invoke<TrainingSample[]>('get_training_samples', { userId, limit });
+  invoke<TrainingSample[]>('get_training_samples', { userId, limit, version });
 
 export const countApprovedTransactions = (userId: string): Promise<number> =>
   invoke<number>('count_approved_transactions', { userId });

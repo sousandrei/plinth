@@ -18,8 +18,8 @@ export const Route = createFileRoute('/training')({
 
 function TrainingPage(): React.JSX.Element {
   const { user } = useAuth();
-  const training = useTraining(user?.id ?? null);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
+  const training = useTraining(user?.id ?? null, selectedVersion);
 
   // Fetch active compile-time training hardware
   const { data: device = 'CPU' } = useQuery({
@@ -105,6 +105,7 @@ function TrainingPage(): React.JSX.Element {
             samples={training.samples}
             isLoading={training.isLoadingSamples}
             isClassifierReady={training.isClassifierReady}
+            onRefresh={training.refreshSamples}
           />
         </div>
       </div>

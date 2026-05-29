@@ -7,12 +7,14 @@ interface SamplePredictionsProps {
   samples: TrainingSample[];
   isLoading: boolean;
   isClassifierReady: boolean;
+  onRefresh: () => void;
 }
 
 export function SamplePredictions({
   samples,
   isLoading,
   isClassifierReady,
+  onRefresh,
 }: SamplePredictionsProps): React.JSX.Element {
   const correct = samples.filter(
     (s) => s.actual_category === s.predicted_category,
@@ -31,6 +33,9 @@ export function SamplePredictions({
       return (
         <div className="flex flex-col items-center gap-2 py-10">
           <Spinner size="sm" />
+          <p className="text-[10px] font-mono text-muted-foreground">
+            Running predictions…
+          </p>
         </div>
       );
     }
@@ -87,6 +92,37 @@ export function SamplePredictions({
           isClassifierReady && !isLoading
             ? `${correct.length} / ${samples.length} correct`
             : ''
+        }
+        action={
+          isClassifierReady ? (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 text-[10px] font-mono text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Refresh predictions"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                className={isLoading ? 'animate-spin' : ''}
+              >
+                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+                <path d="M21 3v5h-5" />
+                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+                <path d="M8 16H3v5" />
+              </svg>
+              Refresh
+            </button>
+          ) : undefined
         }
       />
       <CardBody className="p-0">{renderBody()}</CardBody>

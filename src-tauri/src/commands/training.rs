@@ -575,6 +575,8 @@ pub async fn set_active_model(
 pub async fn get_training_samples(
     user_id: String,
     limit: i64,
+    version: Option<u32>,
+    app: AppHandle,
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
 ) -> Result<Vec<TrainingSample>, AppError> {
@@ -583,12 +585,42 @@ pub async fn get_training_samples(
         .await
         .map_err(|e| AppError::Db(format!("get_training_samples: {e}")))?;
 
-    let guard = classifier
+    // Resolve the active version before acquiring the classifier lock (no await inside lock).
+    let active_version = get_active_version(&db).await;
+    let requested = version.unwrap_or(active_version);
+    let swapped = requested != active_version;
+
+    // Pre-resolve paths before the lock so we don't hold it across any awaits.
+    let requested_weights = if swapped {
+        let dir = models_dir(&app)?;
+        let weights = weights_path(&dir, requested);
+        if !weights.exists() {
+            return Err(AppError::NotFound(format!(
+                "model v{requested} weights not found"
+            )));
+        }
+        Some(weights)
+    } else {
+        None
+    };
+    let active_weights_path = if swapped {
+        let dir = models_dir(&app)?;
+        Some(weights_path(&dir, active_version))
+    } else {
+        None
+    };
+
+    let mut guard = classifier
         .lock()
         .map_err(|e| AppError::Internal(format!("lock: {e}")))?;
     let cl = guard
-        .as_ref()
+        .as_mut()
         .ok_or_else(|| AppError::Internal("classifier not ready".to_string()))?;
+
+    if let Some(ref weights) = requested_weights {
+        cl.load_version(weights)
+            .map_err(|e| AppError::Internal(format!("load_version v{requested}: {e}")))?;
+    }
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
@@ -603,6 +635,15 @@ pub async fn get_training_samples(
             actual_category: row.category,
             predicted_category: predicted,
         });
+    }
+
+    // Restore the active model's weights if we swapped them out.
+    if let Some(ref active_w) = active_weights_path {
+        if active_w.exists() {
+            cl.load_version(active_w).map_err(|e| {
+                AppError::Internal(format!("restore active v{active_version}: {e}"))
+            })?;
+        }
     }
 
     Ok(out)

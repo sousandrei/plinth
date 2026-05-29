@@ -27,8 +27,8 @@ const PROGRESS_KEY = ['training-progress'] as const;
 const APPROVED_COUNT_KEY = (userId: string) =>
   ['approved-count', userId] as const;
 const SAMPLES_KEY_PREFIX = ['training-samples'] as const;
-const SAMPLES_KEY = (userId: string, limit: number) =>
-  ['training-samples', userId, limit] as const;
+const SAMPLES_KEY = (userId: string, limit: number, version: number | null) =>
+  ['training-samples', userId, limit, version] as const;
 
 const DEFAULT_CONFIG: FinetuneConfig = {
   epochs: 10,
@@ -58,9 +58,13 @@ export interface TrainingState {
   stopTraining: () => void;
   activateModel: (version: number) => void;
   deleteModel: (version: number) => void;
+  refreshSamples: () => void;
 }
 
-export function useTraining(userId: string | null): TrainingState {
+export function useTraining(
+  userId: string | null,
+  selectedVersion: number | null = null,
+): TrainingState {
   const queryClient = useQueryClient();
   const { isDemoMode } = useDemoMode();
   const [isClassifierReady, setIsClassifierReady] = useState(false);
@@ -123,8 +127,13 @@ export function useTraining(userId: string | null): TrainingState {
   });
 
   const samplesQuery = useQuery({
-    queryKey: SAMPLES_KEY(userId ?? '', SAMPLES_LIMIT),
-    queryFn: () => getTrainingSamples(userId ?? '', SAMPLES_LIMIT),
+    queryKey: SAMPLES_KEY(userId ?? '', SAMPLES_LIMIT, selectedVersion),
+    queryFn: () =>
+      getTrainingSamples(
+        userId ?? '',
+        SAMPLES_LIMIT,
+        selectedVersion ?? undefined,
+      ),
     enabled: !!userId && isClassifierReady,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
@@ -192,6 +201,12 @@ export function useTraining(userId: string | null): TrainingState {
     [deleteMutation],
   );
 
+  const handleRefreshSamples = useCallback(() => {
+    queryClient.invalidateQueries({
+      queryKey: SAMPLES_KEY(userId ?? '', SAMPLES_LIMIT, selectedVersion),
+    });
+  }, [queryClient, userId, selectedVersion]);
+
   const mutationError =
     trainMutation.error ?? activateMutation.error ?? deleteMutation.error;
   const error =
@@ -216,5 +231,6 @@ export function useTraining(userId: string | null): TrainingState {
     stopTraining: handleStopTraining,
     activateModel: handleActivateModel,
     deleteModel: handleDeleteModel,
+    refreshSamples: handleRefreshSamples,
   };
 }
