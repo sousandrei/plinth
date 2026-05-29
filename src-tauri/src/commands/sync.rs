@@ -182,6 +182,48 @@ pub async fn generate_pair_token(
     .await
 }
 
+#[tauri::command]
+pub async fn accept_pair_token_from_peer(
+    peer_device_id: String,
+    token: String,
+    device_display_name: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+    registry: State<'_, PeerRegistry>,
+) -> Result<JoinResult, AppError> {
+    let user_session = session.require_user()?;
+
+    let peer = registry
+        .snapshot()
+        .into_iter()
+        .find(|p| p.device_id == peer_device_id)
+        .ok_or_else(|| AppError::NotFound(format!("peer {peer_device_id} not in registry")))?;
+
+    let address = format!("{token}|{}:{}", peer.host, peer.port);
+
+    let user_row = sqlx::query_file!("queries/sync/get_user.sql", user_session.user_id)
+        .fetch_optional(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("get_user: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("user {}", user_session.user_id)))?;
+
+    let joining = WireUser {
+        id: user_row.id,
+        name: user_row.name,
+        pin_hash: user_row.pin_hash,
+        created_at: user_row.created_at,
+        updated_at: user_row.updated_at,
+    };
+
+    let bundle: SpaceBundle =
+        pairing::run_joiner((*db).clone(), address, joining, device_display_name).await?;
+
+    Ok(JoinResult {
+        space_id: bundle.space.id,
+        space_name: bundle.space.name,
+    })
+}
+
 #[derive(Debug, Serialize)]
 pub struct JoinResult {
     pub space_id: String,

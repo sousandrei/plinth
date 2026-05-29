@@ -13,6 +13,14 @@ import {
   setActiveSpace,
   updateMemberRole,
 } from '@/api/spaces';
+import {
+  acceptPairTokenFromPeer,
+  generatePairToken,
+  listPeers,
+  listTrustedDevices,
+  removeTrustedDevice,
+  setTrustedDeviceSync,
+} from '@/api/sync';
 import { listUsers } from '@/api/users';
 import { Button } from '@/components/ui/Button';
 import {
@@ -25,11 +33,228 @@ import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { useAuth } from '@/context/AuthContext';
 import { cn } from '@/lib/util';
-import type { Space, SpaceMember } from '@/types';
+import type {
+  PairToken,
+  PeerInfo,
+  Space,
+  SpaceMember,
+  TrustedDevice,
+} from '@/types';
 
 export const Route = createFileRoute('/spaces')({
   component: SpacesPage,
 });
+
+// ---------------------------------------------------------------------------
+// Pair modal
+// ---------------------------------------------------------------------------
+
+interface PairModalProps {
+  spaceId: string;
+  onClose: () => void;
+}
+
+function PairModal({ onClose }: PairModalProps): React.JSX.Element {
+  const { user } = useAuth();
+  const [token, setToken] = useState<PairToken | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState(0);
+
+  const generateMutation = useMutation({
+    mutationFn: () => generatePairToken(user?.name ?? 'This device'),
+    onSuccess: (pt) => {
+      setToken(pt);
+      const remaining = Math.max(
+        0,
+        pt.expires_at_unix - Math.floor(Date.now() / 1000),
+      );
+      setSecondsLeft(remaining);
+      const iv = setInterval(() => {
+        setSecondsLeft((s) => {
+          if (s <= 1) {
+            clearInterval(iv);
+            return 0;
+          }
+          return s - 1;
+        });
+      }, 1000);
+    },
+  });
+
+  return (
+    <div className="flex flex-col gap-4">
+      {token === null ? (
+        <>
+          <p className="text-xs text-muted-foreground">
+            Generate a token on this device. The other device will find this one
+            automatically on the local network and use the token to
+            authenticate.
+          </p>
+          {generateMutation.isError && (
+            <p className="text-xs font-mono text-expense">
+              {String(generateMutation.error)}
+            </p>
+          )}
+          <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle">
+            <Button
+              variant="secondary"
+              onClick={onClose}
+              className="px-4 text-xs rounded-none h-9"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => generateMutation.mutate()}
+              disabled={generateMutation.isPending}
+              className="px-4 text-xs rounded-none h-9"
+            >
+              {generateMutation.isPending ? 'Generating…' : 'Generate Token'}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex flex-col items-center gap-3 py-4">
+            <span className="text-4xl font-mono font-bold tracking-[0.25em]">
+              {token.token}
+            </span>
+            <span
+              className={cn(
+                'text-xs font-mono',
+                secondsLeft > 10 ? 'text-muted-foreground' : 'text-expense',
+              )}
+            >
+              {secondsLeft > 0 ? `Expires in ${secondsLeft}s` : 'Expired'}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            On the other device, choose{' '}
+            <span className="font-mono text-foreground">Join via pairing</span>,
+            select this device from the network list, then enter this token.
+          </p>
+          <div className="flex justify-end pt-2 border-t border-border-subtle">
+            <Button
+              variant="secondary"
+              onClick={onClose}
+              className="px-4 text-xs rounded-none h-9"
+            >
+              Done
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Devices section
+// ---------------------------------------------------------------------------
+
+interface DevicesSectionProps {
+  spaceId: string;
+}
+
+function DevicesSection({ spaceId }: DevicesSectionProps): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [pairOpen, setPairOpen] = useState(false);
+
+  const { data: devices = [] } = useQuery({
+    queryKey: ['trusted-devices', spaceId],
+    queryFn: listTrustedDevices,
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (id: string) => removeTrustedDevice(id),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['trusted-devices', spaceId] }),
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      setTrustedDeviceSync(id, enabled),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['trusted-devices', spaceId] }),
+  });
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground font-bold">
+          Devices
+        </span>
+        <Dialog open={pairOpen} onOpenChange={setPairOpen}>
+          <DialogTrigger
+            render={
+              <Button
+                variant="ghost"
+                className="text-xs rounded-none h-7 px-2 text-muted-foreground hover:text-foreground"
+              >
+                + Pair Device
+              </Button>
+            }
+          />
+          <DialogContent
+            title="Pair New Device"
+            description="Pair another device to sync this space."
+          >
+            <PairModal spaceId={spaceId} onClose={() => setPairOpen(false)} />
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      {devices.length === 0 ? (
+        <p className="text-xs text-muted-foreground py-2">No paired devices.</p>
+      ) : (
+        <div className="flex flex-col divide-y divide-border-subtle border border-border-muted">
+          {devices.map((device: TrustedDevice) => (
+            <div
+              key={device.id}
+              className="flex items-center gap-3 px-3 py-2.5"
+            >
+              <div className="flex flex-col flex-1 min-w-0">
+                <span className="text-sm truncate">{device.display_name}</span>
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  Paired {device.paired_at.slice(0, 10)}
+                </span>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={device.sync_enabled}
+                onClick={() =>
+                  toggleMutation.mutate({
+                    id: device.id,
+                    enabled: !device.sync_enabled,
+                  })
+                }
+                className={cn(
+                  'relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                  device.sync_enabled ? 'bg-accent' : 'bg-border-muted',
+                )}
+              >
+                <span
+                  className={cn(
+                    'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform',
+                    device.sync_enabled ? 'translate-x-4' : 'translate-x-0',
+                  )}
+                />
+              </button>
+              <Button
+                variant="ghost"
+                onClick={() => removeMutation.mutate(device.id)}
+                disabled={removeMutation.isPending}
+                className="px-2 h-8 text-xs text-muted-foreground hover:text-expense rounded-none shrink-0"
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Space edit modal
@@ -240,6 +465,9 @@ function SpaceEditDialog({
         </div>
       )}
 
+      {/* Devices (owner only) */}
+      {isOwner && <DevicesSection spaceId={space.id} />}
+
       {/* Danger zone */}
       <div className="border-t border-border-subtle pt-4 flex gap-2">
         {isOwner ? (
@@ -298,6 +526,189 @@ function SpaceEditDialog({
 }
 
 // ---------------------------------------------------------------------------
+// Join space modal (logged-in user joining a remote space via pairing)
+// ---------------------------------------------------------------------------
+
+type JoinStep = 'peer' | 'token';
+
+interface JoinSpaceModalProps {
+  onClose: () => void;
+  onJoined: (spaceId: string) => void;
+}
+
+function JoinSpaceModal({
+  onClose,
+  onJoined,
+}: JoinSpaceModalProps): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [step, setStep] = useState<JoinStep>('peer');
+  const [selectedPeer, setSelectedPeer] = useState<PeerInfo | null>(null);
+  const [token, setToken] = useState('');
+  const [tokenError, setTokenError] = useState('');
+  const { user } = useAuth();
+
+  const {
+    data: peers = [],
+    isLoading: peersLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ['peers'],
+    queryFn: listPeers,
+    refetchInterval: 3000,
+  });
+
+  const joinMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedPeer) throw new Error('No peer selected');
+      return acceptPairTokenFromPeer(
+        selectedPeer.device_id,
+        token.trim(),
+        user?.name ?? 'This device',
+      );
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
+      onJoined(result.space_id);
+    },
+    onError: (e) => setTokenError(String(e)),
+  });
+
+  const submitToken = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token.trim()) {
+      setTokenError('Token is required');
+      return;
+    }
+    setTokenError('');
+    joinMutation.mutate();
+  };
+
+  return (
+    <div className="flex flex-col gap-5">
+      {step === 'peer' && (
+        <>
+          <p className="text-xs text-muted-foreground">
+            Select a device on your local network to join one of its spaces.
+          </p>
+          {peersLoading ? (
+            <span className="text-xs font-mono text-muted-foreground">
+              Scanning…
+            </span>
+          ) : peers.length === 0 ? (
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-mono text-muted-foreground">
+                No devices found on this network.
+              </span>
+              <button
+                type="button"
+                onClick={() => refetch()}
+                className="self-start text-xs font-mono text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors duration-150"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col divide-y divide-border-subtle border border-border-muted">
+              {peers.map((peer) => (
+                <button
+                  key={peer.device_id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPeer(peer);
+                    setStep('token');
+                  }}
+                  className={cn(
+                    'flex items-center gap-3 px-4 py-3 text-left text-sm font-mono',
+                    'transition-all duration-150',
+                    'hover:bg-accent-muted/20',
+                  )}
+                >
+                  <span className="w-2 h-2 rounded-full bg-accent shrink-0" />
+                  <span className="flex-1 truncate">{peer.host}</span>
+                  <span className="text-[10px] text-muted-foreground shrink-0">
+                    :{peer.port}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end pt-2 border-t border-border-subtle">
+            <Button
+              variant="secondary"
+              onClick={onClose}
+              className="px-4 text-xs rounded-none h-9"
+            >
+              Cancel
+            </Button>
+          </div>
+        </>
+      )}
+
+      {step === 'token' && (
+        <>
+          <p className="text-xs text-muted-foreground">
+            On{' '}
+            <span className="font-mono text-foreground">
+              {selectedPeer?.host}
+            </span>
+            , open{' '}
+            <span className="font-mono">
+              Spaces → Edit → Devices → Pair Device
+            </span>{' '}
+            and generate a token.
+          </p>
+          <form onSubmit={submitToken} className="flex flex-col gap-3">
+            <input
+              // biome-ignore lint/a11y/noAutofocus: intentional — only input in step
+              autoFocus
+              value={token}
+              onChange={(e) =>
+                setToken(e.target.value.replace(/\D/g, '').slice(0, 6))
+              }
+              placeholder="000000"
+              inputMode="numeric"
+              maxLength={6}
+              className={cn(
+                'w-full px-4 py-2.5 text-center text-2xl font-mono tracking-[0.4em]',
+                'bg-canvas border border-border-muted',
+                'placeholder:text-muted-foreground placeholder:tracking-normal placeholder:text-sm',
+                'focus:outline-none focus:border-accent focus:shadow-[0_0_0_3px_var(--color-accent-muted)]',
+                'transition-all duration-150',
+                tokenError && 'border-expense',
+              )}
+            />
+            {tokenError && (
+              <p className="text-xs font-mono text-expense">{tokenError}</p>
+            )}
+            <div className="flex justify-between pt-2 border-t border-border-subtle">
+              <Button
+                variant="ghost"
+                type="button"
+                onClick={() => {
+                  setToken('');
+                  setTokenError('');
+                  setStep('peer');
+                }}
+                className="px-3 text-xs rounded-none h-9"
+              >
+                ← Back
+              </Button>
+              <Button
+                type="submit"
+                disabled={token.length < 6 || joinMutation.isPending}
+                className="px-4 text-xs rounded-none h-9"
+              >
+                {joinMutation.isPending ? 'Joining…' : 'Join Space'}
+              </Button>
+            </div>
+          </form>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -307,6 +718,7 @@ function SpacesPage(): React.JSX.Element {
   const [editingSpace, setEditingSpace] = useState<Space | null>(null);
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
   const [newSpaceName, setNewSpaceName] = useState('');
+  const [joinOpen, setJoinOpen] = useState(false);
 
   const { data: spaces = [], isLoading } = useQuery({
     queryKey: ['my-spaces'],
@@ -357,50 +769,82 @@ function SpacesPage(): React.JSX.Element {
           </p>
         </div>
 
-        <Dialog open={newSpaceOpen} onOpenChange={setNewSpaceOpen}>
-          <DialogTrigger
-            render={
-              <Button className="text-xs rounded-none h-9">+ New Space</Button>
-            }
-          />
-          <DialogContent
-            title="Create Space"
-            description="A new space starts empty — you can import accounts and transactions afterwards."
-          >
-            <div className="flex flex-col gap-4">
-              <Input
-                placeholder="Space name"
-                value={newSpaceName}
-                onChange={(e) => setNewSpaceName(e.target.value)}
-                autoFocus
-              />
-              {createMutation.isError && (
-                <p className="text-xs font-mono text-expense">
-                  {String(createMutation.error)}
-                </p>
-              )}
-              <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle">
-                <DialogClose
-                  render={
-                    <Button
-                      variant="secondary"
-                      className="px-4 text-xs rounded-none h-9"
-                    >
-                      Cancel
-                    </Button>
-                  }
-                />
+        <div className="flex items-center gap-2">
+          <Dialog open={joinOpen} onOpenChange={setJoinOpen}>
+            <DialogTrigger
+              render={
                 <Button
-                  onClick={() => createMutation.mutate()}
-                  disabled={!newSpaceName.trim() || createMutation.isPending}
-                  className="px-4 text-xs rounded-none h-9"
+                  variant="secondary"
+                  className="text-xs rounded-none h-9"
                 >
-                  {createMutation.isPending ? 'Creating…' : 'Create'}
+                  Join Space
                 </Button>
+              }
+            />
+            <DialogContent
+              title="Join Space"
+              description="Connect to another device on your local network."
+            >
+              <JoinSpaceModal
+                onClose={() => setJoinOpen(false)}
+                onJoined={(sid) => {
+                  setActiveSpace(sid).then(() => {
+                    setSpaceId(sid);
+                    setJoinOpen(false);
+                    queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
+                  });
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={newSpaceOpen} onOpenChange={setNewSpaceOpen}>
+            <DialogTrigger
+              render={
+                <Button className="text-xs rounded-none h-9">
+                  + New Space
+                </Button>
+              }
+            />
+            <DialogContent
+              title="Create Space"
+              description="A new space starts empty — you can import accounts and transactions afterwards."
+            >
+              <div className="flex flex-col gap-4">
+                <Input
+                  placeholder="Space name"
+                  value={newSpaceName}
+                  onChange={(e) => setNewSpaceName(e.target.value)}
+                  autoFocus
+                />
+                {createMutation.isError && (
+                  <p className="text-xs font-mono text-expense">
+                    {String(createMutation.error)}
+                  </p>
+                )}
+                <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle">
+                  <DialogClose
+                    render={
+                      <Button
+                        variant="secondary"
+                        className="px-4 text-xs rounded-none h-9"
+                      >
+                        Cancel
+                      </Button>
+                    }
+                  />
+                  <Button
+                    onClick={() => createMutation.mutate()}
+                    disabled={!newSpaceName.trim() || createMutation.isPending}
+                    className="px-4 text-xs rounded-none h-9"
+                  >
+                    {createMutation.isPending ? 'Creating…' : 'Create'}
+                  </Button>
+                </div>
               </div>
-            </div>
-          </DialogContent>
-        </Dialog>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       {/* Space list */}

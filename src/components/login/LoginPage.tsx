@@ -4,12 +4,20 @@ import { listMySpaces } from '@/api/spaces';
 import { listUsers } from '@/api/users';
 import { useAuth } from '@/context/AuthContext';
 import type { User } from '@/types';
+import { JoinStage } from './JoinStage';
 import { PinStage } from './PinStage';
 import { RegisterForm } from './RegisterForm';
 import { SpacePickerStage } from './SpacePickerStage';
 import { UserSelect } from './UserSelect';
 
-type Stage = 'loading' | 'register' | 'select' | 'pin' | 'space';
+type Stage =
+  | 'loading'
+  | 'welcome'
+  | 'register'
+  | 'join'
+  | 'select'
+  | 'pin'
+  | 'space';
 type Direction = 'forward' | 'back';
 
 export const LoginPage = (): React.JSX.Element => {
@@ -25,7 +33,7 @@ export const LoginPage = (): React.JSX.Element => {
 
   useEffect(() => {
     if (isLoading || !users) return;
-    if (users.length === 0) setStage('register');
+    if (users.length === 0) setStage('welcome');
     else if (users.length === 1) {
       setSelectedUser(users[0]);
       setStage('pin');
@@ -44,24 +52,17 @@ export const LoginPage = (): React.JSX.Element => {
   };
 
   const handlePinSuccess = async (user: User) => {
-    // After PIN, check how many spaces this user has.
-    // The backend auto-selects when there is exactly one, so we only
-    // need to show the picker when there are multiple.
     try {
       const spaces = await listMySpaces();
       if (spaces.length === 1) {
-        // Backend already set the active space — mirror it in the frontend.
         setUser(user);
         setSpaceId(spaces[0].id);
       } else {
-        // Multiple spaces: show the picker (session is set, no space yet).
         setSelectedUser(user);
         setDirection('forward');
         setStage('space');
       }
     } catch {
-      // Fallback: enter the app anyway; commands will return Unauthorized if
-      // something is wrong server-side.
       setUser(user);
     }
   };
@@ -73,7 +74,6 @@ export const LoginPage = (): React.JSX.Element => {
   };
 
   const handleRegistered = async (user: User) => {
-    // createUser auto-creates exactly one space and sets the full session.
     try {
       const spaces = await listMySpaces();
       setUser(user);
@@ -81,6 +81,11 @@ export const LoginPage = (): React.JSX.Element => {
     } catch {
       setUser(user);
     }
+  };
+
+  const handleJoined = (user: User, spaceId: string) => {
+    setUser(user);
+    setSpaceId(spaceId);
   };
 
   const animClass =
@@ -105,7 +110,58 @@ export const LoginPage = (): React.JSX.Element => {
           </div>
         )}
 
-        {stage === 'register' && <RegisterForm onCreated={handleRegistered} />}
+        {stage === 'welcome' && (
+          <div className="flex flex-col items-center gap-8 animate-fade-in">
+            <div className="text-center">
+              <h1 className="text-lg font-semibold tracking-tight">
+                Welcome to Plinth
+              </h1>
+              <p className="text-xs font-mono text-muted-foreground mt-1">
+                Set up this device to get started.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3 w-64">
+              <button
+                type="button"
+                onClick={() => {
+                  setDirection('forward');
+                  setStage('register');
+                }}
+                className="w-full px-4 py-3 text-sm font-mono bg-foreground text-canvas transition-all duration-150 active:scale-[0.98] hover:opacity-90"
+              >
+                Create account
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDirection('forward');
+                  setStage('join');
+                }}
+                className="w-full px-4 py-3 text-sm font-mono border border-border-muted bg-canvas-raised text-foreground transition-all duration-150 active:scale-[0.98] hover:border-accent hover:bg-accent-muted/20"
+              >
+                Join via pairing
+              </button>
+            </div>
+          </div>
+        )}
+
+        {stage === 'register' && (
+          <div key="register" className={animClass}>
+            <RegisterForm onCreated={handleRegistered} />
+          </div>
+        )}
+
+        {stage === 'join' && (
+          <div key="join" className={animClass}>
+            <JoinStage
+              onSuccess={handleJoined}
+              onBack={() => {
+                setDirection('back');
+                setStage('welcome');
+              }}
+            />
+          </div>
+        )}
 
         {stage === 'select' && users && (
           <div key="select" className={animClass}>

@@ -133,3 +133,29 @@ export interface AccountSummary {
   account_id: string;
   balance: number; // minor units
 }
+
+export interface PeerInfo {
+  device_id: string;
+  host: string;
+  port: number;
+}
+
+export interface TrustedDevice {
+  id: string;
+  space_id: string;
+  device_id: string;
+  display_name: string;
+  sync_enabled: boolean;
+  paired_at: string;
+}
+
+export interface PairToken {
+  token: string;
+  address: string;
+  expires_at_unix: number;
+}
+
+export interface JoinResult {
+  space_id: string;
+  space_name: string;
+}
