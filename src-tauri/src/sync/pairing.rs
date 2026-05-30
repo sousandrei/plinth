@@ -46,6 +46,11 @@ const TOKEN_TTL_SECS: u64 = 90;
 const HANDSHAKE_DEADLINE_SECS: u64 = 60;
 const PAKE_IDENTITY: &[u8] = b"plinth-pairing-v1";
 
+/// Fixed TCP port the host always listens on for pairing connections.
+/// Advertised in the mDNS TXT record so joiners can find it without
+/// encoding the port into the human-typed 6-digit token.
+pub const PAIRING_PORT: u16 = 52737;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -92,7 +97,10 @@ pub struct WireMember {
 /// this device later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinPayload {
-    pub user: WireUser,
+    /// The joining user, if they are new to this space. `None` when the
+    /// joiner is an existing member (e.g. same person on a second device)
+    /// and just needs the device trusted — no new membership row is created.
+    pub user: Option<WireUser>,
     pub device_id: String,
     pub device_name: String,
     pub cert_pem: String,
@@ -187,7 +195,7 @@ pub async fn start_host_session(
         format!("{n:06}")
     };
 
-    let listener = TcpListener::bind("0.0.0.0:0")
+    let listener = TcpListener::bind(format!("0.0.0.0:{PAIRING_PORT}"))
         .await
         .map_err(|e| AppError::Io(format!("pairing listen: {e}")))?;
     let local_addr = listener
@@ -284,9 +292,13 @@ async fn run_host_session(
     )
     .await?;
 
-    // Materialize the joining user locally so the membership FK holds.
-    upsert_user(&db, &join.user).await?;
-    upsert_space_member(&db, &space_id, &join.user.id, "member").await?;
+    // Only add a new member if the joiner sent a user payload.
+    // If `user` is None, the joiner is an existing member joining on a new
+    // device — just trust the device, don't create a duplicate membership.
+    if let Some(ref u) = join.user {
+        upsert_user(&db, u).await?;
+        upsert_space_member(&db, &space_id, &u.id, "member").await?;
+    }
 
     stream.shutdown().await.ok();
     Ok(())
@@ -301,7 +313,7 @@ async fn run_host_session(
 pub async fn run_joiner(
     db: SqlitePool,
     address: String,
-    joining_user: WireUser,
+    joining_user: Option<WireUser>,
     device_display_name: String,
 ) -> Result<SpaceBundle, AppError> {
     let (digits, target) = parse_address(&address)?;

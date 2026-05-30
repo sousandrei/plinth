@@ -1,27 +1,28 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use sqlx::SqlitePool;
 use tauri::AppHandle;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
-use tokio_rustls::TlsAcceptor;
 
 use crate::error::AppError;
 use crate::sync::cert_match::{resolve_peer, PeerIdentity};
+use crate::sync::identity::DeviceIdentity;
 use crate::sync::session;
+use crate::sync::tls;
 
 /// Handle to a running sync server task, plus the address it bound to.
-/// The address is what gets re-advertised over mDNS by Step 4d.
 pub struct ServerHandle {
     pub local_addr: SocketAddr,
     pub task: JoinHandle<()>,
 }
 
-/// Bind an ephemeral TCP port, return its address, and spawn the accept
-/// loop in the background. Each accepted connection runs through mTLS
-/// and, if the peer cert matches `trusted_devices`, is dispatched to
-/// `session::handle_inbound`.
-pub async fn spawn(db: SqlitePool, acceptor: TlsAcceptor, app: AppHandle) -> Result<ServerHandle, AppError> {
+pub async fn spawn(
+    db: SqlitePool,
+    identity: Arc<DeviceIdentity>,
+    app: AppHandle,
+) -> Result<ServerHandle, AppError> {
     let listener = TcpListener::bind("0.0.0.0:0")
         .await
         .map_err(|e| AppError::Io(format!("sync listen: {e}")))?;
@@ -29,12 +30,17 @@ pub async fn spawn(db: SqlitePool, acceptor: TlsAcceptor, app: AppHandle) -> Res
         .local_addr()
         .map_err(|e| AppError::Io(format!("sync addr: {e}")))?;
 
-    let task = tokio::spawn(accept_loop(listener, acceptor, db, app));
+    let task = tokio::spawn(accept_loop(listener, db, identity, app));
 
     Ok(ServerHandle { local_addr, task })
 }
 
-async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, db: SqlitePool, app: AppHandle) {
+async fn accept_loop(
+    listener: TcpListener,
+    db: SqlitePool,
+    identity: Arc<DeviceIdentity>,
+    app: AppHandle,
+) {
     loop {
         let (stream, peer_addr) = match listener.accept().await {
             Ok(pair) => pair,
@@ -43,23 +49,26 @@ async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, db: SqlitePoo
                 continue;
             }
         };
-        let acceptor = acceptor.clone();
         let db = db.clone();
+        let identity = identity.clone();
         let app = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, acceptor, db, app).await {
+            if let Err(e) = handle_connection(stream, db, identity, app).await {
                 eprintln!("sync conn from {peer_addr}: {e}");
             }
         });
     }
 }
 
+/// Build a fresh TlsAcceptor per connection so trusted_devices changes
+/// (e.g. after pairing) are picked up immediately without a restart.
 async fn handle_connection(
     tcp: TcpStream,
-    acceptor: TlsAcceptor,
     db: SqlitePool,
+    identity: Arc<DeviceIdentity>,
     app: AppHandle,
 ) -> Result<(), AppError> {
+    let acceptor = tls::server_acceptor(&db, &identity).await?;
     let tls = acceptor
         .accept(tcp)
         .await
@@ -69,10 +78,6 @@ async fn handle_connection(
     session::handle_inbound(tls, peer, db, app).await
 }
 
-/// Read the peer's leaf cert off the completed handshake and look it up
-/// in `trusted_devices`. The TLS verifier (`tls::TrustedDeviceVerifier`)
-/// has already rejected unknown certs, but we still need the cert here
-/// to resolve which device/spaces it belongs to.
 async fn extract_peer<S>(
     tls: &tokio_rustls::server::TlsStream<S>,
     db: &SqlitePool,

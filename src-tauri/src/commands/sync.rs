@@ -9,6 +9,7 @@ use crate::{
     sync::{
         pairing::{
             self, PairToken, PairingState, SpaceBundle, WireMember, WireSpace, WireUser,
+            PAIRING_PORT,
         },
         PeerInfo, PeerRegistry,
     },
@@ -199,7 +200,8 @@ pub async fn accept_pair_token_from_peer(
         .find(|p| p.device_id == peer_device_id)
         .ok_or_else(|| AppError::NotFound(format!("peer {peer_device_id} not in registry")))?;
 
-    let address = format!("{token}|{}:{}", peer.host, peer.port);
+    let pairing_port = peer.pairing_port.unwrap_or(PAIRING_PORT);
+    let address = format!("{token}|{}:{}", peer.host, pairing_port);
 
     let user_row = sqlx::query_file!("queries/sync/get_user.sql", user_session.user_id)
         .fetch_optional(&*db)
@@ -216,7 +218,7 @@ pub async fn accept_pair_token_from_peer(
     };
 
     let bundle: SpaceBundle =
-        pairing::run_joiner((*db).clone(), address, joining, device_display_name).await?;
+        pairing::run_joiner((*db).clone(), address, Some(joining), device_display_name).await?;
 
     Ok(JoinResult {
         space_id: bundle.space.id,
@@ -228,6 +230,51 @@ pub async fn accept_pair_token_from_peer(
 pub struct JoinResult {
     pub space_id: String,
     pub space_name: String,
+}
+
+/// Join a space on a fresh device (no session required). Sends `None` as the
+/// joining user so the host does not create a duplicate membership row. The
+/// returned `SpaceUsers` lists every user in the space so the frontend can
+/// ask "which one are you?" and set a local PIN for that identity.
+#[tauri::command]
+pub async fn join_space(
+    peer_device_id: String,
+    token: String,
+    device_display_name: String,
+    db: State<'_, DbPool>,
+    registry: State<'_, PeerRegistry>,
+) -> Result<SpaceUsers, AppError> {
+    let peer = registry
+        .snapshot()
+        .into_iter()
+        .find(|p| p.device_id == peer_device_id)
+        .ok_or_else(|| AppError::NotFound(format!("peer {peer_device_id} not in registry")))?;
+
+    let pairing_port = peer.pairing_port.unwrap_or(PAIRING_PORT);
+    let address = format!("{token}|{}:{}", peer.host, pairing_port);
+    let bundle = pairing::run_joiner((*db).clone(), address, None, device_display_name).await?;
+
+    Ok(SpaceUsers {
+        space_id: bundle.space.id,
+        space_name: bundle.space.name,
+        users: bundle.users.into_iter().map(|u| BundleUser {
+            id: u.id,
+            name: u.name,
+        }).collect(),
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct BundleUser {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SpaceUsers {
+    pub space_id: String,
+    pub space_name: String,
+    pub users: Vec<BundleUser>,
 }
 
 #[tauri::command]
@@ -254,7 +301,7 @@ pub async fn accept_pair_token(
     };
 
     let bundle: SpaceBundle =
-        pairing::run_joiner((*db).clone(), address, joining, device_display_name).await?;
+        pairing::run_joiner((*db).clone(), address, Some(joining), device_display_name).await?;
 
     Ok(JoinResult {
         space_id: bundle.space.id,

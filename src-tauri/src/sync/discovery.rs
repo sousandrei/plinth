@@ -10,6 +10,7 @@ use sqlx::SqlitePool;
 use tauri::AppHandle;
 
 use crate::error::AppError;
+use crate::sync::pairing::PAIRING_PORT;
 
 const SERVICE_TYPE: &str = "_plinth._tcp.local.";
 const PEER_TTL_SECS: u64 = 90;
@@ -19,6 +20,7 @@ pub struct PeerInfo {
     pub device_id: String,
     pub host: String,
     pub port: u16,
+    pub pairing_port: Option<u16>,
     pub space_ids: Vec<String>,
     pub last_seen: u64,
 }
@@ -118,6 +120,7 @@ async fn run(
     let mut properties: HashMap<String, String> = HashMap::new();
     properties.insert("device_id".into(), device_id.clone());
     properties.insert("spaces".into(), space_ids.join(","));
+    properties.insert("pairing_port".into(), PAIRING_PORT.to_string());
 
     let info = ServiceInfo::new(
         SERVICE_TYPE,
@@ -174,10 +177,14 @@ async fn run(
                         .map(|a| a.to_string())
                         .unwrap_or_else(|| info.get_hostname().to_string());
 
+                    let pairing_port = props
+                        .get_property_val_str("pairing_port")
+                        .and_then(|s| s.parse::<u16>().ok());
                     registry_for_loop.upsert(PeerInfo {
                         device_id: peer_device_id.to_string(),
                         host,
                         port: info.get_port(),
+                        pairing_port,
                         space_ids,
                         last_seen: now_unix(),
                     });

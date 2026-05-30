@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,13 +15,6 @@ use crate::sync::identity::DeviceIdentity;
 
 const DIAL_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Spawn the background dial-scheduler and return its handle. The task runs
-/// forever until the process exits.
-///
-/// The scheduler wakes on two signals:
-///   1. A 30-second periodic tick — syncs any peer not already in session.
-///   2. A debounce fire — the 5s sliding timer expired after a DB mutation;
-///      triggers an immediate sync round against all reachable peers.
 pub fn spawn(
     peers: PeerRegistry,
     db: SqlitePool,
@@ -51,6 +44,19 @@ async fn run(
     }
 }
 
+async fn trusted_device_ids(db: &SqlitePool) -> HashSet<String> {
+    match sqlx::query_file!("queries/sync/list_trusted_device_ids.sql")
+        .fetch_all(db)
+        .await
+    {
+        Ok(rows) => rows.into_iter().map(|r| r.device_id).collect(),
+        Err(e) => {
+            eprintln!("scheduler: load trusted device ids: {e}");
+            HashSet::new()
+        }
+    }
+}
+
 async fn dial_all_peers(
     peers: &PeerRegistry,
     db: &SqlitePool,
@@ -58,32 +64,48 @@ async fn dial_all_peers(
     app: &AppHandle,
     in_flight: &Arc<Mutex<HashSet<String>>>,
 ) {
-    let snapshot = peers.snapshot();
+    // Only dial peers we have a trusted_devices row for — this prevents
+    // handshake failures against unknown LAN peers and stops the noise
+    // from devices we haven't paired with (or where pairing was cancelled).
+    let trusted = trusted_device_ids(db).await;
 
-    for peer in snapshot {
+    // Index peers by device_id for O(1) lookup.
+    let peer_map: HashMap<_, _> = peers
+        .snapshot()
+        .into_iter()
+        .map(|p| (p.device_id.clone(), p))
+        .collect();
+
+    for device_id in &trusted {
+        let Some(peer) = peer_map.get(device_id) else {
+            // Trusted but not currently visible on the LAN — skip.
+            continue;
+        };
+
         {
             let guard = in_flight.lock().unwrap();
-            if guard.contains(&peer.device_id) {
+            if guard.contains(device_id) {
                 continue;
             }
         }
-        in_flight.lock().unwrap().insert(peer.device_id.clone());
+        in_flight.lock().unwrap().insert(device_id.clone());
 
+        let peer = peer.clone();
         let db = db.clone();
         let identity = identity.clone();
         let app = app.clone();
         let in_flight = in_flight.clone();
-        let device_id = peer.device_id.clone();
+        let device_id = device_id.clone();
 
         tokio::spawn(async move {
             match client::dial(&peer, &db, &identity, app).await {
                 Ok(()) => {
                     if let Err(e) = gc::run(&db).await {
-                        eprintln!("scheduler: gc after dial {}: {e}", peer.device_id);
+                        eprintln!("scheduler: gc after dial {device_id}: {e}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("scheduler: dial {} failed: {e}", peer.device_id);
+                    eprintln!("scheduler: dial {device_id} failed: {e}");
                 }
             }
             in_flight.lock().unwrap().remove(&device_id);

@@ -26,6 +26,19 @@ export const acceptPairToken = (
 ): Promise<JoinResult> =>
   invoke<JoinResult>('accept_pair_token', { address, deviceDisplayName });
 
+export interface SpaceUsers {
+  space_id: string;
+  space_name: string;
+  users: Array<{ id: string; name: string }>;
+}
+
+export const joinSpace = (
+  peerDeviceId: string,
+  token: string,
+  deviceDisplayName: string,
+): Promise<SpaceUsers> =>
+  invoke<SpaceUsers>('join_space', { peerDeviceId, token, deviceDisplayName });
+
 export const acceptPairTokenFromPeer = (
   peerDeviceId: string,
   token: string,
