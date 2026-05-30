@@ -86,13 +86,13 @@ export const RegisterForm = ({
     <div className="flex flex-col items-center gap-8 animate-slide-in-right">
       <div className="text-center">
         <h1 className="text-lg font-semibold tracking-tight">
-          Welcome to Plinth
+          {step === 'space' ? 'Name your space' : 'Set up your profile'}
         </h1>
         <p className="text-xs font-mono text-muted-foreground mt-1">
-          {step === 'name' && 'Create your profile to get started.'}
+          {step === 'name' && 'What should we call you?'}
           {step === 'pin' && 'Choose a 4-digit PIN to secure your data.'}
           {step === 'confirm' && 'Confirm your PIN.'}
-          {step === 'space' && 'Name your space.'}
+          {step === 'space' && 'This is where your finances live.'}
         </p>
       </div>
 

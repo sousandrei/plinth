@@ -117,7 +117,7 @@ export const LoginPage = (): React.JSX.Element => {
                 Welcome to Plinth
               </h1>
               <p className="text-xs font-mono text-muted-foreground mt-1">
-                Set up this device to get started.
+                Personal finance, local-first.
               </p>
             </div>
             <div className="flex flex-col gap-3 w-64">
@@ -129,7 +129,7 @@ export const LoginPage = (): React.JSX.Element => {
                 }}
                 className="w-full px-4 py-3 text-sm font-mono bg-foreground text-canvas transition-all duration-150 active:scale-[0.98] hover:opacity-90"
               >
-                Create account
+                Get started
               </button>
               <button
                 type="button"
@@ -139,7 +139,7 @@ export const LoginPage = (): React.JSX.Element => {
                 }}
                 className="w-full px-4 py-3 text-sm font-mono border border-border-muted bg-canvas-raised text-foreground transition-all duration-150 active:scale-[0.98] hover:border-accent hover:bg-accent-muted/20"
               >
-                Join via pairing
+                Join an existing space
               </button>
             </div>
           </div>
