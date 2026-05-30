@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { setActiveSpace } from '@/api/spaces';
 import { joinSpace, listPeers } from '@/api/sync';
-import { createUser, setPin } from '@/api/users';
+import { createUser, setPin, verifyPin } from '@/api/users';
 import { cn } from '@/lib/util';
 import type { PeerInfo, User } from '@/types';
 import { PinInput } from './PinInput';
@@ -69,9 +69,10 @@ export const JoinStage = ({
     mutationFn: async (pin: string): Promise<User> => {
       let user: User;
       if (pickedUser) {
-        // Existing user from bundle — just set a local PIN (pin_hash is already
-        // stored via upsert_user during run_joiner; set_pin overwrites it locally).
+        // Existing user from bundle — set the PIN then immediately verify it
+        // so the backend session is established (verify_pin calls session.set).
         await setPin(pickedUser.id, pin);
+        await verifyPin(pickedUser.id, pin);
         user = {
           id: pickedUser.id,
           name: pickedUser.name,
