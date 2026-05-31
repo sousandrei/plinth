@@ -4,6 +4,9 @@ import type { JoinResult, PairToken, PeerInfo, TrustedDevice } from '@/types';
 export const listPeers = (): Promise<PeerInfo[]> =>
   invoke<PeerInfo[]>('list_peers');
 
+export const getDeviceName = (): Promise<string> =>
+  invoke<string>('get_device_name');
+
 export const listTrustedDevices = (): Promise<TrustedDevice[]> =>
   invoke<TrustedDevice[]>('list_trusted_devices');
 

@@ -222,6 +222,7 @@ pub fn run() {
             commands::sync::accept_pair_token,
             commands::sync::accept_pair_token_from_peer,
             commands::sync::join_space,
+            commands::sync::get_device_name,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -16,6 +16,7 @@ import {
 import {
   acceptPairTokenFromPeer,
   generatePairToken,
+  getDeviceName,
   listPeers,
   listTrustedDevices,
   removeTrustedDevice,
@@ -55,12 +56,17 @@ interface PairModalProps {
 }
 
 function PairModal({ onClose }: PairModalProps): React.JSX.Element {
-  const { user } = useAuth();
   const [token, setToken] = useState<PairToken | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
 
+  const { data: deviceName = 'This device' } = useQuery({
+    queryKey: ['device-name'],
+    queryFn: getDeviceName,
+    staleTime: Infinity,
+  });
+
   const generateMutation = useMutation({
-    mutationFn: () => generatePairToken(user?.name ?? 'This device'),
+    mutationFn: () => generatePairToken(deviceName),
     onSuccess: (pt) => {
       setToken(pt);
       const remaining = Math.max(
@@ -545,7 +551,12 @@ function JoinSpaceModal({
   const [selectedPeer, setSelectedPeer] = useState<PeerInfo | null>(null);
   const [token, setToken] = useState('');
   const [tokenError, setTokenError] = useState('');
-  const { user } = useAuth();
+
+  const { data: deviceName = 'This device' } = useQuery({
+    queryKey: ['device-name'],
+    queryFn: getDeviceName,
+    staleTime: Infinity,
+  });
 
   const {
     data: peers = [],
@@ -563,7 +574,7 @@ function JoinSpaceModal({
       return acceptPairTokenFromPeer(
         selectedPeer.device_id,
         token.trim(),
-        user?.name ?? 'This device',
+        deviceName,
       );
     },
     onSuccess: (result) => {

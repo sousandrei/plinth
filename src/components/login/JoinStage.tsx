@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { setActiveSpace } from '@/api/spaces';
-import { joinSpace, listPeers } from '@/api/sync';
+import { getDeviceName, joinSpace, listPeers } from '@/api/sync';
 import { createUser, setPin, verifyPin } from '@/api/users';
 import { cn } from '@/lib/util';
 import type { PeerInfo, User } from '@/types';
@@ -38,6 +38,12 @@ export const JoinStage = ({
   const tokenRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  const { data: deviceName = 'This device' } = useQuery({
+    queryKey: ['device-name'],
+    queryFn: getDeviceName,
+    staleTime: Infinity,
+  });
+
   const {
     data: peers = [],
     isLoading: peersLoading,
@@ -55,7 +61,7 @@ export const JoinStage = ({
   const joinMutation = useMutation({
     mutationFn: () => {
       if (!selectedPeer) throw new Error('No peer selected');
-      return joinSpace(selectedPeer.device_id, token.trim(), 'this device');
+      return joinSpace(selectedPeer.device_id, token.trim(), deviceName);
     },
     onSuccess: (result) => {
       setSpaceId(result.space_id);
