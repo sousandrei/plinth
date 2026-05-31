@@ -105,6 +105,17 @@ where
     let (send_res, recv_res) = tokio::join!(send_fut, recv_fut);
     send_res?;
     recv_res?;
+
+    for space_id in &peer.shared_space_ids {
+        let _ = sqlx::query_file!(
+            "queries/sync/delete_evicted_device.sql",
+            space_id,
+            peer.device_id
+        )
+        .execute(&db)
+        .await;
+    }
+
     Ok(())
 }
 

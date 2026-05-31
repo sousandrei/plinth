@@ -193,7 +193,12 @@ export const JoinStage = ({
             </h1>
             <p className="text-xs font-mono text-muted-foreground mt-1">
               Enter the 6-digit token shown on{' '}
-              <span className="text-foreground">{selectedPeer?.host}</span>.
+              <span className="text-foreground">
+                {selectedPeer?.name
+                  ? `${selectedPeer.name} (${selectedPeer.host})`
+                  : selectedPeer?.host}
+              </span>
+              .
             </p>
           </div>
           <form

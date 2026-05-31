@@ -163,6 +163,13 @@ CREATE TABLE IF NOT EXISTS trusted_devices (
     UNIQUE (space_id, device_id)
 );
 
+CREATE TABLE IF NOT EXISTS evicted_devices (
+    space_id  TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    cert_pem  TEXT NOT NULL,
+    PRIMARY KEY (space_id, device_id)
+);
+
 -- How far we've consumed each peer's change log, per space.
 CREATE TABLE IF NOT EXISTS sync_cursors (
     space_id       TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,

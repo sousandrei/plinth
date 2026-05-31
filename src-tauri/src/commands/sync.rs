@@ -94,47 +94,42 @@ pub async fn remove_trusted_device(
             .await
             .map_err(|e| AppError::Db(format!("remove_trusted_device read device_id: {e}")))?;
 
-    let row = sqlx::query_scalar!(
-        "SELECT device_id FROM trusted_devices WHERE id = ?1",
+    let target = sqlx::query!(
+        "SELECT device_id, cert_pem FROM trusted_devices WHERE space_id = ?1 AND id = ?2",
+        active.space_id,
         id
     )
     .fetch_optional(&*db)
     .await
-    .map_err(|e| AppError::Db(format!("remove_trusted_device fetch: {e}")))?;
+    .map_err(|e| AppError::Db(format!("remove_trusted_device fetch target: {e}")))?;
 
-    if let (Some(local_id), Some(row_device_id)) = (local_device_id, row) {
-        if local_id == row_device_id {
-            return Err(AppError::InvalidInput(
-                "cannot remove this device from itself".into(),
-            ));
+    if let Some(ref t) = target {
+        if let Some(ref local_id) = local_device_id {
+            if local_id == &t.device_id {
+                return Err(AppError::InvalidInput(
+                    "cannot remove this device from itself".into(),
+                ));
+            }
         }
+
+        // Tombstone in evicted_devices
+        sqlx::query_file!(
+            "queries/sync/insert_evicted_device.sql",
+            active.space_id,
+            t.device_id,
+            t.cert_pem
+        )
+        .execute(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("remove_trusted_device insert evicted: {e}")))?;
     }
 
+    // Delete from trusted_devices (triggers delete change_log row)
     sqlx::query_file!("queries/sync/delete_trusted_device.sql", active.space_id, id)
         .execute(&*db)
         .await
-        .map_err(|e| AppError::Db(format!("remove_trusted_device: {e}")))?;
-    Ok(())
-}
+        .map_err(|e| AppError::Db(format!("remove_trusted_device delete: {e}")))?;
 
-#[tauri::command]
-pub async fn set_trusted_device_sync(
-    id: String,
-    enabled: bool,
-    session: State<'_, Session>,
-    db: State<'_, DbPool>,
-) -> Result<(), AppError> {
-    let active = session.require()?;
-    let flag: i64 = if enabled { 1 } else { 0 };
-    sqlx::query_file!(
-        "queries/sync/set_trusted_device_sync.sql",
-        active.space_id,
-        id,
-        flag
-    )
-    .execute(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("set_trusted_device_sync: {e}")))?;
     Ok(())
 }
 

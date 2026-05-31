@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR REPLACE INTO evicted_devices (space_id, device_id, cert_pem)\nVALUES (?1, ?2, ?3);\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f41eecc2dd174414ec85e91c8bae554259920c956e986b0ed1f821c601bc2233"
+}

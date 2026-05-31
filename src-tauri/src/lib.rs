@@ -218,7 +218,6 @@ pub fn run() {
             commands::sync::list_peers,
             commands::sync::list_trusted_devices,
             commands::sync::remove_trusted_device,
-            commands::sync::set_trusted_device_sync,
             commands::sync::generate_pair_token,
             commands::sync::accept_pair_token,
             commands::sync::accept_pair_token_from_peer,

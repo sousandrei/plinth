@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM evicted_devices\nWHERE space_id = ?1 AND device_id = ?2;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3f82cded0489d1c56edbcaebd0fb0dc57ad9c69bc96af0291f9e238b9fae5454"
+}

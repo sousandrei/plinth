@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM trusted_devices\nWHERE sync_enabled = 1\n",
+  "query": "SELECT\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM trusted_devices\nUNION\nSELECT\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM evicted_devices\n",
   "describe": {
     "columns": [
       {
@@ -34,5 +34,5 @@
       false
     ]
   },
-  "hash": "bdb9faef5b85ec5ad2a71b5ba1b1e49555ac77a18e8f9ddee9373e79d515605a"
+  "hash": "7ca7d5bfb8fd8b8a506e8fee585863717f3b0db128e3cb8154209fee3155db1a"
 }

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { listMySpaces } from '@/api/spaces';
+import { getDeviceName, getLocalAddress } from '@/api/sync';
 import { listUsers } from '@/api/users';
 import { useAuth } from '@/context/AuthContext';
 import type { User } from '@/types';
@@ -29,6 +30,18 @@ export const LoginPage = (): React.JSX.Element => {
   const { data: users, isLoading } = useQuery({
     queryKey: ['users'],
     queryFn: listUsers,
+  });
+
+  const { data: deviceName } = useQuery({
+    queryKey: ['device-name'],
+    queryFn: getDeviceName,
+    staleTime: Infinity,
+  });
+
+  const { data: localAddress } = useQuery({
+    queryKey: ['local-address'],
+    queryFn: getLocalAddress,
+    staleTime: Infinity,
   });
 
   useEffect(() => {
@@ -95,10 +108,16 @@ export const LoginPage = (): React.JSX.Element => {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-canvas">
-      <div className="absolute top-8 left-1/2 -translate-x-1/2 flex items-center gap-2.5 animate-fade-in">
+      <div className="absolute top-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 animate-fade-in text-center">
         <span className="text-sm font-semibold tracking-tight font-sans">
           Plinth
         </span>
+        {deviceName && (
+          <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">
+            {deviceName}
+            {localAddress ? ` · ${localAddress}` : ''}
+          </span>
+        )}
       </div>
 
       <div className="w-full max-w-sm px-6">
