@@ -180,6 +180,7 @@ pub fn run() {
             commands::spaces::remove_space_member,
             commands::spaces::leave_space,
             commands::spaces::delete_space,
+            commands::spaces::evict_space,
             commands::spaces::rename_space,
             commands::spaces::update_member_role,
             commands::accounts::list_accounts,
@@ -223,6 +224,7 @@ pub fn run() {
             commands::sync::accept_pair_token_from_peer,
             commands::sync::join_space,
             commands::sync::get_device_name,
+            commands::sync::get_local_address,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

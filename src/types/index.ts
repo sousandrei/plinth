@@ -136,6 +136,7 @@ export interface AccountSummary {
 
 export interface PeerInfo {
   device_id: string;
+  name: string;
   host: string;
   port: number;
 }
@@ -145,7 +146,6 @@ export interface TrustedDevice {
   space_id: string;
   device_id: string;
   display_name: string;
-  sync_enabled: boolean;
   paired_at: string;
 }
 

@@ -25,6 +25,9 @@ export const leaveSpace = (): Promise<void> => invoke<void>('leave_space');
 
 export const deleteSpace = (): Promise<void> => invoke<void>('delete_space');
 
+export const evictSpace = (spaceId: string): Promise<void> =>
+  invoke<void>('evict_space', { spaceId });
+
 export const renameSpace = (name: string): Promise<void> =>
   invoke<void>('rename_space', { name });
 

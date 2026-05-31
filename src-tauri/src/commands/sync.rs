@@ -27,6 +27,13 @@ pub fn get_device_name() -> String {
         .into_owned()
 }
 
+#[tauri::command]
+pub fn get_local_address() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    Some(socket.local_addr().ok()?.ip().to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Peer discovery
 // ---------------------------------------------------------------------------
@@ -46,7 +53,6 @@ pub struct TrustedDevice {
     pub space_id: String,
     pub device_id: String,
     pub display_name: String,
-    pub sync_enabled: bool,
     pub paired_at: String,
 }
 
@@ -68,7 +74,6 @@ pub async fn list_trusted_devices(
             space_id: r.space_id,
             device_id: r.device_id,
             display_name: r.display_name,
-            sync_enabled: r.sync_enabled != 0,
             paired_at: r.paired_at,
         })
         .collect())
@@ -81,6 +86,30 @@ pub async fn remove_trusted_device(
     db: State<'_, DbPool>,
 ) -> Result<(), AppError> {
     let active = session.require()?;
+
+    let local_device_id_key = "device_id";
+    let local_device_id =
+        sqlx::query_file_scalar!("queries/settings/get_setting.sql", local_device_id_key)
+            .fetch_optional(&*db)
+            .await
+            .map_err(|e| AppError::Db(format!("remove_trusted_device read device_id: {e}")))?;
+
+    let row = sqlx::query_scalar!(
+        "SELECT device_id FROM trusted_devices WHERE id = ?1",
+        id
+    )
+    .fetch_optional(&*db)
+    .await
+    .map_err(|e| AppError::Db(format!("remove_trusted_device fetch: {e}")))?;
+
+    if let (Some(local_id), Some(row_device_id)) = (local_device_id, row) {
+        if local_id == row_device_id {
+            return Err(AppError::InvalidInput(
+                "cannot remove this device from itself".into(),
+            ));
+        }
+    }
+
     sqlx::query_file!("queries/sync/delete_trusted_device.sql", active.space_id, id)
         .execute(&*db)
         .await

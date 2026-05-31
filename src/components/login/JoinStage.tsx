@@ -164,9 +164,11 @@ export const JoinStage = ({
                   )}
                 >
                   <span className="w-2 h-2 rounded-full bg-accent shrink-0" />
-                  <span className="truncate">{peer.host}</span>
+                  <span className="flex-1 truncate">
+                    {peer.name || peer.host}
+                  </span>
                   <span className="ml-auto text-[10px] text-muted-foreground">
-                    :{peer.port}
+                    {peer.host}
                   </span>
                 </button>
               ))}

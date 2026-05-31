@@ -7,16 +7,17 @@ export const listPeers = (): Promise<PeerInfo[]> =>
 export const getDeviceName = (): Promise<string> =>
   invoke<string>('get_device_name');
 
+export const getLocalAddress = (): Promise<string | null> =>
+  invoke<string | null>('get_local_address');
+
+export const getLocalDeviceId = (): Promise<string | null> =>
+  invoke<string | null>('get_app_setting', { key: 'device_id' });
+
 export const listTrustedDevices = (): Promise<TrustedDevice[]> =>
   invoke<TrustedDevice[]>('list_trusted_devices');
 
 export const removeTrustedDevice = (id: string): Promise<void> =>
   invoke<void>('remove_trusted_device', { id });
-
-export const setTrustedDeviceSync = (
-  id: string,
-  enabled: boolean,
-): Promise<void> => invoke<void>('set_trusted_device_sync', { id, enabled });
 
 export const generatePairToken = (
   hostDisplayName: string,

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM change_log WHERE space_id = ?1;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9dded4a136d8a4301a32aece32f0a22e700d0fbb99291c0d9da97f71b83327f7"
+}

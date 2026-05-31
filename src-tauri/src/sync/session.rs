@@ -1,5 +1,5 @@
 use sqlx::SqlitePool;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
@@ -320,7 +320,7 @@ where
         let frame = crate::sync::frame::read_frame(&mut rd).await?;
         match frame {
             Frame::Batch(batch) => {
-                apply_batch(&db, &local_device_id, &peer, batch).await?;
+                apply_batch(&db, &local_device_id, &peer, batch, &app).await?;
             }
             Frame::ModelVersionSummary(summary) => {
                 if let Some(tx) = model_versions_tx.take() {
@@ -362,27 +362,73 @@ where
     Ok(())
 }
 
-/// Apply one `ChangeBatch` atomically with its cursor advance.
+/// Apply one `ChangeBatch` atomically with its cursor advance, and emit
+/// `sync://evicted` if this device's own trusted_devices row was deleted.
 async fn apply_batch(
     db: &SqlitePool,
     local_device_id: &str,
     peer: &PeerIdentity,
     batch: ChangeBatch,
+    app: &AppHandle,
 ) -> Result<(), AppError> {
     if !peer.shared_space_ids.contains(&batch.space_id) {
         return Ok(());
     }
 
+    let evicted = batch.rows.iter().any(|r| {
+        r.table_name == "trusted_devices"
+            && r.operation == "delete"
+            && r.device_id != local_device_id
+    });
+
     let space_id = batch.space_id.clone();
+    let evicted_space_id = batch.space_id.clone();
     let peer_device_id = peer.device_id.clone();
     let final_seq = batch.final_seq;
+    let batch_space_id = batch.space_id.clone();
+
+    if evicted {
+        let deleted_ids: Vec<String> = batch
+            .rows
+            .iter()
+            .filter(|r| r.table_name == "trusted_devices" && r.operation == "delete")
+            .map(|r| r.row_id.clone())
+            .collect();
+
+        let own_rows = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM trusted_devices WHERE device_id = ?1 AND id IN (\
+             SELECT value FROM json_each(?2))",
+            local_device_id,
+            serde_json::to_string(&deleted_ids).unwrap_or_default()
+        )
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+
+        if own_rows > 0 {
+            run_as_device(db, &peer.device_id, move |tx| -> GuardedFuture<'_, ()> {
+                Box::pin(async move {
+                    for row in &batch.rows {
+                        apply::apply_change(tx, row).await?;
+                    }
+                    cursors::advance(tx, &space_id, &peer_device_id, final_seq).await?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|e| AppError::Db(format!("apply_batch {local_device_id}: {e}")))?;
+
+            let _ = app.emit("sync://evicted", &evicted_space_id);
+            return Ok(());
+        }
+    }
 
     run_as_device(db, &peer.device_id, move |tx| -> GuardedFuture<'_, ()> {
         Box::pin(async move {
             for row in &batch.rows {
                 apply::apply_change(tx, row).await?;
             }
-            cursors::advance(tx, &space_id, &peer_device_id, final_seq).await?;
+            cursors::advance(tx, &batch_space_id, &peer_device_id, final_seq).await?;
             Ok(())
         })
     })

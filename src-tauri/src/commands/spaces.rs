@@ -269,7 +269,40 @@ pub async fn delete_space(
         .await
         .map_err(|e| AppError::Db(format!("delete_space: {e}")))?;
 
+    sqlx::query_file!("queries/spaces/delete_change_log_for_space.sql", data.space_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space change_log: {e}")))?;
+
     session.clear_space();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn evict_space(
+    space_id: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+) -> Result<(), AppError> {
+    sqlx::query_file!("queries/spaces/delete_space.sql", space_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("evict_space delete_space: {e}")))?;
+
+    sqlx::query_file!("queries/spaces/delete_change_log_for_space.sql", space_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("evict_space change_log: {e}")))?;
+
+    let session_active = if let Ok(data) = session.require() {
+        data.space_id == space_id
+    } else {
+        false
+    };
+    if session_active {
+        session.clear_space();
+    }
+
     Ok(())
 }
 

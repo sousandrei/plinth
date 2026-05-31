@@ -18,6 +18,7 @@ const PEER_TTL_SECS: u64 = 90;
 #[derive(Debug, Clone, Serialize)]
 pub struct PeerInfo {
     pub device_id: String,
+    pub name: String,
     pub host: String,
     pub port: u16,
     pub pairing_port: Option<u16>,
@@ -177,11 +178,18 @@ async fn run(
                         .map(|a| a.to_string())
                         .unwrap_or_else(|| info.get_hostname().to_string());
 
+                    let raw_hostname = info.get_hostname();
+                    let name = raw_hostname
+                        .trim_end_matches(".local.")
+                        .trim_end_matches('.')
+                        .to_string();
+
                     let pairing_port = props
                         .get_property_val_str("pairing_port")
                         .and_then(|s| s.parse::<u16>().ok());
                     registry_for_loop.upsert(PeerInfo {
                         device_id: peer_device_id.to_string(),
+                        name,
                         host,
                         port: info.get_port(),
                         pairing_port,

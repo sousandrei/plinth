@@ -17,10 +17,11 @@ import {
   acceptPairTokenFromPeer,
   generatePairToken,
   getDeviceName,
+  getLocalAddress,
+  getLocalDeviceId,
   listPeers,
   listTrustedDevices,
   removeTrustedDevice,
-  setTrustedDeviceSync,
 } from '@/api/sync';
 import { listUsers } from '@/api/users';
 import { Button } from '@/components/ui/Button';
@@ -62,6 +63,12 @@ function PairModal({ onClose }: PairModalProps): React.JSX.Element {
   const { data: deviceName = 'This device' } = useQuery({
     queryKey: ['device-name'],
     queryFn: getDeviceName,
+    staleTime: Infinity,
+  });
+
+  const { data: localAddress } = useQuery({
+    queryKey: ['local-address'],
+    queryFn: getLocalAddress,
     staleTime: Infinity,
   });
 
@@ -131,6 +138,10 @@ function PairModal({ onClose }: PairModalProps): React.JSX.Element {
             >
               {secondsLeft > 0 ? `Expires in ${secondsLeft}s` : 'Expired'}
             </span>
+            <span className="text-[10px] font-mono text-muted-foreground">
+              {deviceName}
+              {localAddress ? ` · ${localAddress}` : ''}
+            </span>
           </div>
           <p className="text-xs text-muted-foreground">
             On the other device, choose{' '}
@@ -164,6 +175,12 @@ function DevicesSection({ spaceId }: DevicesSectionProps): React.JSX.Element {
   const queryClient = useQueryClient();
   const [pairOpen, setPairOpen] = useState(false);
 
+  const { data: localDeviceId } = useQuery({
+    queryKey: ['local-device-id'],
+    queryFn: getLocalDeviceId,
+    staleTime: Infinity,
+  });
+
   const { data: devices = [] } = useQuery({
     queryKey: ['trusted-devices', spaceId],
     queryFn: listTrustedDevices,
@@ -171,13 +188,6 @@ function DevicesSection({ spaceId }: DevicesSectionProps): React.JSX.Element {
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => removeTrustedDevice(id),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ['trusted-devices', spaceId] }),
-  });
-
-  const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      setTrustedDeviceSync(id, enabled),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['trusted-devices', spaceId] }),
   });
@@ -223,37 +233,20 @@ function DevicesSection({ spaceId }: DevicesSectionProps): React.JSX.Element {
                   Paired {device.paired_at.slice(0, 10)}
                 </span>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={device.sync_enabled}
-                onClick={() =>
-                  toggleMutation.mutate({
-                    id: device.id,
-                    enabled: !device.sync_enabled,
-                  })
-                }
-                className={cn(
-                  'relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-                  device.sync_enabled ? 'bg-accent' : 'bg-border-muted',
-                )}
-              >
-                <span
-                  className={cn(
-                    'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform',
-                    device.sync_enabled ? 'translate-x-4' : 'translate-x-0',
-                  )}
-                />
-              </button>
-              <Button
-                variant="ghost"
-                onClick={() => removeMutation.mutate(device.id)}
-                disabled={removeMutation.isPending}
-                className="px-2 h-8 text-xs text-muted-foreground hover:text-expense rounded-none shrink-0"
-              >
-                Remove
-              </Button>
+              {device.device_id !== localDeviceId ? (
+                <Button
+                  variant="ghost"
+                  onClick={() => removeMutation.mutate(device.id)}
+                  disabled={removeMutation.isPending}
+                  className="px-2 h-8 text-xs text-muted-foreground hover:text-expense rounded-none shrink-0"
+                >
+                  Remove
+                </Button>
+              ) : (
+                <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest shrink-0">
+                  This device
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -635,9 +628,11 @@ function JoinSpaceModal({
                   )}
                 >
                   <span className="w-2 h-2 rounded-full bg-accent shrink-0" />
-                  <span className="flex-1 truncate">{peer.host}</span>
+                  <span className="flex-1 truncate">
+                    {peer.name || peer.host}
+                  </span>
                   <span className="text-[10px] text-muted-foreground shrink-0">
-                    :{peer.port}
+                    {peer.host}
                   </span>
                 </button>
               ))}
