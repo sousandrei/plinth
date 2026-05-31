@@ -79,5 +79,9 @@ pub async fn ensure_minilm(app: AppHandle) -> Result<(), AppError> {
         );
     }
 
+    // Signal the frontend that MiniLM is now available so it can reload the
+    // classifier (which failed to load at startup when the files were missing).
+    let _ = app.emit("minilm://ready", ());
+
     Ok(())
 }

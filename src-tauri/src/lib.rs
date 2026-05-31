@@ -213,6 +213,7 @@ pub fn run() {
             commands::training::delete_model,
             commands::training::is_classifier_ready,
             commands::training::get_training_device,
+            commands::training::reload_classifier,
             commands::minilm::minilm_status,
             commands::minilm::ensure_minilm,
             commands::settings::get_app_setting,

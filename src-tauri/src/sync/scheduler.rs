@@ -45,9 +45,14 @@ async fn run(
 }
 
 async fn trusted_device_ids(db: &SqlitePool) -> HashSet<String> {
-    match sqlx::query_file!("queries/sync/list_trusted_device_ids.sql")
-        .fetch_all(db)
-        .await
+    // Only dial peers that share at least one existing space.  When a space
+    // is deleted the trusted_devices row is orphaned (no CASCADE) — we must
+    // not dial that peer for a space we no longer have.
+    match sqlx::query_file!(
+        "queries/sync/list_trusted_device_ids.sql"
+    )
+    .fetch_all(db)
+    .await
     {
         Ok(rows) => rows.into_iter().map(|r| r.device_id).collect(),
         Err(e) => {

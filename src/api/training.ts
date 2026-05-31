@@ -43,3 +43,6 @@ export const ensureMinilm = (): Promise<void> => invoke<void>('ensure_minilm');
 
 export const getTrainingDevice = (): Promise<string> =>
   invoke<string>('get_training_device');
+
+export const reloadClassifier = (): Promise<void> =>
+  invoke<void>('reload_classifier');

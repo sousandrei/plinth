@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { useEffect, useState } from 'react';
-import { ensureMinilm, minilmStatus } from '@/api/training';
+import { ensureMinilm, minilmStatus, reloadClassifier } from '@/api/training';
 import { Button } from '@/components/ui/Button';
 
 interface DownloadProgress {
@@ -11,7 +11,9 @@ interface DownloadProgress {
 
 export function MiniLmSetupBanner(): React.JSX.Element | null {
   const [needed, setNeeded] = useState<boolean | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [status, setStatus] = useState<
+    'idle' | 'downloading' | 'done' | 'error'
+  >('idle');
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,7 +24,7 @@ export function MiniLmSetupBanner(): React.JSX.Element | null {
   }, []);
 
   useEffect(() => {
-    if (!downloading) return;
+    if (status !== 'downloading') return;
     let unlisten: (() => void) | null = null;
     listen<DownloadProgress>('minilm://progress', (e) => {
       setProgress(e.payload);
@@ -32,21 +34,40 @@ export function MiniLmSetupBanner(): React.JSX.Element | null {
     return () => {
       unlisten?.();
     };
-  }, [downloading]);
+  }, [status]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<void>('minilm://ready', () => {
+      void reloadClassifier();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (status !== 'done') return;
+    const timer = setTimeout(() => {
+      setNeeded(false);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [status]);
 
   if (!needed) return null;
 
   const start = async () => {
-    setDownloading(true);
+    setStatus('downloading');
     setError(null);
+    setProgress(null);
     try {
       await ensureMinilm();
-      setNeeded(false);
+      setStatus('done');
     } catch (e) {
+      setStatus('error');
       setError(String(e));
-    } finally {
-      setDownloading(false);
-      setProgress(null);
     }
   };
 
@@ -62,17 +83,21 @@ export function MiniLmSetupBanner(): React.JSX.Element | null {
             model (~90 MB). Downloaded once and cached locally.
           </span>
         </div>
-        <Button
-          variant="secondary"
-          onClick={start}
-          disabled={downloading}
-          className="shrink-0 text-xs h-8 px-4"
-        >
-          {downloading ? 'Downloading…' : 'Download model'}
-        </Button>
+        {status === 'done' ? (
+          <span className="shrink-0 text-xs font-mono text-growth">Done</span>
+        ) : (
+          <Button
+            variant="secondary"
+            onClick={start}
+            disabled={status !== 'idle'}
+            className="shrink-0 text-xs h-8 px-4"
+          >
+            {status === 'downloading' ? 'Downloading…' : 'Download model'}
+          </Button>
+        )}
       </div>
 
-      {downloading && progress && (
+      {status === 'downloading' && progress && (
         <div className="flex flex-col gap-1">
           <div className="h-1 w-full bg-border-subtle overflow-hidden">
             <div
@@ -86,7 +111,13 @@ export function MiniLmSetupBanner(): React.JSX.Element | null {
         </div>
       )}
 
-      {error && (
+      {status === 'done' && (
+        <span className="text-[10px] font-mono text-growth">
+          Model downloaded — classifier reloaded.
+        </span>
+      )}
+
+      {status === 'error' && (
         <span className="text-[10px] font-mono text-expense">{error}</span>
       )}
     </div>

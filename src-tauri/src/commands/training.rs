@@ -15,6 +15,7 @@ use crate::{
     classifier::{
         dataset::load_approved,
         trainer::{make_optimizer, precompute_embeddings, split_indices, TrainingConfig},
+        Classifier,
         TrainableClassifier,
     },
     db::DbPool,
@@ -761,4 +762,40 @@ pub fn get_training_device() -> String {
     {
         "CPU".to_string()
     }
+}
+
+/// Reload the classifier from disk. Used after MiniLM download so the
+/// classifier (which failed to load at startup when the files were missing)
+/// can be loaded now that the weights are available.
+#[tauri::command]
+pub async fn reload_classifier(
+    app: AppHandle,
+    db: State<'_, DbPool>,
+    classifier: State<'_, ClassifierState>,
+) -> Result<(), AppError> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| AppError::Internal(format!("resource_dir: {e}")))?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Internal(format!("app_data_dir: {e}")))?;
+
+    let classes = sqlx::query_file!("queries/categories/list_all_categories.sql")
+        .fetch_all(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("fetch categories: {e}")))?
+        .into_iter()
+        .map(|r| r.name)
+        .collect::<Vec<String>>();
+
+    let cl = Classifier::load(&resource_dir, &app_data_dir, classes)
+        .map_err(|e| AppError::Internal(format!("reload classifier: {e}")))?;
+
+    if let Ok(mut guard) = classifier.lock() {
+        *guard = Some(cl);
+    }
+
+    Ok(())
 }
