@@ -165,11 +165,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::users::add_app_user,
             commands::users::list_users,
             commands::users::create_user,
             commands::users::set_pin,
             commands::users::verify_pin,
             commands::users::update_user_name,
+            commands::users::remove_user,
             commands::users::factory_reset,
             commands::spaces::list_my_spaces,
             commands::spaces::create_space,

@@ -23,7 +23,7 @@ import {
   listTrustedDevices,
   removeTrustedDevice,
 } from '@/api/sync';
-import { listUsers } from '@/api/users';
+import { addAppUser, listUsers, removeUser } from '@/api/users';
 import { Button } from '@/components/ui/Button';
 import {
   Dialog,
@@ -276,6 +276,8 @@ function SpaceEditDialog({
   const [nameValue, setNameValue] = useState(space.name);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [addUserId, setAddUserId] = useState<string | null>(null);
+  const [addMode, setAddMode] = useState<'existing' | 'create'>('existing');
+  const [newUserName, setNewUserName] = useState('');
 
   const { data: members = [] } = useQuery({
     queryKey: ['space-members', space.id],
@@ -285,6 +287,14 @@ function SpaceEditDialog({
   const { data: allUsers = [] } = useQuery({
     queryKey: ['users'],
     queryFn: listUsers,
+  });
+
+  const { data: userCount = 0 } = useQuery({
+    queryKey: ['user-count'],
+    queryFn: async () => {
+      const users = await listUsers();
+      return users.length;
+    },
   });
 
   const isOwner = space.role === 'owner';
@@ -312,6 +322,16 @@ function SpaceEditDialog({
       queryClient.invalidateQueries({ queryKey: ['space-members', space.id] }),
   });
 
+  const removeFromAppMutation = useMutation({
+    mutationFn: (userId: string) => removeUser(userId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['space-members', space.id] });
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ['user-count'] });
+      queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
+    },
+  });
+
   const addMutation = useMutation({
     mutationFn: () => {
       if (!addUserId) return Promise.reject(new Error('No user selected'));
@@ -320,6 +340,22 @@ function SpaceEditDialog({
     onSuccess: () => {
       setAddUserId(null);
       queryClient.invalidateQueries({ queryKey: ['space-members', space.id] });
+    },
+  });
+
+  const createAndAddMutation = useMutation({
+    mutationFn: async () => {
+      if (!newUserName.trim())
+        return Promise.reject(new Error('Name is required'));
+      const user = await addAppUser(newUserName.trim());
+      await addSpaceMember(user.id);
+      return user;
+    },
+    onSuccess: () => {
+      setNewUserName('');
+      setAddMode('existing');
+      queryClient.invalidateQueries({ queryKey: ['space-members', space.id] });
+      queryClient.invalidateQueries({ queryKey: ['users'] });
     },
   });
 
@@ -422,6 +458,18 @@ function SpaceEditDialog({
                   >
                     Remove
                   </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => removeFromAppMutation.mutate(member.user_id)}
+                    disabled={
+                      removeFromAppMutation.isPending ||
+                      userCount <= 1 ||
+                      member.user_id === currentUserId
+                    }
+                    className="px-2 h-8 text-xs text-muted-foreground hover:text-expense rounded-none shrink-0 opacity-60 hover:opacity-100"
+                  >
+                    Remove from app
+                  </Button>
                 </>
               ) : (
                 <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">
@@ -434,7 +482,7 @@ function SpaceEditDialog({
       </div>
 
       {/* Add member (owner only) */}
-      {isOwner && addableUsers.length > 0 && (
+      {isOwner && (
         <div className="flex flex-col gap-2">
           <label
             htmlFor="add-member-select"
@@ -442,25 +490,86 @@ function SpaceEditDialog({
           >
             Add Member
           </label>
-          <div className="flex gap-2">
-            <Select
-              options={addableUsers.map((u) => ({
-                value: u.id,
-                label: u.name,
-              }))}
-              value={addUserId ?? undefined}
-              onValueChange={setAddUserId}
-              placeholder="Select user…"
-              className="flex-1"
-            />
-            <Button
-              onClick={() => addMutation.mutate()}
-              disabled={!addUserId || addMutation.isPending}
-              className="px-4 text-xs rounded-none h-10 shrink-0"
+          <div className="flex gap-1">
+            <button
+              type="button"
+              onClick={() => setAddMode('existing')}
+              className={cn(
+                'px-3 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors duration-150',
+                addMode === 'existing'
+                  ? 'bg-foreground text-canvas border-foreground'
+                  : 'bg-transparent text-muted-foreground border-border-subtle hover:border-foreground',
+              )}
             >
-              {addMutation.isPending ? 'Adding…' : 'Add'}
-            </Button>
+              Existing User
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddMode('create')}
+              className={cn(
+                'px-3 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors duration-150',
+                addMode === 'create'
+                  ? 'bg-foreground text-canvas border-foreground'
+                  : 'bg-transparent text-muted-foreground border-border-subtle hover:border-foreground',
+              )}
+            >
+              Create New User
+            </button>
           </div>
+          {addMode === 'existing' && addableUsers.length > 0 && (
+            <div className="flex gap-2">
+              <Select
+                options={addableUsers.map((u) => ({
+                  value: u.id,
+                  label: u.name,
+                }))}
+                value={addUserId ?? undefined}
+                onValueChange={setAddUserId}
+                placeholder="Select user…"
+                className="flex-1"
+              />
+              <Button
+                onClick={() => addMutation.mutate()}
+                disabled={!addUserId || addMutation.isPending}
+                className="px-4 text-xs rounded-none h-10 shrink-0"
+              >
+                {addMutation.isPending ? 'Adding…' : 'Add'}
+              </Button>
+            </div>
+          )}
+          {addMode === 'create' && (
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                <Input
+                  value={newUserName}
+                  onChange={(e) => setNewUserName(e.target.value)}
+                  placeholder="User name…"
+                  className="flex-1"
+                />
+                <Button
+                  onClick={() => createAndAddMutation.mutate()}
+                  disabled={
+                    !newUserName.trim() || createAndAddMutation.isPending
+                  }
+                  className="px-4 text-xs rounded-none h-10 shrink-0"
+                >
+                  {createAndAddMutation.isPending
+                    ? 'Creating…'
+                    : 'Create & Add'}
+                </Button>
+              </div>
+              {createAndAddMutation.error && (
+                <p className="text-xs font-mono text-expense">
+                  {String(createAndAddMutation.error)}
+                </p>
+              )}
+            </div>
+          )}
+          {addMode === 'existing' && addableUsers.length === 0 && (
+            <p className="text-xs font-mono text-muted-foreground">
+              No other users in the app
+            </p>
+          )}
         </div>
       )}
 

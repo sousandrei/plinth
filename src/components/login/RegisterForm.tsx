@@ -8,10 +8,12 @@ import { PinInput } from './PinInput';
 
 interface RegisterFormProps {
   onCreated: (user: User) => void;
+  onBack?: () => void;
 }
 
 export const RegisterForm = ({
   onCreated,
+  onBack,
 }: RegisterFormProps): React.JSX.Element => {
   const [name, setName] = useState('');
   const [pin, setPin_] = useState('');
@@ -128,6 +130,15 @@ export const RegisterForm = ({
           >
             Continue
           </button>
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-150 underline underline-offset-4 mt-2"
+            >
+              Back
+            </button>
+          )}
         </form>
       )}
 

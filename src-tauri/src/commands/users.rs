@@ -160,6 +160,83 @@ pub async fn update_user_name(
 }
 
 #[tauri::command]
+pub async fn add_app_user(
+    name: String,
+    db: State<'_, DbPool>,
+) -> Result<User, AppError> {
+    if name.trim().is_empty() {
+        return Err(AppError::InvalidInput("name cannot be empty".into()));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let name = name.trim().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    sqlx::query_file!("queries/users/create_app_user.sql", id, name, now, now)
+        .execute(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("add_app_user: {e}")))?;
+
+    let user = sqlx::query_file_as!(User, "queries/users/get_user.sql", id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("add_app_user fetch: {e}")))?;
+
+    Ok(user)
+}
+
+#[tauri::command]
+pub async fn remove_user(
+    user_id: String,
+    db: State<'_, DbPool>,
+) -> Result<(), AppError> {
+    let user_count = sqlx::query_file!("queries/users/count_all_users.sql")
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("remove_user count: {e}")))?
+        .count;
+
+    if user_count <= 1 {
+        return Err(AppError::InvalidInput(
+            "cannot remove the only user in the app".into(),
+        ));
+    }
+
+    let sole_owner_spaces = sqlx::query_file!(
+        "queries/users/count_sole_owner_spaces.sql",
+        user_id
+    )
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("remove_user sole owner check: {e}")))?;
+
+    if !sole_owner_spaces.is_empty() {
+        let space_names: Vec<String> = sole_owner_spaces
+            .iter()
+            .map(|r| r.space_name.clone())
+            .collect();
+        return Err(AppError::InvalidInput(
+            format!(
+                "user is the sole owner of: {}",
+                space_names.join(", ")
+            ),
+        ));
+    }
+
+    let rows = sqlx::query_file!("queries/users/remove_user.sql", user_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("remove_user: {e}")))?
+        .rows_affected();
+
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("user {user_id}")));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn factory_reset(app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<(), AppError> {
     // 1. Close the database pool so connections are terminated
     db.close().await;

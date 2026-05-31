@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { listMySpaces } from '@/api/spaces';
 import { getDeviceName, getLocalAddress } from '@/api/sync';
 import { listUsers } from '@/api/users';
@@ -26,6 +26,8 @@ export const LoginPage = (): React.JSX.Element => {
   const [stage, setStage] = useState<Stage>('loading');
   const [direction, setDirection] = useState<Direction>('forward');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [previousStage, setPreviousStage] = useState<Stage | null>(null);
+  const initialized = useRef(false);
 
   const { data: users, isLoading } = useQuery({
     queryKey: ['users'],
@@ -46,11 +48,10 @@ export const LoginPage = (): React.JSX.Element => {
 
   useEffect(() => {
     if (isLoading || !users) return;
+    if (initialized.current) return;
+    initialized.current = true;
     if (users.length === 0) setStage('welcome');
-    else if (users.length === 1) {
-      setSelectedUser(users[0]);
-      setStage('pin');
-    } else setStage('select');
+    else setStage('select');
   }, [users, isLoading]);
 
   const goToPin = (user: User) => {
@@ -61,7 +62,24 @@ export const LoginPage = (): React.JSX.Element => {
 
   const goBack = () => {
     setDirection('back');
-    setStage('select');
+    setStage(previousStage || 'select');
+  };
+
+  const handleAddUser = () => {
+    setDirection('forward');
+    setPreviousStage(stage);
+    setStage('register');
+  };
+
+  const handleJoin = () => {
+    setDirection('forward');
+    setPreviousStage(stage);
+    setStage('join');
+  };
+
+  const handleBackFromJoin = () => {
+    setDirection('back');
+    setStage(previousStage || 'welcome');
   };
 
   const handlePinSuccess = async (user: User) => {
@@ -144,6 +162,7 @@ export const LoginPage = (): React.JSX.Element => {
                 type="button"
                 onClick={() => {
                   setDirection('forward');
+                  setPreviousStage('welcome');
                   setStage('register');
                 }}
                 className="w-full px-4 py-3 text-sm font-mono bg-foreground text-canvas transition-all duration-150 active:scale-[0.98] hover:opacity-90"
@@ -154,6 +173,7 @@ export const LoginPage = (): React.JSX.Element => {
                 type="button"
                 onClick={() => {
                   setDirection('forward');
+                  setPreviousStage('welcome');
                   setStage('join');
                 }}
                 className="w-full px-4 py-3 text-sm font-mono border border-border-muted bg-canvas-raised text-foreground transition-all duration-150 active:scale-[0.98] hover:border-accent hover:bg-accent-muted/20"
@@ -166,25 +186,24 @@ export const LoginPage = (): React.JSX.Element => {
 
         {stage === 'register' && (
           <div key="register" className={animClass}>
-            <RegisterForm onCreated={handleRegistered} />
+            <RegisterForm onCreated={handleRegistered} onBack={goBack} />
           </div>
         )}
 
         {stage === 'join' && (
           <div key="join" className={animClass}>
-            <JoinStage
-              onSuccess={handleJoined}
-              onBack={() => {
-                setDirection('back');
-                setStage('welcome');
-              }}
-            />
+            <JoinStage onSuccess={handleJoined} onBack={handleBackFromJoin} />
           </div>
         )}
 
         {stage === 'select' && users && (
           <div key="select" className={animClass}>
-            <UserSelect users={users} onSelect={goToPin} />
+            <UserSelect
+              users={users}
+              onSelect={goToPin}
+              onAdd={handleAddUser}
+              onJoin={handleJoin}
+            />
           </div>
         )}
 
@@ -192,7 +211,7 @@ export const LoginPage = (): React.JSX.Element => {
           <div key={`pin-${selectedUser.id}`} className={animClass}>
             <PinStage
               user={selectedUser}
-              onBack={users && users.length > 1 ? goBack : undefined}
+              onBack={goBack}
               onSuccess={handlePinSuccess}
             />
           </div>
