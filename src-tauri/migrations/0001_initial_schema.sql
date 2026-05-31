@@ -154,7 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_space_members_user_id
 -- itself propagated through change_log so revocations reach every peer.
 CREATE TABLE IF NOT EXISTS trusted_devices (
     id           TEXT PRIMARY KEY NOT NULL,
-    space_id     TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    space_id     TEXT NOT NULL,
     device_id    TEXT NOT NULL,
     display_name TEXT NOT NULL,
     cert_pem     TEXT NOT NULL,

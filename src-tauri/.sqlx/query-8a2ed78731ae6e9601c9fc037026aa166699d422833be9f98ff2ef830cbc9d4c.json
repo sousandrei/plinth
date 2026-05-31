@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.name AS \"space_name!: String\"\nFROM space_members sm\nINNER JOIN spaces s ON s.id = sm.space_id\nWHERE sm.user_id = ?1 AND sm.role = 'owner'\nGROUP BY sm.space_id\nHAVING COUNT(*) = 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_name!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8a2ed78731ae6e9601c9fc037026aa166699d422833be9f98ff2ef830cbc9d4c"
+}

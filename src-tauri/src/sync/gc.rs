@@ -2,19 +2,20 @@ use sqlx::SqlitePool;
 
 use crate::error::AppError;
 
-/// Run all three GC passes against the change_log in order. Called after
-/// every successful outbound sync session. Safe to call concurrently —
-/// each pass is a single DELETE statement that SQLite serialises
-/// internally through WAL.
+/// Run all four GC passes in order. Called after every successful outbound
+/// sync session. Safe to call concurrently — each pass is a single DELETE
+/// statement that SQLite serialises internally through WAL.
 ///
-/// Passes (see data/PLAN.md §10):
+/// Passes:
 ///   1. Compaction      — keep only the highest-seq row per (space, table, row_id)
 ///   2. All-consumed    — drop rows every enabled peer has already applied
 ///   3. 90-day hard cap — drop rows older than 90 days unconditionally
+///   4. Orphan cleanup  — remove trusted_devices / evicted_devices for deleted spaces
 pub async fn run(db: &SqlitePool) -> Result<(), AppError> {
     compact(db).await?;
     all_peers_consumed(db).await?;
     cap_90_days(db).await?;
+    orphan_trusted_devices(db).await?;
     Ok(())
 }
 
@@ -39,6 +40,14 @@ async fn cap_90_days(db: &SqlitePool) -> Result<(), AppError> {
         .execute(db)
         .await
         .map_err(|e| AppError::Db(format!("gc_90day_cap: {e}")))?;
+    Ok(())
+}
+
+async fn orphan_trusted_devices(db: &SqlitePool) -> Result<(), AppError> {
+    sqlx::query_file!("queries/sync/gc_orphan_trusted_devices.sql")
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("gc_orphan_trusted_devices: {e}")))?;
     Ok(())
 }
 
@@ -172,5 +181,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after, before, "GC should not run with no trusted peers");
+    }
+
+    /// Orphan trusted_devices rows (space deleted) should be removed.
+    #[tokio::test]
+    async fn orphan_trusted_devices_removes_orphans() {
+        let pool = fresh_pool().await;
+
+        // Insert a space and a trusted device for it.
+        let s1 = "s1";
+        let ts = "2024-01-01T00:00:00Z";
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query!(
+            "INSERT INTO trusted_devices (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at)
+             VALUES ('dev-1', 's1', 'dev-1', 'my device', 'CERT', 1, ?1)",
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Delete the space — trusted_devices row becomes orphaned.
+        sqlx::query!("DELETE FROM spaces WHERE id = 's1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let before: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM trusted_devices")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(before, 1, "trusted_devices row exists before GC");
+
+        orphan_trusted_devices(&pool).await.unwrap();
+
+        let after: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM trusted_devices")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(after, 0, "orphan trusted_devices should be removed");
     }
 }
