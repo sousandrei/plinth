@@ -87,9 +87,11 @@ mod tests {
     #[tokio::test]
     async fn override_is_cleared_after_success() {
         let pool = fresh_pool().await;
-        run_as_device(&pool, "peer-1", |_tx| Box::pin(async { Ok::<(), AppError>(()) }))
-            .await
-            .unwrap();
+        run_as_device(&pool, "peer-1", |_tx| {
+            Box::pin(async { Ok::<(), AppError>(()) })
+        })
+        .await
+        .unwrap();
 
         let row = sqlx::query_file!("queries/tests/get_apply_override.sql")
             .fetch_optional(&pool)

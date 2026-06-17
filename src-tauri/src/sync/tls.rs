@@ -6,9 +6,7 @@ use tokio_rustls::rustls::client::danger::{
 };
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use tokio_rustls::rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
-use tokio_rustls::rustls::{
-    self, DigitallySignedStruct, DistinguishedName, SignatureScheme,
-};
+use tokio_rustls::rustls::{self, DigitallySignedStruct, DistinguishedName, SignatureScheme};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::error::AppError;
@@ -53,7 +51,9 @@ fn parse_identity(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| AppError::Internal(format!("parse own cert: {e}")))?;
     if certs.is_empty() {
-        return Err(AppError::Internal("own cert PEM contained no entries".into()));
+        return Err(AppError::Internal(
+            "own cert PEM contained no entries".into(),
+        ));
     }
 
     let mut key_reader = identity.key_pem.as_bytes();
@@ -119,7 +119,9 @@ impl TrustedDeviceVerifier {
     }
 
     fn is_trusted(&self, presented: &CertificateDer<'_>) -> bool {
-        self.trusted.iter().any(|t| t.as_ref() == presented.as_ref())
+        self.trusted
+            .iter()
+            .any(|t| t.as_ref() == presented.as_ref())
     }
 
     fn supported_schemes() -> Vec<SignatureScheme> {

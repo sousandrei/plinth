@@ -390,8 +390,8 @@ fn parse_address(s: &str) -> Result<(String, SocketAddr), AppError> {
 // ---------------------------------------------------------------------------
 
 async fn write_raw(stream: &mut TcpStream, buf: &[u8]) -> Result<(), AppError> {
-    let len = u32::try_from(buf.len())
-        .map_err(|_| AppError::Internal("pair frame too large".into()))?;
+    let len =
+        u32::try_from(buf.len()).map_err(|_| AppError::Internal("pair frame too large".into()))?;
     stream
         .write_all(&len.to_be_bytes())
         .await
@@ -453,8 +453,7 @@ async fn read_encrypted<T: for<'de> Deserialize<'de>>(
     let plain = cipher
         .decrypt(nonce, ct)
         .map_err(|e| AppError::Internal(format!("pair decrypt: {e}")))?;
-    postcard::from_bytes::<T>(&plain)
-        .map_err(|e| AppError::Internal(format!("pair decode: {e}")))
+    postcard::from_bytes::<T>(&plain).map_err(|e| AppError::Internal(format!("pair decode: {e}")))
 }
 
 // ---------------------------------------------------------------------------

@@ -265,7 +265,10 @@ pub async fn delete_space(
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
 
     let space_id = &data.space_id;
-    let mut tx = db.inner().begin().await
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
         .map_err(|e| AppError::Db(format!("delete_space begin: {e}")))?;
 
     // Soft-delete the space row (no change_log entry — the update trigger
@@ -317,7 +320,8 @@ pub async fn delete_space(
         .await
         .map_err(|e| AppError::Db(format!("delete_space changelog: {e}")))?;
 
-    tx.commit().await
+    tx.commit()
+        .await
         .map_err(|e| AppError::Db(format!("delete_space commit: {e}")))?;
 
     session.clear_space();

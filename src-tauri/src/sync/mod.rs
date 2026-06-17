@@ -1,11 +1,11 @@
 pub mod apply;
-pub mod debounce;
 pub mod apply_guard;
 pub mod cert_match;
 pub mod changelog;
 pub mod client;
 pub mod conflict_detector;
 pub mod cursors;
+pub mod debounce;
 pub mod discovery;
 pub mod frame;
 pub mod gc;

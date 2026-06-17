@@ -139,8 +139,7 @@ async fn run(
 
     let reaper_registry = registry.clone();
     tauri::async_runtime::spawn(async move {
-        let mut ticker =
-            tokio::time::interval(std::time::Duration::from_secs(PEER_TTL_SECS / 3));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(PEER_TTL_SECS / 3));
         loop {
             ticker.tick().await;
             reaper_registry.reap(PEER_TTL_SECS);

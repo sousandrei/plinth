@@ -46,8 +46,8 @@ pub async fn ensure_identity(db: &SqlitePool) -> Result<DeviceIdentity, AppError
 
     // First-time generation. Self-signed Ed25519 cert with the device_id
     // as the Common Name and a 10-year validity window.
-    let key = KeyPair::generate()
-        .map_err(|e| AppError::Internal(format!("keypair generate: {e}")))?;
+    let key =
+        KeyPair::generate().map_err(|e| AppError::Internal(format!("keypair generate: {e}")))?;
     let mut params = CertificateParams::new(vec![device_id.clone()])
         .map_err(|e| AppError::Internal(format!("cert params: {e}")))?;
     let mut dn = DistinguishedName::new();

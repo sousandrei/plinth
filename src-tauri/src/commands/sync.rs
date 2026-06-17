@@ -22,9 +22,7 @@ use crate::{
 
 #[tauri::command]
 pub fn get_device_name() -> String {
-    gethostname::gethostname()
-        .to_string_lossy()
-        .into_owned()
+    gethostname::gethostname().to_string_lossy().into_owned()
 }
 
 #[tauri::command]
@@ -125,10 +123,14 @@ pub async fn remove_trusted_device(
     }
 
     // Delete from trusted_devices (triggers delete change_log row)
-    sqlx::query_file!("queries/sync/delete_trusted_device.sql", active.space_id, id)
-        .execute(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("remove_trusted_device delete: {e}")))?;
+    sqlx::query_file!(
+        "queries/sync/delete_trusted_device.sql",
+        active.space_id,
+        id
+    )
+    .execute(&*db)
+    .await
+    .map_err(|e| AppError::Db(format!("remove_trusted_device delete: {e}")))?;
 
     Ok(())
 }
@@ -187,22 +189,20 @@ pub async fn generate_pair_token(
     })
     .collect();
 
-    let member_users = sqlx::query_file!(
-        "queries/sync/list_space_member_users.sql",
-        active.space_id,
-    )
-    .fetch_all(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("list member users: {e}")))?
-    .into_iter()
-    .map(|r| WireUser {
-        id: r.id,
-        name: r.name,
-        pin_hash: r.pin_hash,
-        created_at: r.created_at,
-        updated_at: r.updated_at,
-    })
-    .collect();
+    let member_users =
+        sqlx::query_file!("queries/sync/list_space_member_users.sql", active.space_id,)
+            .fetch_all(&*db)
+            .await
+            .map_err(|e| AppError::Db(format!("list member users: {e}")))?
+            .into_iter()
+            .map(|r| WireUser {
+                id: r.id,
+                name: r.name,
+                pin_hash: r.pin_hash,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            })
+            .collect();
 
     pairing::start_host_session(
         (*db).clone(),
@@ -292,10 +292,14 @@ pub async fn join_space(
     Ok(SpaceUsers {
         space_id: bundle.space.id,
         space_name: bundle.space.name,
-        users: bundle.users.into_iter().map(|u| BundleUser {
-            id: u.id,
-            name: u.name,
-        }).collect(),
+        users: bundle
+            .users
+            .into_iter()
+            .map(|u| BundleUser {
+                id: u.id,
+                name: u.name,
+            })
+            .collect(),
     })
 }
 

@@ -18,8 +18,8 @@ where
 {
     let payload = postcard::to_allocvec(frame)
         .map_err(|e| AppError::Internal(format!("frame encode: {e}")))?;
-    let len = u32::try_from(payload.len())
-        .map_err(|_| AppError::Internal("frame too large".into()))?;
+    let len =
+        u32::try_from(payload.len()).map_err(|_| AppError::Internal("frame too large".into()))?;
     stream
         .write_all(&len.to_be_bytes())
         .await
@@ -44,9 +44,7 @@ where
         .map_err(|e| AppError::Io(format!("frame read len: {e}")))?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > MAX_FRAME_BYTES {
-        return Err(AppError::Internal(format!(
-            "frame too large: {len} bytes"
-        )));
+        return Err(AppError::Internal(format!("frame too large: {len} bytes")));
     }
     let mut buf = vec![0u8; len];
     stream

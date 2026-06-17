@@ -54,7 +54,7 @@ where
         .first()
         .ok_or_else(|| AppError::Internal("tls server cert chain empty".into()))?;
 
-    resolve_peer(db, leaf)
-        .await?
-        .ok_or_else(|| AppError::Internal("server cert not in trusted_devices (post-handshake)".into()))
+    resolve_peer(db, leaf).await?.ok_or_else(|| {
+        AppError::Internal("server cert not in trusted_devices (post-handshake)".into())
+    })
 }

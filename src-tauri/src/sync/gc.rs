@@ -130,15 +130,17 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert!(before >= 2, "expected at least 2 rows before compaction (got {before})");
+        assert!(
+            before >= 2,
+            "expected at least 2 rows before compaction (got {before})"
+        );
 
         compact(&pool).await.unwrap();
 
-        let after: i64 =
-            sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE row_id = 's1'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let after: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE row_id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(after, 1, "expected 1 row after compaction");
     }
 
@@ -245,5 +247,311 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after, 0, "orphan trusted_devices should be removed");
+    }
+
+    /// The `WHEN NEW.deleted = 0` guard on `change_log_spaces_au` must
+    /// suppress the update trigger when `deleted` is flipped to 1.
+    #[tokio::test]
+    async fn soft_delete_creates_no_update_changelog() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+        let s1 = "s1";
+
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query_file!("queries/spaces/soft_delete_space.sql", s1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let updates: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM change_log \
+             WHERE table_name = 'spaces' AND operation = 'update' AND row_id = 's1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            updates, 0,
+            "soft-delete must not create an update changelog entry"
+        );
+
+        let deleted: i64 = sqlx::query_scalar!("SELECT deleted FROM spaces WHERE id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+    }
+
+    /// Replicate the full `delete_space` SQL sequence and verify:
+    /// space is soft-deleted, child data gone, trusted_devices preserved,
+    /// change_log entries survive (including the manual space-delete entry).
+    #[tokio::test]
+    async fn delete_space_sequence_preserves_changelog_and_trusted_devices() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+        let s1 = "s1";
+        let u1 = "u1";
+        let a1 = "a1";
+        let td1 = "td1";
+
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query!("INSERT INTO users (id, name) VALUES (?1, ?2)", u1, "Alice")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query!(
+            "INSERT INTO space_members (space_id, user_id, role) VALUES (?1, ?2, 'owner')",
+            s1,
+            u1
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO accounts (id, name, currency, account_type, account_source, space_id) \
+             VALUES (?1, 'Checking', 'SEK', 'checking', 'seb', ?2)",
+            a1,
+            s1
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO trusted_devices (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
+             VALUES (?1, ?2, 'peer-1', 'Peer', 'CERT', 1, ?3)",
+            td1,
+            s1,
+            ts
+        )
+        .execute(&pool)
+        .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query_file!("queries/spaces/soft_delete_space.sql", s1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query_file!("queries/spaces/delete_space_members.sql", s1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query_file!("queries/spaces/delete_space_settings.sql", s1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query_file!("queries/spaces/delete_space_categories.sql", s1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query_file!("queries/spaces/delete_space_accounts.sql", s1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query_file!("queries/spaces/increment_sync_seq.sql")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query_file!("queries/spaces/insert_space_delete_changelog.sql", s1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let deleted: i64 = sqlx::query_scalar!("SELECT deleted FROM spaces WHERE id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        let members: i64 =
+            sqlx::query_scalar!("SELECT COUNT(*) FROM space_members WHERE space_id = 's1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(members, 0);
+
+        let accounts: i64 =
+            sqlx::query_scalar!("SELECT COUNT(*) FROM accounts WHERE space_id = 's1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(accounts, 0);
+
+        let td: i64 =
+            sqlx::query_scalar!("SELECT COUNT(*) FROM trusted_devices WHERE space_id = 's1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            td, 1,
+            "trusted_devices must be preserved for sync propagation"
+        );
+
+        let cl: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE space_id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(
+            cl > 0,
+            "change_log entries must survive for sync propagation"
+        );
+
+        let space_deletes: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM change_log \
+             WHERE table_name = 'spaces' AND operation = 'delete' AND row_id = 's1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            space_deletes, 1,
+            "manual space-delete changelog entry must exist"
+        );
+    }
+
+    /// `deleted_spaces` GC pass removes skeleton rows when no change_log
+    /// entries remain for that space.
+    #[tokio::test]
+    async fn deleted_spaces_removes_skeleton_without_changelog() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+        let s1 = "s1";
+
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query_file!("queries/spaces/soft_delete_space.sql", s1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query!("DELETE FROM change_log WHERE space_id = 's1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        deleted_spaces(&pool).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM spaces WHERE id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "skeleton should be removed when no changelog remains"
+        );
+    }
+
+    /// `deleted_spaces` GC pass keeps skeleton rows while change_log
+    /// entries still exist (peers haven't consumed them yet).
+    #[tokio::test]
+    async fn deleted_spaces_keeps_skeleton_with_changelog() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+        let s1 = "s1";
+
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query_file!("queries/spaces/soft_delete_space.sql", s1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        deleted_spaces(&pool).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM spaces WHERE id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "skeleton should remain while changelog entries exist"
+        );
+    }
+
+    /// `orphan_users` GC pass removes users with no remaining space_members.
+    #[tokio::test]
+    async fn orphan_users_removes_users_with_no_memberships() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+        let s1 = "s1";
+        let u1 = "u1";
+
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query!("INSERT INTO users (id, name) VALUES (?1, ?2)", u1, "Alice")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query!(
+            "INSERT INTO space_members (space_id, user_id, role) VALUES (?1, ?2, 'owner')",
+            s1,
+            u1
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query!("DELETE FROM space_members WHERE user_id = ?1", u1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        orphan_users(&pool).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM users WHERE id = ?1", u1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "orphaned user should be removed");
+    }
+
+    /// `orphan_users` GC pass keeps users who still have memberships.
+    #[tokio::test]
+    async fn orphan_users_keeps_users_with_memberships() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+        let s1 = "s1";
+        let u1 = "u1";
+
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query!("INSERT INTO users (id, name) VALUES (?1, ?2)", u1, "Alice")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query!(
+            "INSERT INTO space_members (space_id, user_id, role) VALUES (?1, ?2, 'owner')",
+            s1,
+            u1
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        orphan_users(&pool).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM users WHERE id = ?1", u1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "user with membership should be kept");
     }
 }

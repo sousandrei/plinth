@@ -62,11 +62,7 @@ pub async fn read_since(
 /// Highest `seq` currently stored for `(space_id, device_id)`, or 0
 /// if the log is empty. Used as `ChangeBatch.final_seq` so the receiver
 /// can advance its cursor past compaction gaps even when no rows ship.
-pub async fn max_seq(
-    db: &SqlitePool,
-    space_id: &str,
-    device_id: &str,
-) -> Result<i64, AppError> {
+pub async fn max_seq(db: &SqlitePool, space_id: &str, device_id: &str) -> Result<i64, AppError> {
     let row = sqlx::query_file!("queries/sync/max_change_seq.sql", space_id, device_id)
         .fetch_one(db)
         .await
@@ -78,11 +74,7 @@ pub async fn max_seq(
 /// if the log is empty. If a peer's cursor falls below this value the
 /// delta path is impossible (rows have been GC'd) and the session must
 /// fall back to a full-snapshot transfer — see PLAN.md §7.3.
-pub async fn min_seq(
-    db: &SqlitePool,
-    space_id: &str,
-    device_id: &str,
-) -> Result<i64, AppError> {
+pub async fn min_seq(db: &SqlitePool, space_id: &str, device_id: &str) -> Result<i64, AppError> {
     let row = sqlx::query_file!("queries/sync/min_change_seq.sql", space_id, device_id)
         .fetch_one(db)
         .await

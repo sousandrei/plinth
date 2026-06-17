@@ -2,9 +2,7 @@ use sqlx::{Sqlite, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::sync::conflict_detector::{
-    self, HotFieldConflict, LocalSnapshot,
-};
+use crate::sync::conflict_detector::{self, HotFieldConflict, LocalSnapshot};
 use crate::sync::payloads::{
     AccountPayload, AccountSummaryPayload, CategoryPayload, SpaceMemberPayload, SpacePayload,
     SpaceSettingPayload, TablePayload, TransactionPayload, TrustedDevicePayload, UserSnapshot,
@@ -37,10 +35,7 @@ pub async fn apply_change(
     }
 }
 
-async fn apply_upsert(
-    tx: &mut Transaction<'_, Sqlite>,
-    row: &ChangeRow,
-) -> Result<(), AppError> {
+async fn apply_upsert(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Result<(), AppError> {
     let Some(payload) = &row.payload else {
         return Err(AppError::InvalidInput(format!(
             "apply_upsert: missing payload for {}/{}",
@@ -71,10 +66,7 @@ async fn apply_upsert(
     }
 }
 
-async fn apply_delete(
-    tx: &mut Transaction<'_, Sqlite>,
-    row: &ChangeRow,
-) -> Result<(), AppError> {
+async fn apply_delete(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Result<(), AppError> {
     // Deletes carry only the row identity; composite-PK tables encode
     // both key parts in `row_id` as "a|b". This mirrors what the
     // change_log triggers emit for those tables.
@@ -133,14 +125,10 @@ async fn apply_delete(
             // Trigger emits row_id as `space_id:key` (see
             // `change_log_space_settings_ad` in the migration).
             let (space_id, key) = split_composite(&row.row_id, "space_settings")?;
-            sqlx::query_file!(
-                "queries/sync/apply/delete_space_setting.sql",
-                space_id,
-                key
-            )
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| AppError::Db(format!("delete_space_setting: {e}")))?;
+            sqlx::query_file!("queries/sync/apply/delete_space_setting.sql", space_id, key)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("delete_space_setting: {e}")))?;
         }
         "trusted_devices" => {
             sqlx::query_file!("queries/sync/apply/delete_trusted_device.sql", row.row_id)
@@ -164,10 +152,7 @@ async fn apply_delete(
 // arguments (which differ in count and order).
 // ---------------------------------------------------------------------------
 
-async fn upsert_space(
-    tx: &mut Transaction<'_, Sqlite>,
-    p: &SpacePayload,
-) -> Result<(), AppError> {
+async fn upsert_space(tx: &mut Transaction<'_, Sqlite>, p: &SpacePayload) -> Result<(), AppError> {
     sqlx::query_file!(
         "queries/sync/apply/upsert_space.sql",
         p.id,
@@ -360,11 +345,13 @@ async fn detect_transaction_conflicts(
     // Current row state for the hot fields. None if this is the first
     // time we're seeing this transaction — no local-vs-remote disagreement
     // is possible in that case.
-    let local_row =
-        sqlx::query_file!("queries/sync/apply/get_transaction_for_conflict.sql", row.row_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|e| AppError::Db(format!("get_transaction_for_conflict: {e}")))?;
+    let local_row = sqlx::query_file!(
+        "queries/sync/apply/get_transaction_for_conflict.sql",
+        row.row_id
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("get_transaction_for_conflict: {e}")))?;
     let Some(local_row) = local_row else {
         return Ok(Vec::new());
     };
@@ -437,10 +424,7 @@ async fn record_conflict(
 // path; upserts get their keys from the payload struct directly.
 // ---------------------------------------------------------------------------
 
-fn split_composite<'a>(
-    row_id: &'a str,
-    table: &str,
-) -> Result<(&'a str, &'a str), AppError> {
+fn split_composite<'a>(row_id: &'a str, table: &str) -> Result<(&'a str, &'a str), AppError> {
     // The change_log triggers concatenate the two key columns with ':'
     // (see `change_log_*_ad` triggers in `0001_initial_schema.sql`).
     // Per-table key column order is documented at each call site.
@@ -449,4 +433,81 @@ fn split_composite<'a>(
             "split_composite: malformed composite row_id {row_id:?} for table {table}"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::wire::ChangeRow;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
+
+    async fn fresh_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let device_id = "local-device";
+        sqlx::query_file!("queries/settings/init_device_id.sql", device_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query_file!("queries/settings/init_sync_seq.sql")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// Applying a `spaces` delete from a peer must soft-delete the space
+    /// (set `deleted = 1`), not hard-delete it — the skeleton row is
+    /// needed so sync queries with `INNER JOIN spaces` still match until
+    /// all peers have consumed the deletion. See PLAN.md §9.6.
+    #[tokio::test]
+    async fn apply_spaces_delete_soft_deletes() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+        let s1 = "s1";
+
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let row = ChangeRow {
+            id: "cl-1".into(),
+            space_id: s1.into(),
+            table_name: "spaces".into(),
+            row_id: s1.into(),
+            operation: "delete".into(),
+            payload: None,
+            seq: 99,
+            device_id: "peer-1".into(),
+            changed_at: ts.into(),
+        };
+
+        let mut tx = pool.begin().await.unwrap();
+        apply_change(&mut tx, &row).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let deleted: i64 = sqlx::query_scalar!("SELECT deleted FROM spaces WHERE id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            deleted, 1,
+            "apply spaces-delete should soft-delete, not hard-delete"
+        );
+
+        let still_exists: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM spaces WHERE id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            still_exists, 1,
+            "space row must still exist for sync queries"
+        );
+    }
 }

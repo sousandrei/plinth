@@ -23,7 +23,12 @@ pub async fn start(handle: AppHandle, db: SqlitePool) -> Result<SyncRuntime, App
     let server_handle = server::spawn(db.clone(), identity.clone(), handle.clone()).await?;
 
     let peers = PeerRegistry::new();
-    discovery::spawn(handle.clone(), db.clone(), peers.clone(), server_handle.local_addr.port());
+    discovery::spawn(
+        handle.clone(),
+        db.clone(),
+        peers.clone(),
+        server_handle.local_addr.port(),
+    );
 
     let (debounce_handle, debounce_trigger) = new_debounce();
     scheduler::spawn(peers.clone(), db, identity, handle, debounce_trigger);

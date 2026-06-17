@@ -110,11 +110,10 @@ pub async fn verify_pin(
         .map_err(|e| AppError::Internal(format!("verify_pin: {e}")))?;
 
     if ok {
-        let spaces =
-            sqlx::query_file!("queries/spaces/list_spaces_for_user.sql", user_id)
-                .fetch_all(db.inner())
-                .await
-                .map_err(|e| AppError::Db(format!("verify_pin spaces: {e}")))?;
+        let spaces = sqlx::query_file!("queries/spaces/list_spaces_for_user.sql", user_id)
+            .fetch_all(db.inner())
+            .await
+            .map_err(|e| AppError::Db(format!("verify_pin spaces: {e}")))?;
 
         let auto_space = if spaces.len() == 1 {
             Some(spaces[0].id.clone())
@@ -160,10 +159,7 @@ pub async fn update_user_name(
 }
 
 #[tauri::command]
-pub async fn add_app_user(
-    name: String,
-    db: State<'_, DbPool>,
-) -> Result<User, AppError> {
+pub async fn add_app_user(name: String, db: State<'_, DbPool>) -> Result<User, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
     }
@@ -186,10 +182,7 @@ pub async fn add_app_user(
 }
 
 #[tauri::command]
-pub async fn remove_user(
-    user_id: String,
-    db: State<'_, DbPool>,
-) -> Result<(), AppError> {
+pub async fn remove_user(user_id: String, db: State<'_, DbPool>) -> Result<(), AppError> {
     let user_count = sqlx::query_file!("queries/users/count_all_users.sql")
         .fetch_one(db.inner())
         .await
@@ -202,25 +195,20 @@ pub async fn remove_user(
         ));
     }
 
-    let sole_owner_spaces = sqlx::query_file!(
-        "queries/users/count_sole_owner_spaces.sql",
-        user_id
-    )
-    .fetch_all(db.inner())
-    .await
-    .map_err(|e| AppError::Db(format!("remove_user sole owner check: {e}")))?;
+    let sole_owner_spaces = sqlx::query_file!("queries/users/count_sole_owner_spaces.sql", user_id)
+        .fetch_all(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("remove_user sole owner check: {e}")))?;
 
     if !sole_owner_spaces.is_empty() {
         let space_names: Vec<String> = sole_owner_spaces
             .iter()
             .map(|r| r.space_name.clone())
             .collect();
-        return Err(AppError::InvalidInput(
-            format!(
-                "user is the sole owner of: {}",
-                space_names.join(", ")
-            ),
-        ));
+        return Err(AppError::InvalidInput(format!(
+            "user is the sole owner of: {}",
+            space_names.join(", ")
+        )));
     }
 
     let rows = sqlx::query_file!("queries/users/remove_user.sql", user_id)

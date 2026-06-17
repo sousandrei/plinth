@@ -7,7 +7,8 @@ use crate::error::AppError;
 use crate::sync::apply_guard::{run_as_device, GuardedFuture};
 use crate::sync::cert_match::PeerIdentity;
 use crate::sync::wire::{
-    Bye, ChangeBatch, CursorEntry, Cursors, Frame, Hello, ModelVersionSummary, PROTOCOL_VERSION,
+    Bye, ChangeBatch, ChangeRow, CursorEntry, Cursors, Frame, Hello, ModelVersionSummary,
+    PROTOCOL_VERSION,
 };
 use crate::sync::{apply, changelog, cursors, model_sync};
 
@@ -138,10 +139,13 @@ where
     W: AsyncWrite + Unpin,
 {
     // --- Hello handshake ---
-    write_frame(&mut wr, &Frame::Hello(Hello {
-        protocol_version: PROTOCOL_VERSION,
-        device_id: local_device_id.clone(),
-    }))
+    write_frame(
+        &mut wr,
+        &Frame::Hello(Hello {
+            protocol_version: PROTOCOL_VERSION,
+            device_id: local_device_id.clone(),
+        }),
+    )
     .await?;
 
     let peer_hello = hello_rx.await.map_err(|_| {
@@ -169,9 +173,12 @@ where
             last_seq,
         });
     }
-    write_frame(&mut wr, &Frame::Cursors(Cursors {
-        entries: cursor_entries,
-    }))
+    write_frame(
+        &mut wr,
+        &Frame::Cursors(Cursors {
+            entries: cursor_entries,
+        }),
+    )
     .await?;
 
     let peer_cursors = cursors_rx.await.map_err(|_| {
@@ -183,10 +190,20 @@ where
         if !peer.shared_space_ids.contains(&entry.space_id) {
             continue;
         }
-        ship_batches(&mut wr, &db, &entry.space_id, &local_device_id, entry.last_seq).await?;
+        ship_batches(
+            &mut wr,
+            &db,
+            &entry.space_id,
+            &local_device_id,
+            entry.last_seq,
+        )
+        .await?;
     }
-    let mentioned: std::collections::HashSet<_> =
-        peer_cursors.entries.iter().map(|e| e.space_id.as_str()).collect();
+    let mentioned: std::collections::HashSet<_> = peer_cursors
+        .entries
+        .iter()
+        .map(|e| e.space_id.as_str())
+        .collect();
     for space_id in &peer.shared_space_ids {
         if !mentioned.contains(space_id.as_str()) {
             ship_batches(&mut wr, &db, space_id, &local_device_id, 0).await?;
@@ -250,11 +267,14 @@ where
             "session: peer cursor {peer_last_seq} < min_seq {min_seq} for space {space_id}; \
              full snapshot required (not yet implemented)"
         );
-        write_frame(wr, &Frame::Batch(ChangeBatch {
-            space_id: space_id.to_string(),
-            rows: vec![],
-            final_seq,
-        }))
+        write_frame(
+            wr,
+            &Frame::Batch(ChangeBatch {
+                space_id: space_id.to_string(),
+                rows: vec![],
+                final_seq,
+            }),
+        )
         .await?;
         return Ok(());
     }
@@ -280,11 +300,14 @@ where
             last_sent = last.seq;
         }
 
-        write_frame(wr, &Frame::Batch(ChangeBatch {
-            space_id: space_id.to_string(),
-            rows,
-            final_seq: batch_final,
-        }))
+        write_frame(
+            wr,
+            &Frame::Batch(ChangeBatch {
+                space_id: space_id.to_string(),
+                rows,
+                final_seq: batch_final,
+            }),
+        )
         .await?;
 
         if done {
@@ -337,7 +360,8 @@ where
                 if let Some(tx) = model_versions_tx.take() {
                     tx.send(summary).map_err(|_| {
                         AppError::Internal(
-                            "session: send half dropped before receiving ModelVersionSummary".into(),
+                            "session: send half dropped before receiving ModelVersionSummary"
+                                .into(),
                         )
                     })?;
                 }
@@ -386,23 +410,9 @@ async fn apply_batch(
         return Ok(());
     }
 
-    // A batch containing a spaces-delete is a space-deletion propagation.
-    // We suppress the eviction check for the whole batch in that case, since
-    // the trusted_devices deletes that ride along are cascade effects of the
-    // space deletion, not an explicit device revocation. The only way both
-    // could coexist in one batch is if a space deletion and an unrelated
-    // device revocation happened to share the same shipping window —
-    // acceptable risk: the revoked device's data is gone either way, and the
-    // next batch from the same peer will re-trigger eviction detection.
-    let is_space_deletion = batch.rows.iter().any(|r| {
-        r.table_name == "spaces" && r.operation == "delete"
-    });
-
-    let evicted = !is_space_deletion && batch.rows.iter().any(|r| {
-        r.table_name == "trusted_devices"
-            && r.operation == "delete"
-            && r.device_id != local_device_id
-    });
+    let kind = classify_batch(&batch.rows, local_device_id);
+    let is_space_deletion = matches!(kind, BatchKind::SpaceDeletion);
+    let evicted = matches!(kind, BatchKind::PotentialEviction);
 
     let space_id = batch.space_id.clone();
     let evicted_space_id = batch.space_id.clone();
@@ -466,6 +476,44 @@ async fn apply_batch(
 }
 
 // ---------------------------------------------------------------------------
+// Batch classification
+// ---------------------------------------------------------------------------
+
+/// Classify a change batch to determine if it represents a space deletion
+/// (suppresses eviction detection) or a potential device revocation
+/// (triggers the eviction DB check). See PLAN.md §9.5.
+enum BatchKind {
+    SpaceDeletion,
+    PotentialEviction,
+    Normal,
+}
+
+/// A batch containing a `spaces` delete is a space-deletion propagation.
+/// We suppress the eviction check for the whole batch in that case, since
+/// the `trusted_devices` deletes that ride along are cascade effects of the
+/// space deletion, not an explicit device revocation. The only way both
+/// could coexist in one batch is if a space deletion and an unrelated
+/// device revocation happened to share the same shipping window —
+/// acceptable risk: the revoked device's data is gone either way, and the
+/// next batch from the same peer will re-trigger eviction detection.
+fn classify_batch(rows: &[ChangeRow], local_device_id: &str) -> BatchKind {
+    if rows
+        .iter()
+        .any(|r| r.table_name == "spaces" && r.operation == "delete")
+    {
+        return BatchKind::SpaceDeletion;
+    }
+    if rows.iter().any(|r| {
+        r.table_name == "trusted_devices"
+            && r.operation == "delete"
+            && r.device_id != local_device_id
+    }) {
+        return BatchKind::PotentialEviction;
+    }
+    BatchKind::Normal
+}
+
+// ---------------------------------------------------------------------------
 // Frame + settings helpers
 // ---------------------------------------------------------------------------
 
@@ -509,4 +557,62 @@ async fn read_device_id(db: &SqlitePool) -> Result<String, AppError> {
         .await
         .map_err(|e| AppError::Db(format!("read_device_id: {e}")))?
         .ok_or_else(|| AppError::Internal("device_id not initialised in app_settings".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change_row(table: &str, op: &str, device_id: &str) -> ChangeRow {
+        ChangeRow {
+            id: "x".into(),
+            space_id: "s1".into(),
+            table_name: table.into(),
+            row_id: "r1".into(),
+            operation: op.into(),
+            payload: None,
+            seq: 1,
+            device_id: device_id.into(),
+            changed_at: "2024-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn classify_batch_detects_space_deletion() {
+        let rows = vec![
+            change_row("space_members", "delete", "peer-1"),
+            change_row("spaces", "delete", "peer-1"),
+            change_row("trusted_devices", "delete", "peer-1"),
+        ];
+        assert!(matches!(
+            classify_batch(&rows, "local"),
+            BatchKind::SpaceDeletion
+        ));
+    }
+
+    #[test]
+    fn classify_batch_detects_device_revocation() {
+        let rows = vec![change_row("trusted_devices", "delete", "peer-1")];
+        assert!(matches!(
+            classify_batch(&rows, "local"),
+            BatchKind::PotentialEviction
+        ));
+    }
+
+    /// A trusted_devices delete authored by us is an echo of our own
+    /// change coming back — not an eviction.
+    #[test]
+    fn classify_batch_ignores_own_device_revocation() {
+        let rows = vec![change_row("trusted_devices", "delete", "local")];
+        assert!(matches!(classify_batch(&rows, "local"), BatchKind::Normal));
+    }
+
+    #[test]
+    fn classify_batch_normal_for_inserts_and_updates() {
+        let rows = vec![
+            change_row("transactions", "insert", "peer-1"),
+            change_row("accounts", "update", "peer-1"),
+        ];
+        assert!(matches!(classify_batch(&rows, "local"), BatchKind::Normal));
+    }
 }

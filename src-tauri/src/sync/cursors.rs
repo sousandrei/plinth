@@ -6,11 +6,7 @@ use crate::error::AppError;
 /// `space_id`. Returns 0 when no cursor row exists yet, which is the
 /// semantic "we have never synced from this peer in this space" —
 /// callers ship that as `last_seq = 0` to request the full backlog.
-pub async fn get(
-    db: &SqlitePool,
-    space_id: &str,
-    peer_device_id: &str,
-) -> Result<i64, AppError> {
+pub async fn get(db: &SqlitePool, space_id: &str, peer_device_id: &str) -> Result<i64, AppError> {
     let row = sqlx::query_file!("queries/sync/get_cursor.sql", space_id, peer_device_id)
         .fetch_optional(db)
         .await

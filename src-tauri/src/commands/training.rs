@@ -15,13 +15,11 @@ use crate::{
     classifier::{
         dataset::load_approved,
         trainer::{make_optimizer, precompute_embeddings, split_indices, TrainingConfig},
-        Classifier,
-        TrainableClassifier,
+        Classifier, TrainableClassifier,
     },
     db::DbPool,
     error::AppError,
-    ClassifierState,
-    Session,
+    ClassifierState, Session,
 };
 
 // ---------------------------------------------------------------------------
@@ -240,13 +238,17 @@ fn epoch_days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 // ---------------------------------------------------------------------------
 
 async fn get_active_version(pool: &DbPool, space_id: &str) -> u32 {
-    sqlx::query_file!("queries/training/get_setting.sql", space_id, SETTING_ACTIVE_MODEL)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|r| r.value.parse().ok())
-        .unwrap_or(0)
+    sqlx::query_file!(
+        "queries/training/get_setting.sql",
+        space_id,
+        SETTING_ACTIVE_MODEL
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.value.parse().ok())
+    .unwrap_or(0)
 }
 
 async fn set_active_version(pool: &DbPool, space_id: &str, version: u32) -> Result<(), AppError> {
@@ -727,10 +729,14 @@ pub async fn delete_model(
     // If the deleted version was active, unload the classifier — no base model exists.
     // The user must train a new version to restore predictions.
     if active == version {
-        sqlx::query_file!("queries/training/delete_setting.sql", space_id, SETTING_ACTIVE_MODEL)
-            .execute(&*db)
-            .await
-            .map_err(|e| AppError::Db(format!("delete_active_model_setting: {e}")))?;
+        sqlx::query_file!(
+            "queries/training/delete_setting.sql",
+            space_id,
+            SETTING_ACTIVE_MODEL
+        )
+        .execute(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_active_model_setting: {e}")))?;
         let mut guard = classifier
             .lock()
             .map_err(|e| AppError::Internal(format!("lock: {e}")))?;

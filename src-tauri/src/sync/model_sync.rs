@@ -19,8 +19,7 @@ fn models_dir(app: &AppHandle, space_id: &str) -> Result<PathBuf, AppError> {
         .map_err(|e| AppError::Internal(format!("app_data_dir: {e}")))?
         .join("models")
         .join(space_id);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| AppError::Io(format!("create models dir: {e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| AppError::Io(format!("create models dir: {e}")))?;
     Ok(dir)
 }
 
@@ -54,10 +53,7 @@ pub async fn local_version(db: &SqlitePool, space_id: &str) -> u32 {
 
 /// Build the `ModelVersionSummary` to send to a peer: one entry per
 /// shared space with the local active version.
-pub async fn local_summary(
-    db: &SqlitePool,
-    space_ids: &[String],
-) -> ModelVersionSummary {
+pub async fn local_summary(db: &SqlitePool, space_ids: &[String]) -> ModelVersionSummary {
     let mut entries = Vec::with_capacity(space_ids.len());
     for space_id in space_ids {
         let version = local_version(db, space_id).await;
@@ -88,10 +84,10 @@ pub fn read_model(
         return Ok(None);
     }
 
-    let weights = std::fs::read(&wp)
-        .map_err(|e| AppError::Io(format!("read weights v{version}: {e}")))?;
-    let card = std::fs::read(&cp)
-        .map_err(|e| AppError::Io(format!("read card v{version}: {e}")))?;
+    let weights =
+        std::fs::read(&wp).map_err(|e| AppError::Io(format!("read weights v{version}: {e}")))?;
+    let card =
+        std::fs::read(&cp).map_err(|e| AppError::Io(format!("read card v{version}: {e}")))?;
 
     Ok(Some(ModelData {
         space_id: space_id.to_string(),
@@ -120,16 +116,14 @@ pub async fn apply_model(
     let wp_tmp = dir.join(format!("model_v{}.safetensors.tmp", data.version));
     std::fs::write(&wp_tmp, &data.weights)
         .map_err(|e| AppError::Io(format!("write weights tmp: {e}")))?;
-    std::fs::rename(&wp_tmp, &wp)
-        .map_err(|e| AppError::Io(format!("rename weights: {e}")))?;
+    std::fs::rename(&wp_tmp, &wp).map_err(|e| AppError::Io(format!("rename weights: {e}")))?;
 
     // Write card atomically: temp → rename.
     let cp = card_path(&dir, data.version);
     let cp_tmp = dir.join(format!("model_v{}.json.tmp", data.version));
     std::fs::write(&cp_tmp, &data.card)
         .map_err(|e| AppError::Io(format!("write card tmp: {e}")))?;
-    std::fs::rename(&cp_tmp, &cp)
-        .map_err(|e| AppError::Io(format!("rename card: {e}")))?;
+    std::fs::rename(&cp_tmp, &cp).map_err(|e| AppError::Io(format!("rename card: {e}")))?;
 
     // Advance active version in space_settings.
     let v = data.version.to_string();
