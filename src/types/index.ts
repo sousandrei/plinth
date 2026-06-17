@@ -159,3 +159,21 @@ export interface JoinResult {
   space_id: string;
   space_name: string;
 }
+
+// ---------------------------------------------------------------------------
+// Space export / import
+// ---------------------------------------------------------------------------
+
+export interface ExportResult {
+  categories: number;
+  accounts: number;
+  transactions: number;
+  account_summaries: number;
+}
+
+export interface ImportResult {
+  categories: number;
+  accounts: number;
+  transactions: number;
+  account_summaries: number;
+}

@@ -1,10 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { useState } from 'react';
 import {
   addSpaceMember,
   createSpace,
   deleteSpace,
+  exportSpaceData,
+  importSpaceData,
   leaveSpace,
   listMySpaces,
   listSpaceMembers,
@@ -36,6 +39,7 @@ import { Select } from '@/components/ui/Select';
 import { useAuth } from '@/context/AuthContext';
 import { cn } from '@/lib/util';
 import type {
+  ImportResult,
   PairToken,
   PeerInfo,
   Space,
@@ -615,6 +619,11 @@ function SpaceEditDialog({
                 >
                   {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
                 </Button>
+                {deleteMutation.isError && (
+                  <p className="text-xs font-mono text-expense w-full">
+                    {String(deleteMutation.error)}
+                  </p>
+                )}
               </div>
             </DialogContent>
           </Dialog>
@@ -824,6 +833,197 @@ function JoinSpaceModal({
 }
 
 // ---------------------------------------------------------------------------
+// Import dialog
+// ---------------------------------------------------------------------------
+
+interface ImportDialogProps {
+  spaces: Space[];
+  onClose: () => void;
+}
+
+function ImportDialog({
+  spaces,
+  onClose,
+}: ImportDialogProps): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [filePath, setFilePath] = useState('');
+  const [mode, setMode] = useState<'new' | 'existing'>('new');
+  const [newSpaceName, setNewSpaceName] = useState('');
+  const [existingSpaceId, setExistingSpaceId] = useState<string | null>(null);
+  const [result, setResult] = useState<ImportResult | null>(null);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const pickFile = async () => {
+    const selected = await open({
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (selected) {
+      setFilePath(selected);
+      setErrorMsg('');
+      setResult(null);
+    }
+  };
+
+  const importMutation = useMutation({
+    mutationFn: async () => {
+      if (!filePath) throw new Error('No file selected');
+      let targetSpaceId: string;
+      if (mode === 'new') {
+        if (!newSpaceName.trim()) throw new Error('Space name is required');
+        const space = await createSpace(newSpaceName.trim());
+        targetSpaceId = space.id;
+      } else {
+        if (!existingSpaceId) throw new Error('No space selected');
+        targetSpaceId = existingSpaceId;
+      }
+      return importSpaceData(targetSpaceId, filePath);
+    },
+    onSuccess: (res) => {
+      setResult(res);
+      setErrorMsg('');
+      queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['aggregations'] });
+    },
+    onError: (e) => {
+      setErrorMsg(String(e));
+      setResult(null);
+    },
+  });
+
+  const canSubmit =
+    filePath !== '' &&
+    !importMutation.isPending &&
+    (mode === 'new' ? newSpaceName.trim() !== '' : existingSpaceId !== null);
+
+  return (
+    <div className="flex flex-col gap-4">
+      {result ? (
+        <>
+          <p className="text-xs text-muted-foreground">
+            Import complete. Inserted or updated:
+          </p>
+          <div className="flex flex-col gap-1 text-xs font-mono">
+            <span>{result.categories} categories</span>
+            <span>{result.accounts} accounts</span>
+            <span>{result.transactions} transactions</span>
+            <span>{result.account_summaries} account summaries</span>
+          </div>
+          <div className="flex justify-end pt-2 border-t border-border-subtle">
+            <Button
+              variant="secondary"
+              onClick={onClose}
+              className="px-4 text-xs rounded-none h-9"
+            >
+              Done
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="import-file-input"
+              className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground font-bold"
+            >
+              Export File
+            </label>
+            <div className="flex gap-2">
+              <Input
+                value={filePath}
+                readOnly
+                placeholder="No file selected…"
+                className="flex-1"
+              />
+              <Button
+                variant="secondary"
+                onClick={pickFile}
+                className="px-4 text-xs rounded-none h-10 shrink-0"
+              >
+                Browse
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="import-target-mode"
+              className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground font-bold"
+            >
+              Target
+            </label>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setMode('new')}
+                className={cn(
+                  'px-3 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors duration-150',
+                  mode === 'new'
+                    ? 'bg-foreground text-canvas border-foreground'
+                    : 'bg-transparent text-muted-foreground border-border-subtle hover:border-foreground',
+                )}
+              >
+                New Space
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('existing')}
+                className={cn(
+                  'px-3 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors duration-150',
+                  mode === 'existing'
+                    ? 'bg-foreground text-canvas border-foreground'
+                    : 'bg-transparent text-muted-foreground border-border-subtle hover:border-foreground',
+                )}
+              >
+                Existing Space
+              </button>
+            </div>
+            {mode === 'new' ? (
+              <Input
+                value={newSpaceName}
+                onChange={(e) => setNewSpaceName(e.target.value)}
+                placeholder="New space name…"
+                className="flex-1"
+              />
+            ) : (
+              <Select
+                options={spaces.map((s) => ({ value: s.id, label: s.name }))}
+                value={existingSpaceId ?? undefined}
+                onValueChange={setExistingSpaceId}
+                placeholder="Select space…"
+                className="flex-1"
+              />
+            )}
+          </div>
+
+          {errorMsg && (
+            <p className="text-xs font-mono text-expense">{errorMsg}</p>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle">
+            <Button
+              variant="secondary"
+              onClick={onClose}
+              className="px-4 text-xs rounded-none h-9"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => importMutation.mutate()}
+              disabled={!canSubmit}
+              className="px-4 text-xs rounded-none h-9"
+            >
+              {importMutation.isPending ? 'Importing…' : 'Import'}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -834,6 +1034,9 @@ function SpacesPage(): React.JSX.Element {
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
   const [newSpaceName, setNewSpaceName] = useState('');
   const [joinOpen, setJoinOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exportMsg, setExportMsg] = useState('');
+  const [exportErr, setExportErr] = useState('');
 
   const { data: spaces = [], isLoading } = useQuery({
     queryKey: ['my-spaces'],
@@ -872,6 +1075,24 @@ function SpacesPage(): React.JSX.Element {
     }
   };
 
+  const handleExport = async (space: Space) => {
+    setExportMsg('');
+    setExportErr('');
+    const path = await save({
+      defaultPath: `${space.name}-export.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (!path) return;
+    try {
+      const res = await exportSpaceData(space.id, path);
+      setExportMsg(
+        `Exported ${res.transactions} transactions, ${res.accounts} accounts, ${res.categories} categories.`,
+      );
+    } catch (e) {
+      setExportErr(String(e));
+    }
+  };
+
   return (
     <div className="max-w-[800px] mx-auto px-6 py-10 flex flex-col gap-8">
       <div className="flex items-center justify-between animate-fade-in">
@@ -885,6 +1106,28 @@ function SpacesPage(): React.JSX.Element {
         </div>
 
         <div className="flex items-center gap-2">
+          <Dialog open={importOpen} onOpenChange={setImportOpen}>
+            <DialogTrigger
+              render={
+                <Button
+                  variant="secondary"
+                  className="text-xs rounded-none h-9"
+                >
+                  Import
+                </Button>
+              }
+            />
+            <DialogContent
+              title="Import Space Data"
+              description="Import categories, accounts, and transactions from an export file."
+            >
+              <ImportDialog
+                spaces={spaces}
+                onClose={() => setImportOpen(false)}
+              />
+            </DialogContent>
+          </Dialog>
+
           <Dialog open={joinOpen} onOpenChange={setJoinOpen}>
             <DialogTrigger
               render={
@@ -1001,6 +1244,13 @@ function SpacesPage(): React.JSX.Element {
                 )}
                 <Button
                   variant="ghost"
+                  onClick={() => handleExport(space)}
+                  className="text-xs rounded-none h-8 px-3"
+                >
+                  Export
+                </Button>
+                <Button
+                  variant="ghost"
                   onClick={() => {
                     // Ensure we're editing from the active space context.
                     if (!isActive) {
@@ -1045,6 +1295,34 @@ function SpacesPage(): React.JSX.Element {
             />
           </DialogContent>
         </Dialog>
+      )}
+
+      {/* Import modal — now in top action bar */}
+
+      {/* Export status toast */}
+      {(exportMsg || exportErr) && (
+        <div className="fixed bottom-6 right-6 max-w-sm animate-fade-in">
+          <div
+            className={cn(
+              'px-4 py-3 border text-xs font-mono',
+              exportErr
+                ? 'border-expense/40 bg-expense/5 text-expense'
+                : 'border-border-muted bg-canvas-raised text-foreground',
+            )}
+          >
+            {exportErr || exportMsg}
+            <button
+              type="button"
+              onClick={() => {
+                setExportMsg('');
+                setExportErr('');
+              }}
+              className="ml-3 text-muted-foreground hover:text-foreground"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

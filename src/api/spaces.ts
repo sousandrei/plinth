@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Space, SpaceMember } from '@/types';
+import type { ExportResult, ImportResult, Space, SpaceMember } from '@/types';
 
 export const listMySpaces = (): Promise<Space[]> =>
   invoke<Space[]>('list_my_spaces');
@@ -33,3 +33,15 @@ export const renameSpace = (name: string): Promise<void> =>
 
 export const updateMemberRole = (userId: string, role: string): Promise<void> =>
   invoke<void>('update_member_role', { userId, role });
+
+export const exportSpaceData = (
+  spaceId: string,
+  path: string,
+): Promise<ExportResult> =>
+  invoke<ExportResult>('export_space_data', { spaceId, path });
+
+export const importSpaceData = (
+  spaceId: string,
+  path: string,
+): Promise<ImportResult> =>
+  invoke<ImportResult>('import_space_data', { spaceId, path });

@@ -200,7 +200,7 @@ pub async fn set_active_space(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
+    let data = session.require_user()?;
 
     let is_member = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, data.user_id)
         .fetch_optional(db.inner())
@@ -369,6 +369,22 @@ pub async fn delete_space(
         .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Db(format!("delete_space categories: {e}")))?;
+
+    // Delete transactions and account_summaries before accounts — the
+    // change_log triggers on those tables look up space_id from the accounts
+    // row, which must still exist.
+    sqlx::query_file!("queries/spaces/delete_space_transactions.sql", space_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space transactions: {e}")))?;
+
+    sqlx::query_file!(
+        "queries/spaces/delete_space_account_summaries.sql",
+        space_id
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("delete_space summaries: {e}")))?;
 
     sqlx::query_file!("queries/spaces/delete_space_accounts.sql", space_id)
         .execute(&mut *tx)
@@ -591,6 +607,13 @@ pub async fn import_space_data(
         .begin()
         .await
         .map_err(|e| AppError::Db(format!("import_space_data begin: {e}")))?;
+
+    // Clear existing categories so the UNIQUE(space_id, name) constraint
+    // doesn't collide with imported rows (e.g. default seeded categories).
+    sqlx::query_file!("queries/spaces/delete_space_categories.sql", space_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("import_space_data clear categories: {e}")))?;
 
     for c in &payload.categories {
         sqlx::query_file!(

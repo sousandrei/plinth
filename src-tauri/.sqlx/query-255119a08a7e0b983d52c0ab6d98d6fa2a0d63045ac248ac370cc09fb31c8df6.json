@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM account_summaries\nWHERE account_id IN (SELECT id FROM accounts WHERE space_id = ?1)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "255119a08a7e0b983d52c0ab6d98d6fa2a0d63045ac248ac370cc09fb31c8df6"
+}
