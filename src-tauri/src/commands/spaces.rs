@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::{db::DbPool, error::AppError, Session};
+use crate::{db::DbPool, error::AppError, sync::gc, Session};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Space {
@@ -323,6 +323,10 @@ pub async fn delete_space(
     tx.commit()
         .await
         .map_err(|e| AppError::Db(format!("delete_space commit: {e}")))?;
+
+    gc::run(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space gc: {e}")))?;
 
     session.clear_space();
     Ok(())

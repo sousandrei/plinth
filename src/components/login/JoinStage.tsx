@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { setActiveSpace } from '@/api/spaces';
 import { getDeviceName, joinSpace, listPeers } from '@/api/sync';
-import { createUser, setPin, verifyPin } from '@/api/users';
+import { createUserInSpace, setPin, verifyPin } from '@/api/users';
 import { cn } from '@/lib/util';
 import type { PeerInfo, User } from '@/types';
 import { PinInput } from './PinInput';
@@ -87,8 +87,7 @@ export const JoinStage = ({
           updated_at: '',
         };
       } else {
-        // New person — create a fresh local user then add them to the space.
-        user = await createUser(newName.trim());
+        user = await createUserInSpace(newName.trim(), spaceId);
         await setPin(user.id, pin);
       }
       await setActiveSpace(spaceId);

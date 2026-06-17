@@ -182,6 +182,57 @@ pub async fn add_app_user(name: String, db: State<'_, DbPool>) -> Result<User, A
 }
 
 #[tauri::command]
+pub async fn create_user_in_space(
+    name: String,
+    space_id: String,
+    db: State<'_, DbPool>,
+    session: State<'_, Session>,
+) -> Result<User, AppError> {
+    if name.trim().is_empty() {
+        return Err(AppError::InvalidInput("name cannot be empty".into()));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let name = name.trim().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("create_user_in_space begin: {e}")))?;
+
+    sqlx::query_file!("queries/users/create_user.sql", id, name, now, now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("create_user_in_space: {e}")))?;
+
+    sqlx::query_file!(
+        "queries/spaces/add_space_member.sql",
+        space_id,
+        id,
+        "member",
+        now
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("create_user_in_space member: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("create_user_in_space commit: {e}")))?;
+
+    session.set(id.clone(), Some(space_id));
+
+    let user = sqlx::query_file_as!(User, "queries/users/get_user.sql", id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("create_user_in_space fetch: {e}")))?;
+
+    Ok(user)
+}
+
+#[tauri::command]
 pub async fn remove_user(user_id: String, db: State<'_, DbPool>) -> Result<(), AppError> {
     let user_count = sqlx::query_file!("queries/users/count_all_users.sql")
         .fetch_one(db.inner())

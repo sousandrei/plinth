@@ -168,6 +168,7 @@ pub fn run() {
             commands::users::add_app_user,
             commands::users::list_users,
             commands::users::create_user,
+            commands::users::create_user_in_space,
             commands::users::set_pin,
             commands::users::verify_pin,
             commands::users::update_user_name,

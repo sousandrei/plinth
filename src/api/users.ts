@@ -6,6 +6,11 @@ export const listUsers = (): Promise<User[]> => invoke<User[]>('list_users');
 export const createUser = (name: string): Promise<User> =>
   invoke<User>('create_user', { name });
 
+export const createUserInSpace = (
+  name: string,
+  spaceId: string,
+): Promise<User> => invoke<User>('create_user_in_space', { name, spaceId });
+
 export const setPin = (userId: string, pin: string): Promise<void> =>
   invoke<void>('set_pin', { userId, pin });
 
