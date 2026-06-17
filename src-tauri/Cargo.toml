@@ -31,7 +31,7 @@ tokio = { version = "1", features = [
 ] }
 
 # SQLite — async pool with compile-time checked queries
-sqlx = { version = "0.9.0-alpha.1", features = [
+sqlx = { version = "0.9.0", features = [
     "sqlite",
     "runtime-tokio",
     "macros",
@@ -45,17 +45,17 @@ thiserror = "2"
 rust-argon2 = "3.0.0"
 
 # Random salt generation
-getrandom = "0.4.2"
+getrandom = "0.4.3"
 
 # UUIDs for generated IDs
-uuid = { version = "1.23.2", features = ["v4"] }
+uuid = { version = "1.23.3", features = ["v4"] }
 
 # P2P sync — local network discovery
 gethostname = "1"
 mdns-sd = "0.20.0"
 
 # Date/time formatting
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 
 # Import pipeline
 boa_engine = "0.21"
@@ -69,7 +69,7 @@ tauri-plugin-dialog = "2"
 # metal is compiled on macOS; on other platforms we compile without metal to avoid objc2 compilation errors on Linux/Windows.
 # cuda is opt-in: pass --features cuda at build time on Linux/Windows CUDA hosts.
 hf-hub = { version = "0.5.0", features = ["tokio"] }
-safetensors = "0.7.0"
+safetensors = "0.8.0"
 tokenizers = "0.23.1"
 
 # For the passsword-authenticated key exchange (PAKE) protocol used in the P2P sync.

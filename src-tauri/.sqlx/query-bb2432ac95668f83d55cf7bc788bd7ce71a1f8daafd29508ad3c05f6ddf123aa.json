@@ -1,0 +1,153 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.id           AS \"id!: String\",\n       t.booking_date AS \"booking_date!: String\",\n       t.value_date   AS \"value_date!: String\",\n       t.reference    AS \"reference!: String\",\n       t.text         AS \"text!: String\",\n       t.currency     AS \"currency!: String\",\n       t.amount       AS \"amount!: i64\",\n       t.balance      AS \"balance!: i64\",\n       t.approved     AS \"approved!: i64\",\n       t.note         AS \"note!: String\",\n       COALESCE(t.category, '') AS \"category!: String\",\n       t.account_id   AS \"account_id!: String\"\nFROM transactions t\nINNER JOIN accounts a ON a.id = t.account_id\nWHERE a.space_id = ?1\nORDER BY t.booking_date DESC, t.value_date DESC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "booking_date!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "booking_date"
+          }
+        }
+      },
+      {
+        "name": "value_date!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "value_date"
+          }
+        }
+      },
+      {
+        "name": "reference!: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "reference"
+          }
+        }
+      },
+      {
+        "name": "text!: String",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "text"
+          }
+        }
+      },
+      {
+        "name": "currency!: String",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "currency"
+          }
+        }
+      },
+      {
+        "name": "amount!: i64",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "amount"
+          }
+        }
+      },
+      {
+        "name": "balance!: i64",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "balance"
+          }
+        }
+      },
+      {
+        "name": "approved!: i64",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "approved"
+          }
+        }
+      },
+      {
+        "name": "note!: String",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "name": "category!: String",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "account_id!: String",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "account_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bb2432ac95668f83d55cf7bc788bd7ce71a1f8daafd29508ad3c05f6ddf123aa"
+}

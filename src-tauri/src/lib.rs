@@ -228,6 +228,8 @@ pub fn run() {
             commands::sync::join_space,
             commands::sync::get_device_name,
             commands::sync::get_local_address,
+            commands::spaces::export_space_data,
+            commands::spaces::import_space_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,7 +6,7 @@
       {
         "name": "month!: String",
         "ordinal": 0,
-        "type_info": "Null",
+        "type_info": "Text",
         "origin": "Expression"
       },
       {
@@ -23,7 +23,7 @@
       {
         "name": "amount!: i64",
         "ordinal": 2,
-        "type_info": "Null",
+        "type_info": "Integer",
         "origin": "Expression"
       }
     ],
@@ -31,9 +31,9 @@
       "Right": 1
     },
     "nullable": [
-      null,
       true,
-      null
+      true,
+      false
     ]
   },
   "hash": "6d690d5fe529c906b19775c1935f5ab42d90f7063145e9ed0d4aaebff2bfe5c0"
