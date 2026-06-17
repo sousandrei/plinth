@@ -386,7 +386,19 @@ async fn apply_batch(
         return Ok(());
     }
 
-    let evicted = batch.rows.iter().any(|r| {
+    // A batch containing a spaces-delete is a space-deletion propagation.
+    // We suppress the eviction check for the whole batch in that case, since
+    // the trusted_devices deletes that ride along are cascade effects of the
+    // space deletion, not an explicit device revocation. The only way both
+    // could coexist in one batch is if a space deletion and an unrelated
+    // device revocation happened to share the same shipping window —
+    // acceptable risk: the revoked device's data is gone either way, and the
+    // next batch from the same peer will re-trigger eviction detection.
+    let is_space_deletion = batch.rows.iter().any(|r| {
+        r.table_name == "spaces" && r.operation == "delete"
+    });
+
+    let evicted = !is_space_deletion && batch.rows.iter().any(|r| {
         r.table_name == "trusted_devices"
             && r.operation == "delete"
             && r.device_id != local_device_id
@@ -445,6 +457,10 @@ async fn apply_batch(
     })
     .await
     .map_err(|e| AppError::Db(format!("apply_batch {local_device_id}: {e}")))?;
+
+    if is_space_deletion {
+        let _ = app.emit("sync://space-deleted", &space_id);
+    }
 
     Ok(())
 }

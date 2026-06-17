@@ -1,0 +1,1 @@
+DELETE FROM accounts WHERE space_id = ?1

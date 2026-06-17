@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Delete trusted_devices rows whose space no longer exists.\n-- Safe to run at any time — no side effects, no triggers.\n\nDELETE FROM trusted_devices\nWHERE space_id NOT IN (SELECT id FROM spaces)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "24e5686d2d5470763d6b4e0d9e1b15f1330f1bf4eb7f3019c33e15043b095abd"
+}

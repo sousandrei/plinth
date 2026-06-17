@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM users WHERE id NOT IN (SELECT DISTINCT user_id FROM space_members)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "d616d05dfc9eaa7ff5f318b0e35eac882efdbceb0e8b58827a378457151ef977"
+}

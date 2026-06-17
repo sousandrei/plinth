@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT\n    space_id  AS \"space_id!\",\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM trusted_devices\nUNION\nSELECT\n    space_id  AS \"space_id!\",\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM evicted_devices\n",
+  "query": "SELECT\n    space_id  AS \"space_id!\",\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM trusted_devices td\nINNER JOIN spaces s ON s.id = td.space_id\nUNION\nSELECT\n    space_id  AS \"space_id!\",\n    device_id AS \"device_id!\",\n    cert_pem  AS \"cert_pem!\"\nFROM evicted_devices ed\nINNER JOIN spaces s ON s.id = ed.space_id\n",
   "describe": {
     "columns": [
       {
@@ -46,5 +46,5 @@
       false
     ]
   },
-  "hash": "5f1faec6fa63f42e3dcbdf5e79f6090c18b3ba533e52cf88051f8d979939c13f"
+  "hash": "91dd4e4b4176e5b12d733385723f3bd7021346e1add295cd47230de55c69a0c0"
 }

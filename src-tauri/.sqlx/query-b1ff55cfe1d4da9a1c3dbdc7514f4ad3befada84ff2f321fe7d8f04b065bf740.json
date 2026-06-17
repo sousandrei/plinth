@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE app_settings SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)\nWHERE key = 'sync_seq'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "b1ff55cfe1d4da9a1c3dbdc7514f4ad3befada84ff2f321fe7d8f04b065bf740"
+}

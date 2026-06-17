@@ -1,0 +1,1 @@
+UPDATE spaces SET deleted = 1 WHERE id = ?1

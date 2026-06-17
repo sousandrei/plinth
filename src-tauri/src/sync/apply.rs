@@ -80,10 +80,10 @@ async fn apply_delete(
     // change_log triggers emit for those tables.
     match row.table_name.as_str() {
         "spaces" => {
-            sqlx::query_file!("queries/sync/apply/delete_space.sql", row.row_id)
+            sqlx::query_file!("queries/sync/apply/soft_delete_space.sql", row.row_id)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| AppError::Db(format!("delete_space: {e}")))?;
+                .map_err(|e| AppError::Db(format!("soft_delete_space: {e}")))?;
         }
         "space_members" => {
             // Trigger emits row_id as `space_id:user_id` (see

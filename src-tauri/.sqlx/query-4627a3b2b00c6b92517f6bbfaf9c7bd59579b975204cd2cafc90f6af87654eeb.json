@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO change_log (id, space_id, table_name, row_id, operation, payload, seq, device_id)\nVALUES (\n    lower(hex(randomblob(16))),\n    ?1, 'spaces', ?1, 'delete', NULL,\n    (SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'),\n    COALESCE(\n        (SELECT value FROM app_settings WHERE key = 'applying_as_device'),\n        (SELECT value FROM app_settings WHERE key = 'device_id')\n    )\n)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "4627a3b2b00c6b92517f6bbfaf9c7bd59579b975204cd2cafc90f6af87654eeb"
+}

@@ -264,15 +264,61 @@ pub async fn delete_space(
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
 
-    sqlx::query_file!("queries/spaces/delete_space.sql", data.space_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space: {e}")))?;
+    let space_id = &data.space_id;
+    let mut tx = db.inner().begin().await
+        .map_err(|e| AppError::Db(format!("delete_space begin: {e}")))?;
 
-    sqlx::query_file!("queries/spaces/delete_change_log_for_space.sql", data.space_id)
-        .execute(db.inner())
+    // Soft-delete the space row (no change_log entry — the update trigger
+    // has WHEN NEW.deleted = 0).
+    sqlx::query_file!("queries/spaces/soft_delete_space.sql", space_id)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| AppError::Db(format!("delete_space change_log: {e}")))?;
+        .map_err(|e| AppError::Db(format!("delete_space soft_delete: {e}")))?;
+
+    // Delete child data. Triggers fire for each deletion, populating
+    // change_log with entries that sync will ship to peers.
+    // trusted_devices and evicted_devices are preserved so that sync
+    // queries (which INNER JOIN spaces) continue to match the soft-deleted
+    // space until all peers have consumed the deletion changes.
+    sqlx::query_file!("queries/spaces/delete_space_members.sql", space_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space members: {e}")))?;
+
+    sqlx::query_file!("queries/spaces/delete_space_settings.sql", space_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space settings: {e}")))?;
+
+    sqlx::query_file!("queries/spaces/delete_space_categories.sql", space_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space categories: {e}")))?;
+
+    sqlx::query_file!("queries/spaces/delete_space_accounts.sql", space_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space accounts: {e}")))?;
+
+    // NOT deleted: trusted_devices, evicted_devices (needed for sync queries
+    // to still match), sync_cursors (needed by GC all_peers_consumed pass),
+    // sync_conflicts (harmless, cleaned up by 90-day cap if needed).
+
+    // Increment sync_seq one more time so the space delete entry has a seq
+    // higher than all the child-table deletes above.
+    sqlx::query_file!("queries/spaces/increment_sync_seq.sql")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space increment_seq: {e}")))?;
+
+    // Manually insert a 'delete' change_log entry for the space itself.
+    sqlx::query_file!("queries/spaces/insert_space_delete_changelog.sql", space_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_space changelog: {e}")))?;
+
+    tx.commit().await
+        .map_err(|e| AppError::Db(format!("delete_space commit: {e}")))?;
 
     session.clear_space();
     Ok(())

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT DISTINCT device_id AS \"device_id!\"\nFROM trusted_devices\nWHERE sync_enabled = 1\n",
+  "query": "SELECT DISTINCT td.device_id AS \"device_id!\"\nFROM trusted_devices td\nINNER JOIN spaces s ON s.id = td.space_id\nWHERE td.sync_enabled = 1\n",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "431e64a3739da783cfce41362899459401958dded097f3b3e8da7e49ed00f016"
+  "hash": "98f1101a3d383504948fd7a9dc96331d5fb07bcb07f68fa6d65cecc9e71aa666"
 }

@@ -1,0 +1,1 @@
+DELETE FROM space_members WHERE space_id = ?1

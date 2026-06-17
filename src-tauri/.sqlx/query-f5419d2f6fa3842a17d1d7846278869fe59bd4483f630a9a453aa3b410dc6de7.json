@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM spaces\nWHERE deleted = 1\n  AND NOT EXISTS (\n    SELECT 1 FROM change_log WHERE change_log.space_id = spaces.id\n  )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "f5419d2f6fa3842a17d1d7846278869fe59bd4483f630a9a453aa3b410dc6de7"
+}

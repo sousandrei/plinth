@@ -2,20 +2,25 @@ use sqlx::SqlitePool;
 
 use crate::error::AppError;
 
-/// Run all four GC passes in order. Called after every successful outbound
+/// Run all six GC passes in order. Called after every successful outbound
 /// sync session. Safe to call concurrently — each pass is a single DELETE
 /// statement that SQLite serialises internally through WAL.
 ///
 /// Passes:
-///   1. Compaction      — keep only the highest-seq row per (space, table, row_id)
-///   2. All-consumed    — drop rows every enabled peer has already applied
-///   3. 90-day hard cap — drop rows older than 90 days unconditionally
-///   4. Orphan cleanup  — remove trusted_devices / evicted_devices for deleted spaces
+///   1. Compaction        — keep only the highest-seq row per (space, table, row_id)
+///   2. All-consumed      — drop rows every enabled peer has already applied
+///   3. 90-day hard cap   — drop rows older than 90 days unconditionally
+///   4. Deleted spaces    — hard-delete soft-deleted space skeletons with no
+///      remaining change_log entries
+///   5. Orphan cleanup    — remove trusted_devices / evicted_devices for deleted spaces
+///   6. Orphan users      — remove users with no remaining space_members rows
 pub async fn run(db: &SqlitePool) -> Result<(), AppError> {
     compact(db).await?;
     all_peers_consumed(db).await?;
     cap_90_days(db).await?;
+    deleted_spaces(db).await?;
     orphan_trusted_devices(db).await?;
+    orphan_users(db).await?;
     Ok(())
 }
 
@@ -43,11 +48,27 @@ async fn cap_90_days(db: &SqlitePool) -> Result<(), AppError> {
     Ok(())
 }
 
+async fn deleted_spaces(db: &SqlitePool) -> Result<(), AppError> {
+    sqlx::query_file!("queries/sync/gc_deleted_spaces.sql")
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("gc_deleted_spaces: {e}")))?;
+    Ok(())
+}
+
 async fn orphan_trusted_devices(db: &SqlitePool) -> Result<(), AppError> {
     sqlx::query_file!("queries/sync/gc_orphan_trusted_devices.sql")
         .execute(db)
         .await
         .map_err(|e| AppError::Db(format!("gc_orphan_trusted_devices: {e}")))?;
+    Ok(())
+}
+
+async fn orphan_users(db: &SqlitePool) -> Result<(), AppError> {
+    sqlx::query_file!("queries/sync/gc_orphan_users.sql")
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("gc_orphan_users: {e}")))?;
     Ok(())
 }
 

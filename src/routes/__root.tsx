@@ -14,7 +14,9 @@ function RootLayout(): React.JSX.Element {
   const { user, spaceId, setSpaceId } = useAuth();
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    let unlistenEvicted: (() => void) | null = null;
+    let unlistenDeleted: (() => void) | null = null;
+
     listen<string>('sync://evicted', (event) => {
       const evictedSpaceId = event.payload;
       evictSpace(evictedSpaceId).then(() => {
@@ -23,10 +25,21 @@ function RootLayout(): React.JSX.Element {
         }
       });
     }).then((fn) => {
-      unlisten = fn;
+      unlistenEvicted = fn;
     });
+
+    listen<string>('sync://space-deleted', (event) => {
+      const deletedSpaceId = event.payload;
+      if (spaceId === deletedSpaceId) {
+        setSpaceId(null);
+      }
+    }).then((fn) => {
+      unlistenDeleted = fn;
+    });
+
     return () => {
-      unlisten?.();
+      unlistenEvicted?.();
+      unlistenDeleted?.();
     };
   }, [spaceId, setSpaceId]);
 

@@ -1,0 +1,1 @@
+DELETE FROM categories WHERE space_id = ?1

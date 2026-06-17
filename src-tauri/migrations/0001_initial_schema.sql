@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS spaces (
     id         TEXT PRIMARY KEY NOT NULL,
     name       TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    deleted    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS space_members (
@@ -276,7 +277,9 @@ AFTER INSERT ON spaces BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS change_log_spaces_au
-AFTER UPDATE ON spaces BEGIN
+AFTER UPDATE ON spaces
+WHEN NEW.deleted = 0
+BEGIN
     UPDATE app_settings SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
         WHERE key = 'sync_seq';
     INSERT INTO change_log (id, space_id, table_name, row_id, operation, payload, seq, device_id)
