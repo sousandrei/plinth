@@ -199,6 +199,8 @@ pub fn run() {
             commands::accounts::update_account,
             commands::transactions::list_transactions,
             commands::transactions::update_transaction,
+            commands::transactions::bulk_approve_transactions,
+            commands::transactions::bulk_categorize_transactions,
             commands::categories::list_all_categories,
             commands::categories::create_category,
             commands::categories::delete_category,

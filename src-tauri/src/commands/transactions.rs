@@ -159,3 +159,53 @@ pub async fn update_transaction(
 
     Ok(())
 }
+
+#[tauri::command]
+pub async fn bulk_approve_transactions(
+    ids: Vec<String>,
+    approved: bool,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+) -> Result<u64, AppError> {
+    let data = session.require()?;
+    let ids_json = serde_json::to_string(&ids)
+        .map_err(|e| AppError::Internal(format!("bulk_approve_transactions: {e}")))?;
+
+    let rows = sqlx::query_file!(
+        "queries/transactions/bulk_approve.sql",
+        approved,
+        ids_json,
+        data.space_id
+    )
+    .execute(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("bulk_approve_transactions: {e}")))?
+    .rows_affected();
+
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn bulk_categorize_transactions(
+    ids: Vec<String>,
+    category: Option<String>,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+) -> Result<u64, AppError> {
+    let data = session.require()?;
+    let ids_json = serde_json::to_string(&ids)
+        .map_err(|e| AppError::Internal(format!("bulk_categorize_transactions: {e}")))?;
+
+    let rows = sqlx::query_file!(
+        "queries/transactions/bulk_categorize.sql",
+        category,
+        ids_json,
+        data.space_id
+    )
+    .execute(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("bulk_categorize_transactions: {e}")))?
+    .rows_affected();
+
+    Ok(rows)
+}

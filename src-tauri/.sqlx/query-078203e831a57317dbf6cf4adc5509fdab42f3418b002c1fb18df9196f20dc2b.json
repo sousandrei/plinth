@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions\nSET approved = ?1\nWHERE id IN (SELECT value FROM json_each(?2))\n  AND account_id IN (SELECT id FROM accounts WHERE space_id = ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "078203e831a57317dbf6cf4adc5509fdab42f3418b002c1fb18df9196f20dc2b"
+}
