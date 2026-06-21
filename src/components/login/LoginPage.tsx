@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react';
 import { listMySpaces } from '@/api/spaces';
 import { getDeviceName, getLocalAddress } from '@/api/sync';
 import { listUsers } from '@/api/users';
-import logoHero from '@/assets/logo.svg';
 import logoClean from '@/assets/logo-clean.svg';
 import { useAuth } from '@/context/AuthContext';
 import type { User } from '@/types';
@@ -152,13 +151,6 @@ export const LoginPage = (): React.JSX.Element => {
 
         {stage === 'welcome' && (
           <div className="flex flex-col items-center gap-8 animate-fade-in">
-            <div className="w-32 h-32 border border-black bg-white overflow-hidden shrink-0">
-              <img
-                src={logoHero}
-                className="w-full h-full object-cover"
-                alt="Plinth Logo"
-              />
-            </div>
             <div className="text-center">
               <h1 className="text-lg font-semibold tracking-tight">
                 Welcome to Plinth
