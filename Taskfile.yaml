@@ -7,8 +7,7 @@ env:
 vars:
   VERSION:
     sh: git rev-parse --short HEAD 2>/dev/null || echo "dev"
-  REPO_DIR:
-    sh: pwd
+  OUTPUT_DIR: builds
 
 tasks:
   default:
@@ -119,8 +118,6 @@ tasks:
     cmds:
       - bunx --bun tauri build --bundles app,dmg
       - task: collect-artifacts
-        vars:
-          OUTPUT_DIR: '{{.REPO_DIR}}/builds'
 
   build:windows:cpu:
     desc: Build release for Windows (CPU)
@@ -128,8 +125,6 @@ tasks:
     cmds:
       - bunx --bun tauri build --bundles msi,nsis
       - task: collect-artifacts
-        vars:
-          OUTPUT_DIR: '{{.REPO_DIR}}/builds'
 
   build:windows:cuda:
     desc: Build release for Windows with CUDA enabled
@@ -137,8 +132,6 @@ tasks:
     cmds:
       - bunx --bun tauri build --features cuda --bundles msi,nsis
       - task: collect-artifacts
-        vars:
-          OUTPUT_DIR: '{{.REPO_DIR}}/builds'
 
   build:linux:cpu:
     desc: Build release for Linux (CPU) — produces .deb package
@@ -146,8 +139,6 @@ tasks:
     cmds:
       - bunx --bun tauri build --bundles deb
       - task: collect-artifacts
-        vars:
-          OUTPUT_DIR: '{{.REPO_DIR}}/builds'
 
   build:linux:cuda:
     desc: Build release for Linux with CUDA enabled — produces .deb package
@@ -155,13 +146,26 @@ tasks:
     cmds:
       - bunx --bun tauri build --features cuda --bundles deb
       - task: collect-artifacts
-        vars:
-          OUTPUT_DIR: '{{.REPO_DIR}}/builds'
 
   collect-artifacts:
-    desc: Flatten installer bundles from src-tauri/target/release/bundle/* into {{.OUTPUT_DIR}}
+    desc: Flatten installer bundles from src-tauri/target/release/bundle/* into builds/
+    cmds:
+      - task: collect-artifacts:unix
+      - task: collect-artifacts:windows
+
+  collect-artifacts:unix:
+    platforms: [linux, darwin]
     cmds:
       - mkdir -p {{.OUTPUT_DIR}}
       - cmd: find src-tauri/target/release/bundle -mindepth 2 -maxdepth 2 \( -type f -o -name "*.AppDir" -o -name "*.app" \) -exec cp -r {} {{.OUTPUT_DIR}}/ \;
       - ls -lh {{.OUTPUT_DIR}}
+    silent: true
+
+  collect-artifacts:windows:
+    platforms: [windows]
+    cmds:
+      - cmd: pwsh -c "New-Item -ItemType Directory -Force -Path {{.OUTPUT_DIR}} | Out-Null"
+      - cmd: pwsh -c "Copy-Item src-tauri/target/release/bundle/msi/*.msi {{.OUTPUT_DIR}}/"
+      - cmd: pwsh -c "Copy-Item src-tauri/target/release/bundle/nsis/*.exe {{.OUTPUT_DIR}}/"
+      - cmd: pwsh -c "Get-ChildItem {{.OUTPUT_DIR}} | Select-Object Name, @{n='Size(MB)';e={[math]::Round($_.Length/1MB,2)}}"
     silent: true
