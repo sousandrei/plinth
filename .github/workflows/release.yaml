@@ -62,7 +62,10 @@ jobs:
       - name: Publish Release Artifacts
         uses: softprops/action-gh-release@v3
         with:
-          files: builds/*
+          files: |
+            builds/*.dmg
+            builds/*.tar.gz
+            builds/*.tar.gz.sig
           tag_name: ${{ needs.release-please.outputs.tag_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
