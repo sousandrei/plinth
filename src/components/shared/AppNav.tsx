@@ -1,5 +1,6 @@
 import { Link, useRouterState } from '@tanstack/react-router';
 import { logout } from '@/api/spaces';
+import logoClean from '@/assets/logo-clean.svg';
 import { Avatar } from '@/components/ui/Avatar';
 import { useAuth } from '@/context/AuthContext';
 import { useDemoMode } from '@/hooks/useDemoMode';
@@ -66,6 +67,7 @@ export const AppNav = (): React.JSX.Element => {
         <div className="max-w-[1200px] mx-auto px-6 flex items-stretch h-14 justify-between">
           <div className="flex items-stretch">
             <div className="flex items-center pr-8 border-r border-border-subtle shrink-0 gap-2.5 mr-2">
+              <img src={logoClean} className="w-5 h-5 shrink-0" alt="" />
               <span className="text-sm font-semibold tracking-tight font-sans text-foreground">
                 Plinth
               </span>

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- ==================== PLINTH COLUMN GEOMETRY ==================== -->
+
+  <!-- Tier 1 (Bottom Slab): z = 0 to 40 -->
+  <g id="tier-1-slab">
+    <!-- Left Face (Intellectual Cobalt) -->
+    <polygon points="256,510 48.15,390 48.15,350 256,470" fill="#003CB3" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+    <!-- Right Face (Dark Charcoal) -->
+    <polygon points="256,510 463.85,390 463.85,350 256,470" fill="#262626" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+    <!-- Top Face (Muted Light Grey) -->
+    <polygon points="256,470 48.15,350 256,230 463.85,350" fill="#F3F4F6" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+  </g>
+
+  <!-- Projection lines: Tier 1 to Tier 2 -->
+  <path d="M 256 410 L 256 440 M 100.12 320 L 100.12 350 M 411.88 320 L 411.88 350" stroke="#000000" stroke-width="1.5" stroke-dasharray="4 4" stroke-opacity="0.4" />
+
+  <!-- Tier 2 (Middle Pedestal): z = 70 to 130 -->
+  <g id="tier-2-pedestal">
+    <!-- Left Face (Intellectual Cobalt) -->
+    <polygon points="256,410 100.12,320 100.12,260 256,350" fill="#003CB3" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+    <!-- Right Face (Dark Charcoal) -->
+    <polygon points="256,410 411.88,320 411.88,260 256,350" fill="#262626" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+    <!-- Top Face (Muted Grey) -->
+    <polygon points="256,350 100.12,260 256,170 411.88,260" fill="#E5E7EB" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+  </g>
+
+  <!-- Projection lines: Tier 2 to Tier 3 -->
+  <path d="M 256 290 L 256 320 M 152.08 230 L 152.08 260 M 359.92 230 L 359.92 260" stroke="#000000" stroke-width="1.5" stroke-dasharray="4 4" stroke-opacity="0.4" />
+
+  <!-- Tier 3 (Top Shaft): z = 160 to 300 -->
+  <g id="tier-3-shaft">
+    <!-- Left Face (Intellectual Cobalt) -->
+    <polygon points="256,290 152.08,230 152.08,90 256,150" fill="#003CB3" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+    <!-- Right Face (Dark Charcoal) -->
+    <polygon points="256,290 359.92,230 359.92,90 256,150" fill="#262626" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+    <!-- Top Face (Antique Brass highlight) -->
+    <polygon points="256,150 152.08,90 256,30 359.92,90" fill="#C19A42" stroke="#000000" stroke-width="2.5" stroke-linejoin="miter" />
+  </g>
+</svg>

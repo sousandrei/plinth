@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import { listMySpaces } from '@/api/spaces';
 import { getDeviceName, getLocalAddress } from '@/api/sync';
 import { listUsers } from '@/api/users';
+import logoHero from '@/assets/logo.svg';
+import logoClean from '@/assets/logo-clean.svg';
 import { useAuth } from '@/context/AuthContext';
 import type { User } from '@/types';
 import { JoinStage } from './JoinStage';
@@ -126,7 +128,8 @@ export const LoginPage = (): React.JSX.Element => {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-canvas">
-      <div className="absolute top-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 animate-fade-in text-center">
+      <div className="absolute top-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 animate-fade-in text-center">
+        <img src={logoClean} className="w-8 h-8 shrink-0" alt="" />
         <span className="text-sm font-semibold tracking-tight font-sans">
           Plinth
         </span>
@@ -149,6 +152,13 @@ export const LoginPage = (): React.JSX.Element => {
 
         {stage === 'welcome' && (
           <div className="flex flex-col items-center gap-8 animate-fade-in">
+            <div className="w-32 h-32 border border-black bg-white overflow-hidden shrink-0">
+              <img
+                src={logoHero}
+                className="w-full h-full object-cover"
+                alt="Plinth Logo"
+              />
+            </div>
             <div className="text-center">
               <h1 className="text-lg font-semibold tracking-tight">
                 Welcome to Plinth

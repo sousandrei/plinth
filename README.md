@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://storage.googleapis.com/sousandrei-plinth/plinth.png" alt="Plinth" width="300" />
+  <img src="logo.svg" alt="Plinth" width="256" />
 </p>
 <p align="center">A private, offline-first personal finance app.</p>
 <p align="center">
