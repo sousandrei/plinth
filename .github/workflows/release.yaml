@@ -85,6 +85,7 @@ jobs:
 
       - name: Set CUDA environment variables
         if: matrix.cuda
+        shell: bash
         run: |
           echo "CUDARC_CUDA_VERSION=12040" >> $GITHUB_ENV
           echo "CUDA_COMPUTE_CAP=80" >> $GITHUB_ENV
