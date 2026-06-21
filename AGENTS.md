@@ -40,7 +40,7 @@ These rules are non-negotiable and apply to every task:
 
 ## Build & Check Commands
 
-We have a central `Taskfile.yml` in the root of the project to coordinate development workflows. It is highly recommended to use the `task` runner.
+We have a central `Taskfile.yaml` in the root of the project to coordinate development workflows. It is highly recommended to use the `task` runner.
 
 ```bash
 # --- Standard Tasks (run from root directory) ---

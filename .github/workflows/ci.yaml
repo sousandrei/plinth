@@ -19,6 +19,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up MSVC Developer Command Prompt (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          vsversion: '2022'
+
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -60,6 +66,8 @@ jobs:
         if: matrix.os != 'macos-latest'
         env:
           CUDARC_CUDA_VERSION: '12040'
+          CUDA_COMPUTE_CAP: 80
+          NVCC_APPEND_FLAGS: '-allow-unsupported-compiler'
         run: |
           cargo clippy --manifest-path src-tauri/Cargo.toml --features cuda -- -D warnings
           cargo check --manifest-path src-tauri/Cargo.toml --features cuda

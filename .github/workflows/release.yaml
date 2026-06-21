@@ -108,9 +108,16 @@ jobs:
     runs-on: windows-latest
     env:
       CUDARC_CUDA_VERSION: '12040'
+      CUDA_COMPUTE_CAP: 80
+      NVCC_APPEND_FLAGS: '-allow-unsupported-compiler'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          vsversion: '2022'
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -207,6 +214,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CUDARC_CUDA_VERSION: '12040'
+      CUDA_COMPUTE_CAP: 80
+      NVCC_APPEND_FLAGS: '-allow-unsupported-compiler'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
