@@ -50,7 +50,7 @@ updateCategoryColors([
   { name: 'Other', color: '#6b7280' },
 ]);
 
-export const Route = createFileRoute('/test')({
+export const Route = createFileRoute('/design')({
   component: TestPage,
 });
 

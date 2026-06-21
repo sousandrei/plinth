@@ -5,21 +5,23 @@ import { useAuth } from '@/context/AuthContext';
 import { useDemoMode } from '@/hooks/useDemoMode';
 import { cn } from '@/lib/util';
 
-const navLinkBase = cn(
+const navLinkShared = cn(
   'relative flex items-center px-5 text-xs uppercase tracking-widest font-mono h-full gap-1.5 border-none bg-transparent',
-  'transition-all duration-200 select-none cursor-pointer',
-  'text-muted-foreground hover:text-foreground focus:outline-none',
+  'transition-all duration-200 select-none cursor-pointer focus:outline-none',
   'after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px]',
-  'after:bg-accent after:scale-x-0 after:transition-transform after:duration-200 after:origin-left',
-  'hover:after:scale-x-100 hover:bg-muted/60',
+  'after:bg-accent after:transition-transform after:duration-200 after:origin-left',
+);
+
+const navLinkBase = cn(
+  navLinkShared,
+  'text-muted-foreground hover:text-foreground',
+  'after:scale-x-0 hover:after:scale-x-100 hover:bg-muted/60',
 );
 
 const navLinkActive = cn(
-  'relative flex items-center px-5 text-xs uppercase tracking-widest font-mono h-full gap-1.5 border-none bg-transparent',
-  'transition-all duration-200 select-none cursor-pointer',
-  'text-foreground bg-muted/30 focus:outline-none',
-  'after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px]',
-  'after:bg-accent after:scale-x-100 after:transition-transform after:duration-200 after:origin-left',
+  navLinkShared,
+  'text-foreground bg-muted/30',
+  'after:scale-x-100',
 );
 
 const dropdownItemBase = cn(

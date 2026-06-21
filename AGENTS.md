@@ -64,7 +64,8 @@ cargo tauri build                      # release bundle
 bun run dev                            # dev server
 bun run build                          # production build
 bun run typecheck                      # tsc --noEmit
-bun run check                          # Biome lint check
+bun run check                          # Biome lint check (read-only)
+bun run check:fix                      # Biome lint check (with --write)
 bun run format                         # Biome auto-fix
 ```
 

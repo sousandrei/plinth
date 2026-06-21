@@ -50,7 +50,7 @@ function Settings(): React.JSX.Element {
           </p>
         </div>
         <Link
-          to="/test"
+          to="/design"
           className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors duration-150 border border-border-subtle px-3 py-1.5 mt-1"
         >
           Design system

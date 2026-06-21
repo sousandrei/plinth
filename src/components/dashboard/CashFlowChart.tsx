@@ -49,41 +49,19 @@ const CashFlowTooltip = ({
   const color = value >= 0 ? COLOR_POSITIVE : COLOR_NEGATIVE;
 
   return (
-    <div
-      style={{
-        background: 'oklch(99.5% 0.002 80)',
-        border: '1px solid oklch(84% 0.005 240)',
-        fontSize: 11,
-        fontFamily: 'var(--font-mono)',
-        padding: '8px 10px',
-      }}
-    >
+    <div className="bg-canvas-raised border border-border-muted text-[11px] font-mono px-2.5 py-2">
       {month && (
-        <p
-          style={{
-            color: 'oklch(44% 0.006 264)',
-            marginBottom: 6,
-            fontWeight: 500,
-          }}
-        >
+        <p className="text-muted-foreground mb-1.5 font-medium">
           {fmtMonth(String(month))}
         </p>
       )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div className="flex items-center gap-1.5">
         <span
-          style={{
-            display: 'inline-block',
-            width: 6,
-            height: 6,
-            borderRadius: '50%',
-            background: color,
-            flexShrink: 0,
-          }}
+          className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+          style={{ background: color }}
         />
-        <span style={{ color: 'oklch(44% 0.006 264)', flex: 1 }}>Net</span>
-        <span style={{ color: 'oklch(8% 0.005 264)', marginLeft: 12 }}>
-          {fmt(value, currency)}
-        </span>
+        <span className="text-muted-foreground flex-1">Net</span>
+        <span className="text-foreground ml-3">{fmt(value, currency)}</span>
       </div>
     </div>
   );
@@ -126,7 +104,7 @@ export const CashFlowChart = ({
         </div>
 
         {/* Chart */}
-        <div className="flex-1 min-h-0" style={{ minHeight: 100 }}>
+        <div className="flex-1 min-h-[100px]">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={series}

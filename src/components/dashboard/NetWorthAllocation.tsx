@@ -54,7 +54,7 @@ export const NetWorthAllocation = ({
         {/* Pie + legend side by side */}
         <div className="flex flex-1 min-h-0 items-center gap-3 px-4 pb-4">
           {/* Pie */}
-          <div className="shrink-0" style={{ width: 120, height: 120 }}>
+          <div className="shrink-0 w-[120px] h-[120px]">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Tooltip
