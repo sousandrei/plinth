@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/sousandrei/plinth/compare/plinth-v1.1.0...plinth-v1.1.1) (2026-06-21)
+
+
+### Miscellaneous Chores
+
+* release 1.1.1 ([778c52d](https://github.com/sousandrei/plinth/commit/778c52d7c4fc872bdc5b8999fc646bff8cf58409))
+
 ## [1.1.0](https://github.com/sousandrei/plinth/compare/plinth-v1.0.0...plinth-v1.1.0) (2026-06-21)
 
 
