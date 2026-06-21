@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.2](https://github.com/sousandrei/plinth/compare/plinth-v1.1.1...plinth-v1.1.2) (2026-06-21)
+
+
+### Bug Fixes
+
+* **ci:** escape $ in PowerShell command to avoid variable expansion ([0ead10b](https://github.com/sousandrei/plinth/commit/0ead10bb9555d9b85762046956afdf73883c8d4f))
+* narrow files to be released in macos ([9da5355](https://github.com/sousandrei/plinth/commit/9da5355402d3810fc7e20a952e98607fd2fdb768))
+* rounded corners on category chips ([63238ce](https://github.com/sousandrei/plinth/commit/63238cedcea9d8e239fc898a46614dbad7e9f891))
+
 ## [1.1.1](https://github.com/sousandrei/plinth/compare/plinth-v1.1.0...plinth-v1.1.1) (2026-06-21)
 
 
