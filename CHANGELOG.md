@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/sousandrei/plinth/compare/plinth-v1.0.0...plinth-v1.1.0) (2026-06-21)
+
+
+### Features
+
+* toaster and updater ([227da44](https://github.com/sousandrei/plinth/commit/227da44b2892e3014131c3f915337c79674ad00e))
+
 ## 1.0.0 (2026-06-21)
 
 
