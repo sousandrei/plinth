@@ -115,7 +115,7 @@ export const TransactionRow = ({
           }))}
           style={t.category ? categoryChipStyle(t.category) : undefined}
           className={cn(
-            'h-7 py-0 px-2 text-[10px] font-mono uppercase tracking-widest bg-transparent border shadow-none hover:bg-muted/60 rounded cursor-pointer outline-none transition-all duration-100',
+            'h-7 py-0 px-2 text-[10px] font-mono uppercase tracking-widest bg-transparent border shadow-none hover:bg-muted/60 cursor-pointer outline-none transition-all duration-100',
             t.category
               ? 'border-transparent text-foreground'
               : 'border-border-subtle border-dashed text-muted-foreground',
