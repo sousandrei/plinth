@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0](https://github.com/sousandrei/plinth/compare/plinth-v1.1.3...plinth-v1.2.0) (2026-06-21)
+
+
+### Features
+
+* toast for up to date app ([b755ed5](https://github.com/sousandrei/plinth/commit/b755ed59ca67f16eb63ba9e89fc29f17349e4845))
+
+
+### Bug Fixes
+
+* env export on windows build ([8d30532](https://github.com/sousandrei/plinth/commit/8d30532b566bf31f2c5cce578a5b76930558cbad))
+
 ## [1.1.3](https://github.com/sousandrei/plinth/compare/plinth-v1.1.2...plinth-v1.1.3) (2026-06-21)
 
 
