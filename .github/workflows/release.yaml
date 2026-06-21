@@ -36,19 +36,25 @@ jobs:
           - platform: macos-latest
             cuda: false
             args: '--bundles app,dmg'
+            name: macos
           - platform: windows-2022
             cuda: false
             args: '--bundles msi,nsis'
+            name: windows-cpu
           - platform: windows-2022
             cuda: true
             args: '--features cuda --bundles msi,nsis'
+            name: windows-cuda
           - platform: ubuntu-latest
             cuda: false
             args: '--bundles deb'
+            name: linux-cpu
           - platform: ubuntu-latest
             cuda: true
             args: '--features cuda --bundles deb'
+            name: linux-cuda
     runs-on: ${{ matrix.platform }}
+    name: build (${{ matrix.name }})
 
     steps:
       - name: Checkout repository
