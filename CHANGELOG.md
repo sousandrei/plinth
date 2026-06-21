@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/sousandrei/plinth/compare/plinth-v1.1.2...plinth-v1.1.3) (2026-06-21)
+
+
+### Bug Fixes
+
+* simplify ci release workflow and fix cuda builds ([5633df6](https://github.com/sousandrei/plinth/commit/5633df649d709ff4ae848d4c26d9b7c1ddff2281))
+
 ## [1.1.2](https://github.com/sousandrei/plinth/compare/plinth-v1.1.1...plinth-v1.1.2) (2026-06-21)
 
 
