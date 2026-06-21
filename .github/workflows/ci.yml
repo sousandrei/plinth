@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+
+env:
+  SQLX_OFFLINE: true
+
+jobs:
+  check-platform:
+    name: Check on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Install Tauri system dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install CUDA Toolkit (Linux & Windows)
+        if: matrix.os != 'macos-latest'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.4.0'
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check Frontend Production Build
+        run: bun run build
+
+      - name: Run Standard Lint and Typecheck
+        run: task lint
+
+      - name: Run CUDA backend checks
+        if: matrix.os != 'macos-latest'
+        env:
+          CUDARC_CUDA_VERSION: '12040'
+        run: |
+          cargo clippy --manifest-path src-tauri/Cargo.toml --features cuda -- -D warnings
+          cargo check --manifest-path src-tauri/Cargo.toml --features cuda
