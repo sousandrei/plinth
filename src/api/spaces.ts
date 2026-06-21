@@ -1,6 +1,20 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ExportResult, ImportResult, Space, SpaceMember } from '@/types';
 
+export interface SessionSnapshot {
+  user: {
+    id: string;
+    name: string;
+    has_pin: boolean;
+    created_at: string;
+    updated_at: string;
+  } | null;
+  space_id: string | null;
+}
+
+export const getSession = (): Promise<SessionSnapshot> =>
+  invoke<SessionSnapshot>('get_session');
+
 export const listMySpaces = (): Promise<Space[]> =>
   invoke<Space[]>('list_my_spaces');
 

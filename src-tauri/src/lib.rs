@@ -186,6 +186,7 @@ pub fn run() {
             commands::spaces::create_space,
             commands::spaces::set_active_space,
             commands::spaces::logout,
+            commands::spaces::get_session,
             commands::spaces::list_space_members,
             commands::spaces::add_space_member,
             commands::spaces::remove_space_member,

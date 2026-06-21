@@ -1,6 +1,10 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
-import { createContext, useContext, useState } from 'react';
+import { createContext, useCallback, useContext } from 'react';
+import { getSession, type SessionSnapshot } from '@/api/spaces';
 import type { User } from '@/types';
+
+const QUERY_KEY = ['session'] as const;
 
 interface AuthState {
   user: User | null;
@@ -18,8 +22,37 @@ interface AuthProviderProps {
 export const AuthProvider = ({
   children,
 }: AuthProviderProps): React.JSX.Element => {
-  const [user, setUser] = useState<User | null>(null);
-  const [spaceId, setSpaceId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  const { data } = useQuery({
+    queryKey: QUERY_KEY,
+    queryFn: () => getSession(),
+    staleTime: Infinity,
+    refetchOnWindowFocus: true,
+  });
+
+  const user = data?.user ?? null;
+  const spaceId = data?.space_id ?? null;
+
+  const setUser = useCallback(
+    (next: User | null) => {
+      queryClient.setQueryData<SessionSnapshot>(QUERY_KEY, (prev) => ({
+        user: next,
+        space_id: prev?.space_id ?? null,
+      }));
+    },
+    [queryClient],
+  );
+
+  const setSpaceId = useCallback(
+    (next: string | null) => {
+      queryClient.setQueryData<SessionSnapshot>(QUERY_KEY, (prev) => ({
+        user: prev?.user ?? null,
+        space_id: next,
+      }));
+    },
+    [queryClient],
+  );
 
   return (
     <AuthContext.Provider value={{ user, spaceId, setUser, setSpaceId }}>

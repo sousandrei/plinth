@@ -4,6 +4,21 @@ use uuid::Uuid;
 
 use crate::{Session, db::DbPool, error::AppError, sync::gc};
 
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct UserRecord {
+    pub id: String,
+    pub name: String,
+    pub has_pin: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionSnapshot {
+    pub user: Option<UserRecord>,
+    pub space_id: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Space {
     pub id: String,
@@ -220,6 +235,33 @@ pub async fn set_active_space(
 pub async fn logout(session: State<'_, Session>) -> Result<(), AppError> {
     session.clear()?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_session(
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+) -> Result<SessionSnapshot, AppError> {
+    let (user_id, space_id) = {
+        let guard = session.lock()?;
+        match &*guard {
+            None => (None, None),
+            Some(data) => (Some(data.user_id.clone()), data.space_id.clone()),
+        }
+    };
+
+    let user = match user_id {
+        None => None,
+        Some(uid) => Some(
+            sqlx::query_file_as!(UserRecord, "queries/users/get_user.sql", uid)
+                .fetch_optional(db.inner())
+                .await
+                .map_err(|e| AppError::Db(format!("get_session: {e}")))?
+                .ok_or_else(|| AppError::NotFound(format!("user {uid}")))?,
+        ),
+    };
+
+    Ok(SessionSnapshot { user, space_id })
 }
 
 #[tauri::command]
