@@ -23,3 +23,15 @@ export const updateTransaction = (
   category: string | null,
 ): Promise<void> =>
   invoke<void>('update_transaction', { id, approved, note, category });
+
+export const bulkApproveTransactions = (
+  ids: string[],
+  approved: boolean,
+): Promise<number> =>
+  invoke<number>('bulk_approve_transactions', { ids, approved });
+
+export const bulkCategorizeTransactions = (
+  ids: string[],
+  category: string | null,
+): Promise<number> =>
+  invoke<number>('bulk_categorize_transactions', { ids, category });

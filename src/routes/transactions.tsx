@@ -3,6 +3,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
 import { listAllCategories } from '@/api/categories';
 import { listTransactions } from '@/api/transactions';
+import { BulkActionBar } from '@/components/transactions/BulkActionBar';
 import {
   type FilterState,
   TransactionFilters,
@@ -13,6 +14,7 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Pagination } from '@/components/ui/Pagination';
 import { getDemoCategories, getDemoTransactions } from '@/demo/generators';
 import { useDemoMode } from '@/hooks/useDemoMode';
+import { useTransactionSelection } from '@/hooks/useTransactionSelection';
 import { updateCategoryColors } from '@/lib/category-color';
 import { cn } from '@/lib/util';
 
@@ -28,6 +30,7 @@ function Transactions(): React.JSX.Element {
     dateTo: '',
     category: 'all',
   });
+  const selection = useTransactionSelection();
 
   const [debouncedSearch, setDebouncedSearch] = useState('');
   useEffect(() => {
@@ -44,6 +47,18 @@ function Transactions(): React.JSX.Element {
   useEffect(() => {
     setPage(0);
   }, [
+    debouncedSearch,
+    filters.approved,
+    filters.category,
+    filters.dateFrom,
+    filters.dateTo,
+  ]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clear selection on page or filter change
+  useEffect(() => {
+    selection.clear();
+  }, [
+    page,
     debouncedSearch,
     filters.approved,
     filters.category,
@@ -152,11 +167,22 @@ function Transactions(): React.JSX.Element {
             )}
 
             {!isError && (transactions.length > 0 || isLoading) && (
-              <TransactionTable
-                transactions={transactions}
-                categories={categories}
-                isLoading={isLoading}
-              />
+              <>
+                <BulkActionBar
+                  selectedIds={selection.selectedIds}
+                  categories={categories}
+                  isDemoMode={isDemoMode}
+                  onClear={selection.clear}
+                />
+                <TransactionTable
+                  transactions={transactions}
+                  categories={categories}
+                  isLoading={isLoading}
+                  selectedIds={selection.selectedIds}
+                  onToggleRow={selection.toggle}
+                  onTogglePage={selection.toggleAll}
+                />
+              </>
             )}
 
             {!isLoading && !isError && transactions.length === 0 && (

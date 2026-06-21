@@ -1,7 +1,9 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { updateTransaction } from '@/api/transactions';
+import { Checkbox } from '@/components/ui/Checkbox';
 import { Select } from '@/components/ui/Select';
+import { Switch } from '@/components/ui/Switch';
 import { categoryChipStyle } from '@/lib/category-color';
 import { cn } from '@/lib/util';
 import type { Transaction } from '@/types';
@@ -19,11 +21,15 @@ export const formatAmount = (amount: number, currency: string): string => {
 interface TransactionRowProps {
   transaction: Transaction;
   categories: string[];
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
 }
 
 export const TransactionRow = ({
   transaction: t,
   categories,
+  selected,
+  onToggleSelect,
 }: TransactionRowProps): React.JSX.Element => {
   const isPositive = t.amount >= 0;
   const queryClient = useQueryClient();
@@ -60,20 +66,21 @@ export const TransactionRow = ({
         rowBg,
       )}
     >
+      {/* Select */}
+      <td className="px-6 py-3 w-[40px] min-w-[40px] text-center">
+        <Checkbox
+          checked={selected}
+          onCheckedChange={() => onToggleSelect(t.id)}
+          label={`Select transaction ${t.id}`}
+        />
+      </td>
       {/* Approve */}
-      <td className="px-3 py-3 w-[40px] min-w-[40px] text-center">
-        <button
-          type="button"
-          onClick={() => approveMutation.mutate()}
+      <td className="px-6 py-3 w-[90px] min-w-[90px] text-center">
+        <Switch
+          checked={t.approved}
+          onCheckedChange={() => approveMutation.mutate()}
           disabled={approveMutation.isPending}
-          title={t.approved ? 'Mark as unapproved' : 'Mark as approved'}
-          className={cn(
-            'w-3 h-3 rounded-full border transition-all duration-150 cursor-pointer outline-none',
-            t.approved
-              ? 'bg-growth border-growth'
-              : 'bg-transparent border-border-subtle hover:border-growth/60',
-            approveMutation.isPending && 'opacity-40 pointer-events-none',
-          )}
+          label={t.approved ? 'Unapprove' : 'Approve'}
         />
       </td>
 
@@ -85,7 +92,7 @@ export const TransactionRow = ({
       </td>
 
       {/* Description */}
-      <td className="px-6 py-3 max-w-[320px] w-[43%] min-w-[280px]">
+      <td className="px-6 py-3 max-w-[320px] w-[40%] min-w-[240px]">
         <p className="text-sm truncate">{t.text}</p>
         {t.note && (
           <p className="text-xs font-mono text-muted-foreground truncate mt-0.5">
@@ -95,7 +102,7 @@ export const TransactionRow = ({
       </td>
 
       {/* Category Dropdown */}
-      <td className="px-6 py-2 whitespace-nowrap w-[26%] min-w-[180px]">
+      <td className="px-6 py-2 whitespace-nowrap w-[24%] min-w-[160px]">
         <Select
           value={t.category || 'Uncategorized'}
           onValueChange={(val) => {

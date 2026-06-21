@@ -9,6 +9,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
+import { Checkbox } from '@/components/ui/Checkbox';
 import { DatePicker } from '@/components/ui/DatePicker';
 import {
   Dialog,
@@ -225,6 +226,7 @@ function TestPage(): React.JSX.Element {
   const [activeTab, setActiveTab] = useState('overview');
   const [toggleVal, setToggleVal] = useState<'a' | 'b'>('a');
   const [switchVal, setSwitchVal] = useState(false);
+  const [checkboxVal, setCheckboxVal] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [page, setPage] = useState(0);
@@ -281,6 +283,22 @@ function TestPage(): React.JSX.Element {
         </div>
         <p className="mt-3 text-xs font-mono text-muted-foreground">
           Checked: {String(switchVal)}
+        </p>
+      </section>
+      <Separator />
+      {/* ── Checkbox ── */}
+      <section>
+        <SectionLabel label="Checkbox" code="Checkbox" />
+        <div className="mt-4 flex flex-wrap items-center gap-6">
+          <Checkbox checked={checkboxVal} onCheckedChange={setCheckboxVal} />
+          <Checkbox checked={true} onCheckedChange={() => {}} />
+          <Checkbox checked={false} onCheckedChange={() => {}} />
+          <Checkbox checked={true} indeterminate onCheckedChange={() => {}} />
+          <Checkbox checked={false} onCheckedChange={() => {}} disabled />
+          <Checkbox checked={true} onCheckedChange={() => {}} disabled />
+        </div>
+        <p className="mt-3 text-xs font-mono text-muted-foreground">
+          Checked: {String(checkboxVal)}
         </p>
       </section>
       <Separator />
