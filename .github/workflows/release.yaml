@@ -26,111 +26,47 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  build-macos:
+  build-and-release:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: macos-latest
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            cuda: false
+            args: '--bundles app,dmg'
+          - platform: windows-2022
+            cuda: false
+            args: '--bundles msi,nsis'
+          - platform: windows-2022
+            cuda: true
+            args: '--features cuda --bundles msi,nsis'
+          - platform: ubuntu-latest
+            cuda: false
+            args: '--bundles deb'
+          - platform: ubuntu-latest
+            cuda: true
+            args: '--features cuda --bundles deb'
+    runs-on: ${{ matrix.platform }}
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: true
-
-      - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build macOS Application
-        run: task build:mac
-
-      - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            builds/*.dmg
-            builds/*.tar.gz
-            builds/*.tar.gz.sig
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-windows-cpu:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: windows-2022
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: true
-
-      - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build Windows CPU Application
-        run: task build:windows:cpu
-
-      - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v3
-        with:
-          files: builds/*
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-windows-cuda:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: windows-2022
-    env:
-      CUDARC_CUDA_VERSION: '12040'
-      CUDA_COMPUTE_CAP: 80
-      NVCC_APPEND_FLAGS: '-allow-unsupported-compiler'
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
+      - name: Install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Set up MSVC Developer Command Prompt
+        if: matrix.cuda && matrix.platform == 'windows-2022'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           vsversion: '2022'
 
-      - name: Install Bun
+      - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -138,153 +74,76 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: true
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set CUDA environment variables
+        if: matrix.cuda
+        run: |
+          echo "CUDARC_CUDA_VERSION=12040" >> $GITHUB_ENV
+          echo "CUDA_COMPUTE_CAP=80" >> $GITHUB_ENV
+          echo "NVCC_APPEND_FLAGS=-allow-unsupported-compiler" >> $GITHUB_ENV
 
       - name: Install CUDA Toolkit
+        if: matrix.cuda
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: '12.4.0'
 
-      - name: Install Task
-        uses: arduino/setup-task@v2
+      - name: Build and release (CPU)
+        if: ${{ !matrix.cuda }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tagName: ${{ needs.release-please.outputs.tag_name }}
+          releaseName: 'plinth: ${{ needs.release-please.outputs.tag_name }}'
+          releaseBody: ''
+          releaseDraft: false
+          prerelease: false
+          includeUpdater: true
+          args: ${{ matrix.args }}
 
-      - name: Build Windows CUDA Application
-        run: task build:windows:cuda
+      - name: Build (CUDA)
+        if: ${{ matrix.cuda }}
+        run: bunx tauri build ${{ matrix.args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Rename CUDA Artifacts
+      - name: Rename CUDA artifacts (windows)
+        if: ${{ matrix.cuda && matrix.platform == 'windows-2022' }}
         shell: pwsh
         run: |
-          Get-ChildItem builds/ | ForEach-Object {
-            $newName = $_.Name -replace "Plinth_(\d+\.\d+\.\d+)_", "Plinth_`$1-cuda_"
-            $newName = $newName -replace "plinth_(\d+\.\d+\.\d+)_", "plinth_`$1-cuda_"
-            if ($_.Name -ne $newName) {
-              Rename-Item $_.FullName -NewName $newName
-            }
+          Get-ChildItem src-tauri/target/release/bundle/msi/*, src-tauri/target/release/bundle/nsis/* | ForEach-Object {
+              $newName = $_.Name -replace "Plinth_(\d+\.\d+\.\d+)_", "Plinth_`$1-cuda_"
+              if ($_.Name -ne $newName) {
+                  Rename-Item $_.FullName -NewName $newName
+              }
           }
 
-      - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v3
-        with:
-          files: builds/*
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-linux-cpu:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: ubuntu-latest
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: true
-
-      - name: Install Tauri system dependencies
+      - name: Rename CUDA artifacts (linux)
+        if: ${{ matrix.cuda && matrix.platform == 'ubuntu-latest' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build Linux CPU Application
-        run: task build:linux:cpu
-
-      - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v3
-        with:
-          files: builds/*
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-linux-cuda:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: ubuntu-latest
-    env:
-      CUDARC_CUDA_VERSION: '12040'
-      CUDA_COMPUTE_CAP: 80
-      NVCC_APPEND_FLAGS: '-allow-unsupported-compiler'
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: true
-
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.35
-        with:
-          cuda: '12.4.0'
-
-      - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build Linux CUDA Application
-        run: task build:linux:cuda
-
-      - name: Rename CUDA Artifacts
-        run: |
-          for f in builds/*; do
-            if [ -f "$f" ]; then
-              base=$(basename "$f")
-              # e.g., plinth_0.1.0_amd64.deb -> plinth_0.1.0_cuda_amd64.deb
-              new_base=$(echo "$base" | sed -E 's/plinth_([0-9]+\.[0-9]+\.[0-9]+)_/plinth_\1_cuda_/')
-              if [ "$base" != "$new_base" ]; then
-                mv "$f" "builds/$new_base"
-              fi
+          for f in src-tauri/target/release/bundle/deb/*; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            new_base=$(echo "$base" | sed -E 's/plinth_([0-9]+\.[0-9]+\.[0-9]+)_/plinth_\1_cuda_/')
+            if [ "$base" != "$new_base" ]; then
+              mv "$f" "$(dirname "$f")/$new_base"
             fi
           done
 
-      - name: Publish Release Artifacts
+      - name: Upload CUDA artifacts
+        if: ${{ matrix.cuda }}
         uses: softprops/action-gh-release@v3
         with:
-          files: builds/*
+          files: |
+            src-tauri/target/release/bundle/msi/*-cuda*
+            src-tauri/target/release/bundle/nsis/*-cuda*
+            src-tauri/target/release/bundle/deb/*-cuda*
           tag_name: ${{ needs.release-please.outputs.tag_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

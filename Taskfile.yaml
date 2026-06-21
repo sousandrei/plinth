@@ -4,11 +4,6 @@ env:
   CUDARC_CUDA_VERSION: '12040'
   WEBKIT_DISABLE_COMPOSITING_MODE: '1'
 
-vars:
-  VERSION:
-    sh: git rev-parse --short HEAD 2>/dev/null || echo "dev"
-  OUTPUT_DIR: builds
-
 tasks:
   default:
     cmds:
@@ -55,15 +50,13 @@ tasks:
     dir: src-tauri
     cmds:
       - cargo sqlx database create
-      - cargo sqlx database migrate run
+      - cargo sqlx database setup
 
   db:reset:
     desc: Drop, recreate, and re-migrate the local dev SQLite DB
     dir: src-tauri
     cmds:
-      - cargo sqlx database drop -y
-      - cargo sqlx database create
-      - cargo sqlx database migrate run
+      - cargo sqlx database reset -y
 
   sqlx:prepare:
     desc: Regenerate SQLx offline query cache metadata (.sqlx json files)
@@ -91,81 +84,3 @@ tasks:
     desc: Build and package the production desktop application with CUDA enabled
     cmds:
       - bun run tauri:build:cuda
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Cross-platform release builds
-  #
-  # Run on the matching host OS. Each task writes outputs flat into:
-  #   builds/
-  #     plinth_0.1.0_amd64.deb       (linux)
-  #     plinth_0.1.0_aarch64.dmg     (mac)
-  #     Plinth.app/                   (mac)
-  #     Plinth_0.1.0_x64_en-US.msi   (windows)
-  #     Plinth_0.1.0_x64-setup.exe   (windows nsis)
-  #
-  # Note: AppImage is intentionally not produced — Tauri's bundled
-  # linuxdeploy-plugin-gtk.sh is broken on newer distros.
-  #
-  # Examples:
-  #   task build:mac                       # on macOS — produces .app + .dmg
-  #   task build:windows:cpu               # on Windows — produces .msi + .nsis
-  #   task build:linux:cuda                # on Linux with CUDA — produces .deb
-  # ─────────────────────────────────────────────────────────────────────────
-
-  build:mac:
-    desc: Build release for macOS (CPU, with Metal acceleration)
-    dir: src-tauri
-    cmds:
-      - bunx --bun tauri build --bundles app,dmg
-      - task: collect-artifacts
-
-  build:windows:cpu:
-    desc: Build release for Windows (CPU)
-    dir: src-tauri
-    cmds:
-      - bunx --bun tauri build --bundles msi,nsis
-      - task: collect-artifacts
-
-  build:windows:cuda:
-    desc: Build release for Windows with CUDA enabled
-    dir: src-tauri
-    cmds:
-      - bunx --bun tauri build --features cuda --bundles msi,nsis
-      - task: collect-artifacts
-
-  build:linux:cpu:
-    desc: Build release for Linux (CPU) — produces .deb package
-    dir: src-tauri
-    cmds:
-      - bunx --bun tauri build --bundles deb
-      - task: collect-artifacts
-
-  build:linux:cuda:
-    desc: Build release for Linux with CUDA enabled — produces .deb package
-    dir: src-tauri
-    cmds:
-      - bunx --bun tauri build --features cuda --bundles deb
-      - task: collect-artifacts
-
-  collect-artifacts:
-    desc: Flatten installer bundles from src-tauri/target/release/bundle/* into builds/
-    cmds:
-      - task: collect-artifacts:unix
-      - task: collect-artifacts:windows
-
-  collect-artifacts:unix:
-    platforms: [linux, darwin]
-    cmds:
-      - mkdir -p {{.OUTPUT_DIR}}
-      - cmd: find src-tauri/target/release/bundle -mindepth 2 -maxdepth 2 \( -type f -o -name "*.AppDir" -o -name "*.app" \) -exec cp -r {} {{.OUTPUT_DIR}}/ \;
-      - ls -lh {{.OUTPUT_DIR}}
-    silent: true
-
-  collect-artifacts:windows:
-    platforms: [windows]
-    cmds:
-      - cmd: pwsh -c "New-Item -ItemType Directory -Force -Path {{.OUTPUT_DIR}} | Out-Null"
-      - cmd: pwsh -c "Copy-Item src-tauri/target/release/bundle/msi/*.msi {{.OUTPUT_DIR}}/"
-      - cmd: pwsh -c "Copy-Item src-tauri/target/release/bundle/nsis/*.exe {{.OUTPUT_DIR}}/"
-      - cmd: pwsh -c "Get-ChildItem {{.OUTPUT_DIR}} | Select-Object Name, @{n='Size(MB)';e={[math]::Round($$_.Length/1MB,2)}}"
-    silent: true
