@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.svg" alt="Plinth" width="256" />
+  <img src="src-tauri/icons/icon.png" alt="Plinth" width="128" />
 </p>
 <p align="center">A private, offline-first personal finance app.</p>
 <p align="center">
@@ -7,11 +7,21 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green?style=flat-square" />
 </p>
 
+<p align="center">
+  <img src="https://storage.googleapis.com/sousandrei-plinth/plinth.png" alt="Plinth screenshot" width="60%" />
+</p>
+
 ---
 
 ### Installation
 
-> **Note:** Plinth is currently in early development. Pre-built binaries are not yet available. To run the app, see [BUILDING.md](BUILDING.md) for instructions on building from source.
+Download the latest release for your platform from the [Releases page](https://github.com/sousandrei/plinth/releases):
+
+- **macOS** — `.dmg`
+- **Windows** — `.msi` or `.exe`
+- **Linux** — `.deb`, `.rpm`, or `.AppImage`
+
+To build from source instead, see [BUILDING.md](BUILDING.md).
 
 ### What is Plinth?
 
