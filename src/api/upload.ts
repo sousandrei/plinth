@@ -13,7 +13,7 @@ export interface ParserInfo {
 export interface UploadResult {
   inserted: number;
   skipped: number;
-  account_name: string;
+  account_id: string;
   logs: string[];
 }
 

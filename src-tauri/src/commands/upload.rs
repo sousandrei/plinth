@@ -17,7 +17,7 @@ use crate::{AppError, Session};
 pub struct UploadResult {
     pub inserted: i64,
     pub skipped: i64,
-    pub account_name: String,
+    pub account_id: String,
     pub logs: Vec<String>,
 }
 
@@ -34,28 +34,28 @@ pub struct ParserUnitInfo {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn parser_dirs(app: &AppHandle) -> (PathBuf, PathBuf) {
+fn parser_dirs(app: &AppHandle) -> Result<(PathBuf, PathBuf), AppError> {
     let builtin = app
         .path()
         .resource_dir()
-        .unwrap_or_default()
+        .map_err(|e| AppError::Io(format!("resource_dir: {e}")))?
         .join("parsers");
 
     let user = app
         .path()
         .app_data_dir()
-        .unwrap_or_default()
+        .map_err(|e| AppError::Io(format!("app_data_dir: {e}")))?
         .join("parsers");
 
-    // Ensure user dir exists so the user can drop scripts in
-    let _ = std::fs::create_dir_all(&user);
+    std::fs::create_dir_all(&user)
+        .map_err(|e| AppError::Io(format!("create parsers dir {}: {e}", user.display())))?;
 
-    (builtin, user)
+    Ok((builtin, user))
 }
 
-fn get_units(app: &AppHandle) -> Vec<ParserUnit> {
-    let (builtin, user) = parser_dirs(app);
-    scan(&builtin, &user)
+fn get_units(app: &AppHandle) -> Result<Vec<ParserUnit>, AppError> {
+    let (builtin, user) = parser_dirs(app)?;
+    Ok(scan(&builtin, &user))
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ fn get_units(app: &AppHandle) -> Vec<ParserUnit> {
 pub async fn list_parsers(app: AppHandle) -> Result<Vec<ParserUnitInfo>, AppError> {
     let units = tokio::task::spawn_blocking(move || get_units(&app))
         .await
-        .map_err(|e| AppError::Internal(format!("list_parsers spawn: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("list_parsers spawn: {e}")))??;
 
     Ok(units
         .into_iter()
@@ -97,7 +97,7 @@ pub async fn upload_file(
 
     // Resolve the parser unit and run extraction + transform in a blocking thread.
     let (unit_key, unit_account_source, unit_currency, script_path) = {
-        let units = get_units(&app);
+        let units = get_units(&app)?;
         let unit = find(&units, &parser_key)?;
         (
             unit.key.clone(),
@@ -140,43 +140,19 @@ pub async fn upload_file(
 
     match parse_result {
         ParseResult::Checking {
-            account_id: aid,
-            transactions,
-        } => {
-            account_id = aid;
-            let account_type = "checking";
-            logs.push("Ensuring target account exists in database...".to_string());
-            ensure_account_exists(
-                &mut tx,
-                &space_id,
-                &account_id,
-                &account_id,
-                account_type,
-                &unit_account_source,
-                &unit_currency,
-            )
-            .await?;
-            insert_transactions(
-                &mut tx,
-                &classifier,
-                &transactions,
-                &account_id,
-                &unit_currency,
-                &mut ImportAccumulator {
-                    inserted: &mut inserted,
-                    skipped: &mut skipped,
-                    logs: &mut logs,
-                },
-            )
-            .await?;
+            account_id: ref aid,
+            ref transactions,
         }
-
-        ParseResult::Savings {
-            account_id: aid,
-            transactions,
+        | ParseResult::Savings {
+            account_id: ref aid,
+            ref transactions,
         } => {
-            account_id = aid;
-            let account_type = "savings";
+            account_id = aid.clone();
+            let account_type = if matches!(parse_result, ParseResult::Checking { .. }) {
+                "checking"
+            } else {
+                "savings"
+            };
             logs.push("Ensuring target account exists in database...".to_string());
             ensure_account_exists(
                 &mut tx,
@@ -191,7 +167,7 @@ pub async fn upload_file(
             insert_transactions(
                 &mut tx,
                 &classifier,
-                &transactions,
+                transactions,
                 &account_id,
                 &unit_currency,
                 &mut ImportAccumulator {
@@ -249,7 +225,7 @@ pub async fn upload_file(
     Ok(UploadResult {
         inserted,
         skipped,
-        account_name: account_id,
+        account_id,
         logs,
     })
 }
@@ -364,7 +340,7 @@ pub struct ParserFileInfo {
 #[tauri::command]
 pub async fn list_parser_files(app: AppHandle) -> Result<Vec<ParserFileInfo>, AppError> {
     tokio::task::spawn_blocking(move || {
-        let (builtin, user) = parser_dirs(&app);
+        let (builtin, user) = parser_dirs(&app)?;
         let mut files = Vec::new();
 
         for (dir, is_builtin) in [(builtin, true), (user, false)] {

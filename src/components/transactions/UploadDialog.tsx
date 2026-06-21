@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useState } from 'react';
 
+import { listAccounts } from '@/api/accounts';
 import { listParsers, type UploadResult, uploadFile } from '@/api/upload';
 import { Button } from '@/components/ui/Button';
 import {
@@ -26,6 +27,16 @@ export function UploadDialog(): React.JSX.Element {
     queryKey: ['parsers'],
     queryFn: listParsers,
   });
+
+  const { data: accounts } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: listAccounts,
+  });
+
+  const displayName = result
+    ? (accounts?.find((a) => a.id === result.account_id)?.name ??
+      result.account_id)
+    : null;
 
   const uploadMutation = useMutation({
     mutationFn: () => uploadFile(filePath, parserKey),
@@ -150,7 +161,7 @@ export function UploadDialog(): React.JSX.Element {
                 <p className="text-growth font-bold uppercase tracking-wider">
                   Upload Successful
                 </p>
-                <p>Account: {result.account_name}</p>
+                <p>Account: {displayName}</p>
                 <p>Inserted: {result.inserted}</p>
                 <p>Skipped: {result.skipped}</p>
               </div>
