@@ -128,6 +128,12 @@ pub async fn upload_file(
         logs.push(format!("  [SCRIPT] {slog}"));
     }
 
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("upload begin: {e}")))?;
+
     let account_id: String;
     let mut inserted = 0i64;
     let mut skipped = 0i64;
@@ -141,7 +147,7 @@ pub async fn upload_file(
             let account_type = "checking";
             logs.push("Ensuring target account exists in database...".to_string());
             ensure_account_exists(
-                db.inner(),
+                &mut tx,
                 &space_id,
                 &account_id,
                 &account_id,
@@ -151,7 +157,7 @@ pub async fn upload_file(
             )
             .await?;
             insert_transactions(
-                db.inner(),
+                &mut tx,
                 &classifier,
                 &transactions,
                 &account_id,
@@ -173,7 +179,7 @@ pub async fn upload_file(
             let account_type = "savings";
             logs.push("Ensuring target account exists in database...".to_string());
             ensure_account_exists(
-                db.inner(),
+                &mut tx,
                 &space_id,
                 &account_id,
                 &account_id,
@@ -183,7 +189,7 @@ pub async fn upload_file(
             )
             .await?;
             insert_transactions(
-                db.inner(),
+                &mut tx,
                 &classifier,
                 &transactions,
                 &account_id,
@@ -206,7 +212,7 @@ pub async fn upload_file(
 
             logs.push("Ensuring target account exists in database...".to_string());
             ensure_account_exists(
-                db.inner(),
+                &mut tx,
                 &space_id,
                 &account_id,
                 &account_id,
@@ -227,7 +233,7 @@ pub async fn upload_file(
                 account_id,
                 balance
             )
-            .execute(db.inner())
+            .execute(&mut *tx)
             .await
             .map_err(|e| AppError::Db(format!("upload upsert summary: {e}")))?;
 
@@ -235,6 +241,10 @@ pub async fn upload_file(
             logs.push("Account summary updated.".to_string());
         }
     }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("upload commit: {e}")))?;
 
     Ok(UploadResult {
         inserted,
@@ -247,7 +257,7 @@ pub async fn upload_file(
 // ── ensure_account_exists ────────────────────────────────────────────────────
 
 async fn ensure_account_exists(
-    db: &DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space_id: &str,
     account_id: &str,
     name: &str,
@@ -264,7 +274,7 @@ async fn ensure_account_exists(
         account_source,
         space_id
     )
-    .execute(db)
+    .execute(&mut **tx)
     .await
     .map_err(|e| AppError::Db(format!("ensure_account_exists: {e}")))?;
 
@@ -278,7 +288,7 @@ struct ImportAccumulator<'a> {
 }
 
 async fn insert_transactions(
-    db: &DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     classifier: &crate::ClassifierState,
     transactions: &[crate::import::engine::ParsedTransaction],
     account_id: &str,
@@ -288,31 +298,31 @@ async fn insert_transactions(
     acc.logs
         .push(format!("Processing {} transactions...", transactions.len()));
 
-    for tx in transactions {
+    for parsed in transactions {
         let category = {
             let guard = classifier
                 .lock()
                 .map_err(|e| AppError::Internal(format!("failed to lock classifier: {e}")))?;
             match guard.as_ref() {
-                Some(cl) => cl.predict(&tx.text, tx.amount, &tx.booking_date)?,
+                Some(cl) => cl.predict(&parsed.text, parsed.amount, &parsed.booking_date)?,
                 None => "Other".to_string(),
             }
         };
 
         let rows = sqlx::query_file!(
             "queries/upload/insert_transaction.sql",
-            tx.id,
-            tx.booking_date,
-            tx.value_date,
-            tx.reference,
-            tx.text,
+            parsed.id,
+            parsed.booking_date,
+            parsed.value_date,
+            parsed.reference,
+            parsed.text,
             currency,
-            tx.amount,
-            tx.balance,
+            parsed.amount,
+            parsed.balance,
             category,
             account_id
         )
-        .execute(db)
+        .execute(&mut **tx)
         .await
         .map_err(|e| AppError::Db(format!("insert_transactions: {e}")))?
         .rows_affected();
@@ -321,16 +331,16 @@ async fn insert_transactions(
             *acc.inserted += 1;
             acc.logs.push(format!(
                 "  [INSERTED] {} — {} ({} {})",
-                tx.booking_date,
-                tx.text,
-                tx.amount as f64 / 100.0,
+                parsed.booking_date,
+                parsed.text,
+                parsed.amount as f64 / 100.0,
                 currency
             ));
         } else {
             *acc.skipped += 1;
             acc.logs.push(format!(
                 "  [SKIPPED] Duplicate [{}] {}",
-                tx.id, tx.booking_date
+                parsed.id, parsed.booking_date
             ));
         }
     }
