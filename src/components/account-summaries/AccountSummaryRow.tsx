@@ -12,6 +12,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
+import { toast } from '@/components/ui/Toast';
 import type { Account, AccountSummary } from '@/types';
 
 interface Props {
@@ -65,8 +66,9 @@ export const AccountSummaryRow = ({
       setEditOpen(false);
     },
     onError: (err: unknown) => {
-      alert(
-        `Update failed: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(
+        'Update failed',
+        err instanceof Error ? err.message : String(err),
       );
     },
   });
@@ -79,8 +81,9 @@ export const AccountSummaryRow = ({
       setDeleteOpen(false);
     },
     onError: (err: unknown) => {
-      alert(
-        `Delete failed: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(
+        'Delete failed',
+        err instanceof Error ? err.message : String(err),
       );
     },
   });

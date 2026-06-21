@@ -13,6 +13,7 @@ import { CategoryForm } from '@/components/categories/CategoryForm';
 import { CategoryRow } from '@/components/categories/CategoryRow';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Spinner } from '@/components/ui/Spinner';
+import { toast } from '@/components/ui/Toast';
 import { updateCategoryColors } from '@/lib/category-color';
 
 export const Route = createFileRoute('/categories')({
@@ -45,8 +46,9 @@ function CategoriesPage(): React.JSX.Element {
       queryClient.invalidateQueries({ queryKey: ['categories'] });
     },
     onError: (err: unknown) => {
-      alert(
-        `Failed to create category: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(
+        'Failed to create category',
+        err instanceof Error ? err.message : String(err),
       );
     },
   });
@@ -60,8 +62,9 @@ function CategoriesPage(): React.JSX.Element {
       queryClient.invalidateQueries({ queryKey: ['aggregations'] });
     },
     onError: (err: unknown) => {
-      alert(
-        `Failed to delete category: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(
+        'Failed to delete category',
+        err instanceof Error ? err.message : String(err),
       );
     },
   });
@@ -83,8 +86,9 @@ function CategoriesPage(): React.JSX.Element {
       queryClient.invalidateQueries({ queryKey: ['aggregations'] });
     },
     onError: (err: unknown) => {
-      alert(
-        `Failed to update category: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(
+        'Failed to update category',
+        err instanceof Error ? err.message : String(err),
       );
     },
   });

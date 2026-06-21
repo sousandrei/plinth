@@ -27,11 +27,13 @@
 		"@tauri-apps/api": "^2",
 		"@tauri-apps/plugin-dialog": "^2.7.1",
 		"@tauri-apps/plugin-opener": "^2",
+		"@tauri-apps/plugin-updater": "^2.10.1",
 		"@uiw/react-json-view": "^2.0.0-alpha.43",
 		"clsx": "^2.1.1",
 		"react": "^19.1.0",
 		"react-dom": "^19.1.0",
 		"recharts": "^3.8.1",
+		"sonner": "^2.0.7",
 		"tailwind-merge": "^3.6.0"
 	},
 	"devDependencies": {

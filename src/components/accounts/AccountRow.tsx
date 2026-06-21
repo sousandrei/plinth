@@ -9,6 +9,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
+import { toast } from '@/components/ui/Toast';
 import { cn } from '@/lib/util';
 import type { Account } from '@/types';
 
@@ -67,8 +68,9 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
       setOpen(false);
     },
     onError: (err: unknown) => {
-      alert(
-        `Update failed: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(
+        'Update failed',
+        err instanceof Error ? err.message : String(err),
       );
       setDraft(account.name);
       setSelectedColor(account.color);

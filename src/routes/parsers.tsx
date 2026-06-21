@@ -14,6 +14,7 @@ import {
 import { ConsoleLogs } from '@/components/import/ConsoleLogs';
 import { ImportControls } from '@/components/import/ImportControls';
 import { ResultPreview } from '@/components/import/ResultPreview';
+import { toast } from '@/components/ui/Toast';
 import { cn } from '@/lib/util';
 
 interface ParsedTx {
@@ -116,10 +117,13 @@ function ImportDebugger(): React.JSX.Element {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['parsers'] });
       refetchFiles();
-      alert('Script saved successfully!');
+      toast.success('Script saved');
     },
     onError: (err: unknown) => {
-      alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(
+        'Save failed',
+        err instanceof Error ? err.message : String(err),
+      );
     },
   });
 

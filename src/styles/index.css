@@ -128,3 +128,10 @@ body {
 .animate-fade-in {
   animation: fade-in 0.22s ease both;
 }
+
+/* Sonner close button SVG sizing */
+[data-close-button] svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.5;
+}

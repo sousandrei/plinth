@@ -3,7 +3,9 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { factoryReset, updateUserName } from '@/api/users';
 import { DangerZoneCard } from '@/components/settings/DangerZoneCard';
 import { ProfileSettingsCard } from '@/components/settings/ProfileSettingsCard';
+import { UpdateSettingsCard } from '@/components/settings/UpdateSettingsCard';
 import { Switch } from '@/components/ui/Switch';
+import { toast } from '@/components/ui/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useDemoMode } from '@/hooks/useDemoMode';
 
@@ -22,11 +24,12 @@ function Settings(): React.JSX.Element {
     },
     onSuccess: (updatedUser) => {
       setUser(updatedUser);
-      alert('Profile updated successfully!');
+      toast.success('Profile updated');
     },
     onError: (err: unknown) => {
-      alert(
-        `Update failed: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(
+        'Update failed',
+        err instanceof Error ? err.message : String(err),
       );
     },
   });
@@ -34,8 +37,9 @@ function Settings(): React.JSX.Element {
   const resetMutation = useMutation({
     mutationFn: factoryReset,
     onError: (err: unknown) => {
-      alert(
-        `Factory reset failed: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(
+        'Factory reset failed',
+        err instanceof Error ? err.message : String(err),
       );
     },
   });
@@ -90,6 +94,8 @@ function Settings(): React.JSX.Element {
             />
           </div>
         </div>
+
+        <UpdateSettingsCard />
 
         <DangerZoneCard
           onReset={() => resetMutation.mutate()}

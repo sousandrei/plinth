@@ -33,6 +33,7 @@ import {
   Th,
 } from '@/components/ui/Table';
 import { Tabs } from '@/components/ui/Tabs';
+import { toast } from '@/components/ui/Toast';
 import { Toggle } from '@/components/ui/Toggle';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { categoryChipStyle, updateCategoryColors } from '@/lib/category-color';
@@ -671,6 +672,76 @@ function TestPage(): React.JSX.Element {
             categories={SPENDING_CATEGORIES}
             currency="SEK"
           />
+        </div>
+      </section>
+      <Separator />
+      {/* ── Toast Notifications ── */}
+      <section>
+        <SectionLabel
+          label="Toast Notifications"
+          code="toast.success / toast.error / toast.info / toast.warning"
+        />
+        <div className="mt-4 flex flex-wrap gap-3">
+          <Button
+            variant="secondary"
+            onClick={() =>
+              toast.success(
+                'Changes saved',
+                'Your profile has been updated successfully.',
+              )
+            }
+            className="rounded-none h-9 px-4 text-xs font-mono uppercase tracking-widest text-growth border-growth/30 hover:border-growth hover:bg-growth/5"
+          >
+            Success
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              toast.error(
+                'Something went wrong',
+                'The operation could not be completed. Please try again.',
+              )
+            }
+            className="rounded-none h-9 px-4 text-xs font-mono uppercase tracking-widest text-expense border-expense/30 hover:border-expense hover:bg-expense/5"
+          >
+            Error
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              toast.info(
+                'Update available',
+                'Version 1.2.0 is ready to download.',
+              )
+            }
+            className="rounded-none h-9 px-4 text-xs font-mono uppercase tracking-widest text-accent border-accent/30 hover:border-accent hover:bg-accent/5"
+          >
+            Info
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              toast.warning(
+                'Unsaved changes',
+                'You have pending changes that have not been saved yet.',
+              )
+            }
+            className="rounded-none h-9 px-4 text-xs font-mono uppercase tracking-widest text-highlight border-highlight/30 hover:border-highlight hover:bg-highlight/5"
+          >
+            Warning
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              toast.custom(
+                'Sync complete',
+                '4 transactions imported from Nordea.',
+              )
+            }
+            className="rounded-none h-9 px-4 text-xs font-mono uppercase tracking-widest"
+          >
+            Default
+          </Button>
         </div>
       </section>
     </div>

@@ -18,6 +18,7 @@ import {
 import { Input } from '@/components/ui/Input';
 import { Pagination } from '@/components/ui/Pagination';
 import { Select } from '@/components/ui/Select';
+import { toast } from '@/components/ui/Toast';
 import { getDemoAccountSummaries, getDemoAccounts } from '@/demo/generators';
 import { useDemoMode } from '@/hooks/useDemoMode';
 import { cn } from '@/lib/util';
@@ -88,7 +89,10 @@ function AccountSummaries(): React.JSX.Element {
       setAddBalance('');
     },
     onError: (err: unknown) => {
-      alert(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(
+        'Failed to save',
+        err instanceof Error ? err.message : String(err),
+      );
     },
   });
 

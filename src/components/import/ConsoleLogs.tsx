@@ -1,3 +1,4 @@
+import { toast } from '@/components/ui/Toast';
 import { cn } from '@/lib/util';
 
 interface LogItem {
@@ -32,7 +33,7 @@ export function ConsoleLogs({
               navigator.clipboard.writeText(
                 logsList.map((l) => l.text).join('\n'),
               );
-              alert('Logs copied to clipboard!');
+              toast.success('Copied to clipboard');
             }}
             className="text-[10px] font-mono text-[#a1a1aa] hover:text-white cursor-pointer transition-colors"
           >

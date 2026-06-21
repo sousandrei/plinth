@@ -1,6 +1,7 @@
 import JsonView from '@uiw/react-json-view';
 import { vscodeTheme } from '@uiw/react-json-view/vscode';
 import { Tabs } from '@/components/ui/Tabs';
+import { toast } from '@/components/ui/Toast';
 import { cn } from '@/lib/util';
 import { AccountSummaryCard } from './AccountSummaryCard';
 import { ParsedTransactionsTable } from './ParsedTransactionsTable';
@@ -102,7 +103,7 @@ export function ResultPreview({
                 type="button"
                 onClick={() => {
                   navigator.clipboard.writeText(rawResult);
-                  alert('Copied to clipboard!');
+                  toast.success('Copied to clipboard');
                 }}
                 className="text-[10px] bg-[#1e1e1e] border border-[#3e3e42] hover:border-[#6b7280] text-[#cccccc] px-2 py-1 rounded-none cursor-pointer transition-colors font-mono font-bold"
               >

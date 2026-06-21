@@ -109,6 +109,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+
             let handle = app.handle().clone();
             let handle2 = handle.clone();
             tauri::async_runtime::block_on(async move { db::setup(&handle).await })?;
@@ -241,6 +245,7 @@ pub fn run() {
             commands::sync::get_local_address,
             commands::spaces::export_space_data,
             commands::spaces::import_space_data,
+            commands::updater::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
