@@ -21,7 +21,7 @@ jobs:
     steps:
       - name: Run release-please
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -32,7 +32,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -57,7 +57,7 @@ jobs:
         run: task build:mac
 
       - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: builds/*
           tag_name: ${{ needs.release-please.outputs.tag_name }}
@@ -70,7 +70,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -95,7 +95,7 @@ jobs:
         run: task build:windows:cpu
 
       - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: builds/*
           tag_name: ${{ needs.release-please.outputs.tag_name }}
@@ -112,7 +112,7 @@ jobs:
       NVCC_APPEND_FLAGS: '-allow-unsupported-compiler'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up MSVC Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
@@ -133,7 +133,7 @@ jobs:
           cache: true
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: '12.4.0'
 
@@ -158,7 +158,7 @@ jobs:
           }
 
       - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: builds/*
           tag_name: ${{ needs.release-please.outputs.tag_name }}
@@ -171,7 +171,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -201,7 +201,7 @@ jobs:
         run: task build:linux:cpu
 
       - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: builds/*
           tag_name: ${{ needs.release-please.outputs.tag_name }}
@@ -218,7 +218,7 @@ jobs:
       NVCC_APPEND_FLAGS: '-allow-unsupported-compiler'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -234,7 +234,7 @@ jobs:
           cache: true
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: '12.4.0'
 
@@ -266,7 +266,7 @@ jobs:
           done
 
       - name: Publish Release Artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: builds/*
           tag_name: ${{ needs.release-please.outputs.tag_name }}
