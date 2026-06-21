@@ -140,8 +140,11 @@ impl PairingState {
         Self::default()
     }
 
-    fn insert(&self, token: String, space_id: String, ttl: Duration) {
-        let mut guard = self.pending.lock().unwrap();
+    fn insert(&self, token: String, space_id: String, ttl: Duration) -> Result<(), AppError> {
+        let mut guard = self
+            .pending
+            .lock()
+            .map_err(|e| AppError::Internal(format!("pairing mutex poisoned: {e}")))?;
         guard.insert(
             token,
             PendingToken {
@@ -149,10 +152,11 @@ impl PairingState {
                 expires_at: Instant::now() + ttl,
             },
         );
+        Ok(())
     }
 
     fn take(&self, token: &str) -> Option<String> {
-        let mut guard = self.pending.lock().unwrap();
+        let mut guard = self.pending.lock().ok()?;
         let pending = guard.remove(token)?;
         if pending.expires_at < Instant::now() {
             return None;
@@ -206,7 +210,7 @@ pub async fn start_host_session(
         token.clone(),
         space_id.clone(),
         Duration::from_secs(TOKEN_TTL_SECS),
-    );
+    )?;
 
     let bundle = SpaceBundle {
         space: inputs.space,

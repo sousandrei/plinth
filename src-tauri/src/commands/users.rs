@@ -46,7 +46,7 @@ pub async fn create_user(
     let space_name = format!("{name}'s Space");
     let space_id = create_space_for_user(&id, &space_name, db.inner()).await?;
 
-    session.set(id.clone(), Some(space_id));
+    session.set(id.clone(), Some(space_id))?;
 
     let user = sqlx::query_file_as!(User, "queries/users/get_user.sql", id)
         .fetch_one(db.inner())
@@ -121,7 +121,7 @@ pub async fn verify_pin(
             None
         };
 
-        session.set(user_id, auto_space);
+        session.set(user_id, auto_space)?;
     }
 
     Ok(ok)
@@ -222,7 +222,7 @@ pub async fn create_user_in_space(
         .await
         .map_err(|e| AppError::Db(format!("create_user_in_space commit: {e}")))?;
 
-    session.set(id.clone(), Some(space_id));
+    session.set(id.clone(), Some(space_id))?;
 
     let user = sqlx::query_file_as!(User, "queries/users/get_user.sql", id)
         .fetch_one(db.inner())

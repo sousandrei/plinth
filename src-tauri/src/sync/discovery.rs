@@ -36,23 +36,46 @@ impl PeerRegistry {
     }
 
     pub fn upsert(&self, peer: PeerInfo) {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("sync::discovery: peer registry poisoned on upsert: {e}");
+                return;
+            }
+        };
         guard.insert(peer.device_id.clone(), peer);
     }
 
     pub fn remove(&self, device_id: &str) {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("sync::discovery: peer registry poisoned on remove: {e}");
+                return;
+            }
+        };
         guard.remove(device_id);
     }
 
     pub fn snapshot(&self) -> Vec<PeerInfo> {
-        let guard = self.inner.lock().unwrap();
-        guard.values().cloned().collect()
+        match self.inner.lock() {
+            Ok(guard) => guard.values().cloned().collect(),
+            Err(e) => {
+                eprintln!("sync::discovery: peer registry poisoned on snapshot: {e}");
+                Vec::new()
+            }
+        }
     }
 
     fn reap(&self, ttl_secs: u64) {
         let now = now_unix();
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("sync::discovery: peer registry poisoned on reap: {e}");
+                return;
+            }
+        };
         guard.retain(|_, p| now.saturating_sub(p.last_seen) < ttl_secs);
     }
 }

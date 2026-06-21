@@ -212,13 +212,13 @@ pub async fn set_active_space(
         return Err(AppError::Forbidden);
     }
 
-    session.set_space(space_id);
+    session.set_space(space_id)?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn logout(session: State<'_, Session>) -> Result<(), AppError> {
-    session.clear();
+    session.clear()?;
     Ok(())
 }
 
@@ -324,7 +324,7 @@ pub async fn leave_space(
     .await
     .map_err(|e| AppError::Db(format!("leave_space: {e}")))?;
 
-    session.clear_space();
+    session.clear_space()?;
     Ok(())
 }
 
@@ -416,7 +416,7 @@ pub async fn delete_space(
         .await
         .map_err(|e| AppError::Db(format!("delete_space gc: {e}")))?;
 
-    session.clear_space();
+    session.clear_space()?;
     Ok(())
 }
 
@@ -442,7 +442,7 @@ pub async fn evict_space(
         false
     };
     if session_active {
-        session.clear_space();
+        session.clear_space()?;
     }
 
     Ok(())

@@ -41,34 +41,44 @@ impl Session {
         Self(Mutex::new(None))
     }
 
-    pub fn set(&self, user_id: String, space_id: Option<String>) {
-        let mut guard = self.0.lock().unwrap();
-        *guard = Some(SessionData { user_id, space_id });
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Option<SessionData>>, AppError> {
+        self.0
+            .lock()
+            .map_err(|e| AppError::Internal(format!("session mutex poisoned: {e}")))
     }
 
-    pub fn set_space(&self, space_id: String) {
-        let mut guard = self.0.lock().unwrap();
+    pub fn set(&self, user_id: String, space_id: Option<String>) -> Result<(), AppError> {
+        let mut guard = self.lock()?;
+        *guard = Some(SessionData { user_id, space_id });
+        Ok(())
+    }
+
+    pub fn set_space(&self, space_id: String) -> Result<(), AppError> {
+        let mut guard = self.lock()?;
         if let Some(ref mut data) = *guard {
             data.space_id = Some(space_id);
         }
+        Ok(())
     }
 
-    pub fn clear_space(&self) {
-        let mut guard = self.0.lock().unwrap();
+    pub fn clear_space(&self) -> Result<(), AppError> {
+        let mut guard = self.lock()?;
         if let Some(ref mut data) = *guard {
             data.space_id = None;
         }
+        Ok(())
     }
 
-    pub fn clear(&self) {
-        let mut guard = self.0.lock().unwrap();
+    pub fn clear(&self) -> Result<(), AppError> {
+        let mut guard = self.lock()?;
         *guard = None;
+        Ok(())
     }
 
     /// Returns a fully resolved session (user + active space).
     /// Fails with Unauthorized if not logged in, InvalidInput if no space selected.
     pub fn require(&self) -> Result<ActiveSession, AppError> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.lock()?;
         match &*guard {
             None => Err(AppError::Unauthorized),
             Some(d) => match &d.space_id {
@@ -84,7 +94,7 @@ impl Session {
     /// Returns session data even if no space is selected yet.
     /// Use only for commands that don't need a space (e.g. list_my_spaces).
     pub fn require_user(&self) -> Result<SessionData, AppError> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.lock()?;
         guard.clone().ok_or(AppError::Unauthorized)
     }
 }

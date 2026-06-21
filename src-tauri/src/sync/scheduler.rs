@@ -86,12 +86,18 @@ async fn dial_all_peers(
         };
 
         {
-            let guard = in_flight.lock().unwrap();
+            let mut guard = match in_flight.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("scheduler: in_flight mutex poisoned: {e}");
+                    continue;
+                }
+            };
             if guard.contains(device_id) {
                 continue;
             }
+            guard.insert(device_id.clone());
         }
-        in_flight.lock().unwrap().insert(device_id.clone());
 
         let peer = peer.clone();
         let db = db.clone();
@@ -111,7 +117,14 @@ async fn dial_all_peers(
                     eprintln!("scheduler: dial {device_id} failed: {e}");
                 }
             }
-            in_flight.lock().unwrap().remove(&device_id);
+            match in_flight.lock() {
+                Ok(mut guard) => {
+                    guard.remove(&device_id);
+                }
+                Err(e) => {
+                    eprintln!("scheduler: in_flight mutex poisoned on cleanup: {e}");
+                }
+            }
         });
     }
 }
