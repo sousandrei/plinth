@@ -10,7 +10,6 @@ import { toast } from '@/components/ui/Toast';
 type UpdateStatus =
   | 'idle'
   | 'checking'
-  | 'upToDate'
   | 'available'
   | 'downloading'
   | 'installed';
@@ -46,7 +45,11 @@ export function UpdateSettingsCard(): React.JSX.Element {
         setUpdateInfo(update);
         setStatus('available');
       } else {
-        setStatus('upToDate');
+        toast.success(
+          'Up to date',
+          `v${currentVersion} is the latest version.`,
+        );
+        setStatus('idle');
       }
     } catch (err) {
       toast.error(
@@ -140,19 +143,6 @@ export function UpdateSettingsCard(): React.JSX.Element {
             </div>
           )}
         </div>
-
-        {status === 'upToDate' && (
-          <div className="p-4 bg-canvas border border-border-subtle text-xs text-muted-foreground flex items-center justify-between">
-            <span>Application is up to date.</span>
-            <Button
-              variant="secondary"
-              onClick={handleCheckForUpdates}
-              className="px-3 rounded-none h-8 text-[10px] font-mono uppercase tracking-widest"
-            >
-              Check Again
-            </Button>
-          </div>
-        )}
 
         {status === 'available' && updateInfo && (
           <div className="p-4 bg-canvas border border-border-subtle space-y-3">
