@@ -334,6 +334,6 @@ function ImportDebugger(): React.JSX.Element {
   );
 }
 
-export const Route = createFileRoute('/import')({
+export const Route = createFileRoute('/parsers')({
   component: ImportDebugger,
 });

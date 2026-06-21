@@ -44,7 +44,7 @@ export const AppNav = (): React.JSX.Element => {
     '/accounts',
     '/account-summaries',
   ].some((path) => currentPath.startsWith(path));
-  const isManageActive = ['/categories', '/import', '/training'].some((path) =>
+  const isManageActive = ['/categories', '/parsers', '/training'].some((path) =>
     currentPath.startsWith(path),
   );
 
@@ -178,14 +178,14 @@ export const AppNav = (): React.JSX.Element => {
                     Categories
                   </Link>
                   <Link
-                    to="/import"
+                    to="/parsers"
                     className={
-                      currentPath.startsWith('/import')
+                      currentPath.startsWith('/parsers')
                         ? dropdownItemActive
                         : dropdownItemBase
                     }
                   >
-                    Import
+                    Parsers
                   </Link>
                   <Link
                     to="/training"
