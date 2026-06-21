@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
-use crate::{commands::spaces::create_space_for_user, db::DbPool, error::AppError, Session};
+use crate::{Session, commands::spaces::create_space_for_user, db::DbPool, error::AppError};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct User {

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::{db::DbPool, error::AppError, Session};
+use crate::{Session, db::DbPool, error::AppError};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Account {

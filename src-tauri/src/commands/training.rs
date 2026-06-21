@@ -1,10 +1,9 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -12,14 +11,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc;
 
 use crate::{
+    ClassifierState, Session,
     classifier::{
-        dataset::load_approved,
-        trainer::{make_optimizer, precompute_embeddings, split_indices, TrainingConfig},
         Classifier, TrainableClassifier,
+        dataset::load_approved,
+        trainer::{TrainingConfig, make_optimizer, precompute_embeddings, split_indices},
     },
     db::DbPool,
     error::AppError,
-    ClassifierState, Session,
 };
 
 // ---------------------------------------------------------------------------
@@ -152,12 +151,11 @@ fn next_version(dir: &PathBuf) -> u32 {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let s = name.to_string_lossy();
-            if let Some(rest) = s.strip_prefix("model_v") {
-                if let Some(n) = rest.strip_suffix(".safetensors") {
-                    if let Ok(v) = n.parse::<u32>() {
-                        max = max.max(v);
-                    }
-                }
+            if let Some(rest) = s.strip_prefix("model_v")
+                && let Some(n) = rest.strip_suffix(".safetensors")
+                && let Ok(v) = n.parse::<u32>()
+            {
+                max = max.max(v);
             }
         }
     }
@@ -177,60 +175,7 @@ fn write_card(dir: &Path, card: &ModelCard) -> Result<(), AppError> {
 }
 
 fn now_iso() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Minimal ISO-8601 UTC representation without pulling in chrono here.
-    let s = secs;
-    let mins = s / 60;
-    let hours = mins / 60;
-    let days_total = hours / 24;
-    let sec = s % 60;
-    let min = mins % 60;
-    let hour = hours % 24;
-    // Approximate calendar date from epoch (good enough for a card timestamp).
-    let (year, month, day) = epoch_days_to_ymd(days_total);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
-}
-
-fn is_leap(year: u64) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-
-fn epoch_days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    let mut year = 1970u64;
-    loop {
-        let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let days_per_month = [
-        31u64,
-        if is_leap(year) { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 1u64;
-    for &d in &days_per_month {
-        if days < d {
-            break;
-        }
-        days -= d;
-        month += 1;
-    }
-    (year, month, days + 1)
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +307,7 @@ pub async fn fine_tune(
     let classes_clone = classes.clone();
     let train_handle = tokio::task::spawn_blocking(move || -> Result<FinetuneResult, AppError> {
         let trainable = if from_scratch {
-            TrainableClassifier::load_fresh(&resource, &app_data, classes_clone)?
+            TrainableClassifier::load_fresh(&app_data, classes_clone)?
         } else {
             TrainableClassifier::load(&resource, &app_data, &start_weights, classes_clone)?
         };
@@ -376,7 +321,6 @@ pub async fn fine_tune(
         let embeddings = precompute_embeddings(
             &trainable.encoder,
             &samples,
-            num_classes,
             training_config.batch_size,
             &trainable.device,
         )?;
@@ -496,11 +440,11 @@ pub async fn fine_tune(
             .map(|r| r.name)
             .collect::<Vec<String>>();
 
-        if let Ok(cl) = crate::classifier::Classifier::load(&resource2, &app_data2, classes) {
-            if let Ok(mut guard) = classifier.lock() {
-                *guard = Some(cl);
-                let _ = app.emit("classifier://ready", ());
-            }
+        if let Ok(cl) = crate::classifier::Classifier::load(&resource2, &app_data2, classes)
+            && let Ok(mut guard) = classifier.lock()
+        {
+            *guard = Some(cl);
+            let _ = app.emit("classifier://ready", ());
         }
     }
 
@@ -656,12 +600,11 @@ pub async fn get_training_samples(
     }
 
     // Restore the active model's weights if we swapped them out.
-    if let Some(ref active_w) = active_weights_path {
-        if active_w.exists() {
-            cl.load_version(active_w).map_err(|e| {
-                AppError::Internal(format!("restore active v{active_version}: {e}"))
-            })?;
-        }
+    if let Some(ref active_w) = active_weights_path
+        && active_w.exists()
+    {
+        cl.load_version(active_w)
+            .map_err(|e| AppError::Internal(format!("restore active v{active_version}: {e}")))?;
     }
 
     Ok(out)

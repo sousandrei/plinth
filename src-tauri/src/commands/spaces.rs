@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::{db::DbPool, error::AppError, sync::gc, Session};
+use crate::{Session, db::DbPool, error::AppError, sync::gc};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Space {

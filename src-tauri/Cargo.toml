@@ -1,15 +1,12 @@
 [package]
-authors = ["you"]
+authors = ["Andrei Sousa"]
 default-run = "desktop"
 description = "A Tauri App"
-edition = "2021"
+edition = "2024"
 name = "desktop"
 version = "0.1.0"
 
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 crate-type = ["staticlib", "cdylib", "rlib"]
 name = "desktop_lib"
 

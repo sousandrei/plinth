@@ -7,7 +7,6 @@ use std::{
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
 use sqlx::SqlitePool;
-use tauri::AppHandle;
 
 use crate::error::AppError;
 use crate::sync::pairing::PAIRING_PORT;
@@ -96,16 +95,15 @@ async fn read_advertised_space_ids(db: &SqlitePool) -> Result<Vec<String>, AppEr
 ///
 /// Returns immediately after spawning. The returned `PeerRegistry` is
 /// managed as Tauri state and queried by the `list_peers` command.
-pub fn spawn(app: AppHandle, db: SqlitePool, registry: PeerRegistry, port: u16) {
+pub fn spawn(db: SqlitePool, registry: PeerRegistry, port: u16) {
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = run(app, db, registry, port).await {
+        if let Err(e) = run(db, registry, port).await {
             eprintln!("sync::discovery: {e}");
         }
     });
 }
 
 async fn run(
-    _app: AppHandle,
     db: SqlitePool,
     registry: PeerRegistry,
     port: u16,

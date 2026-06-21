@@ -1,6 +1,6 @@
 # Plinth — Agent Development Guide
 
-Standards and workflows for developing the `desktop/` Tauri app.
+Standards and workflows for developing the `src-tauri/` Tauri app.
 The app has two distinct layers — a **Rust backend** (`src-tauri/`) and a
 **React frontend** (`src/`) — each with its own toolchain.
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::QueryBuilder;
 use tauri::State;
 
-use crate::{db::DbPool, error::AppError, Session};
+use crate::{Session, db::DbPool, error::AppError};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Transaction {
@@ -45,15 +45,13 @@ fn build_filter_query(
     let mut builder = QueryBuilder::new(prefix.to_owned());
     builder.push_bind(space_id.to_owned());
 
-    if let Some(ref search) = params.search {
-        if !search.trim().is_empty() {
-            let term = format!("\"{}\"*", search.trim().replace('"', "\"\""));
-            builder.push(
-                " AND t.id IN (SELECT id FROM transactions_fts WHERE transactions_fts MATCH ",
-            );
-            builder.push_bind(term);
-            builder.push(")");
-        }
+    if let Some(ref search) = params.search
+        && !search.trim().is_empty()
+    {
+        let term = format!("\"{}\"*", search.trim().replace('"', "\"\""));
+        builder.push(" AND t.id IN (SELECT id FROM transactions_fts WHERE transactions_fts MATCH ");
+        builder.push_bind(term);
+        builder.push(")");
     }
 
     if let Some(approved) = params.approved {

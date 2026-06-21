@@ -1,4 +1,4 @@
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -190,7 +190,6 @@ pub struct TrainableClassifier {
     pub encoder: MiniLmEncoder,
     pub head: ClassificationHead,
     pub var_map: VarMap,
-    pub tokenizer: Tokenizer,
     pub classes: Vec<String>,
     pub device: Device,
 }
@@ -204,7 +203,6 @@ impl TrainableClassifier {
     ) -> Result<Self, AppError> {
         let device = best_device();
         let encoder = load_encoder(app_data_dir, &device)?;
-        let tokenizer = load_tokenizer(&minilm_dir(app_data_dir))?;
         let num_classes = classes.len();
 
         // Use the given weights if they exist, otherwise fall back to the base weights.
@@ -226,20 +224,14 @@ impl TrainableClassifier {
             encoder,
             head,
             var_map,
-            tokenizer,
             classes,
             device,
         })
     }
 
-    pub fn load_fresh(
-        _resource_dir: &Path,
-        app_data_dir: &Path,
-        classes: Vec<String>,
-    ) -> Result<Self, AppError> {
+    pub fn load_fresh(app_data_dir: &Path, classes: Vec<String>) -> Result<Self, AppError> {
         let device = best_device();
         let encoder = load_encoder(app_data_dir, &device)?;
-        let tokenizer = load_tokenizer(&minilm_dir(app_data_dir))?;
         let num_classes = classes.len();
 
         let var_map = VarMap::new();
@@ -251,7 +243,6 @@ impl TrainableClassifier {
             encoder,
             head,
             var_map,
-            tokenizer,
             classes,
             device,
         })

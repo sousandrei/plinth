@@ -28,8 +28,8 @@ use std::{
 };
 
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
+    aead::{Aead, KeyInit},
 };
 use getrandom::fill;
 use serde::{Deserialize, Serialize};

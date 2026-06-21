@@ -4,16 +4,16 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
+    Session,
     db::DbPool,
     error::AppError,
     sync::{
-        pairing::{
-            self, PairToken, PairingState, SpaceBundle, WireMember, WireSpace, WireUser,
-            PAIRING_PORT,
-        },
         PeerInfo, PeerRegistry,
+        pairing::{
+            self, PAIRING_PORT, PairToken, PairingState, SpaceBundle, WireMember, WireSpace,
+            WireUser,
+        },
     },
-    Session,
 };
 
 // ---------------------------------------------------------------------------
@@ -102,12 +102,12 @@ pub async fn remove_trusted_device(
     .map_err(|e| AppError::Db(format!("remove_trusted_device fetch target: {e}")))?;
 
     if let Some(ref t) = target {
-        if let Some(ref local_id) = local_device_id {
-            if local_id == &t.device_id {
-                return Err(AppError::InvalidInput(
-                    "cannot remove this device from itself".into(),
-                ));
-            }
+        if let Some(ref local_id) = local_device_id
+            && local_id == &t.device_id
+        {
+            return Err(AppError::InvalidInput(
+                "cannot remove this device from itself".into(),
+            ));
         }
 
         // Tombstone in evicted_devices

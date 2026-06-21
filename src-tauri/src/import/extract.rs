@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use calamine::{open_workbook_auto, Data, Reader};
+use calamine::{Data, Reader, open_workbook_auto};
 
 use crate::AppError;
 

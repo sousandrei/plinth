@@ -4,10 +4,9 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use tauri::AppHandle;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::task::JoinHandle;
 
 use crate::error::AppError;
-use crate::sync::cert_match::{resolve_peer, PeerIdentity};
+use crate::sync::cert_match::{PeerIdentity, resolve_peer};
 use crate::sync::identity::DeviceIdentity;
 use crate::sync::session;
 use crate::sync::tls;
@@ -15,7 +14,6 @@ use crate::sync::tls;
 /// Handle to a running sync server task, plus the address it bound to.
 pub struct ServerHandle {
     pub local_addr: SocketAddr,
-    pub task: JoinHandle<()>,
 }
 
 pub async fn spawn(
@@ -30,9 +28,9 @@ pub async fn spawn(
         .local_addr()
         .map_err(|e| AppError::Io(format!("sync addr: {e}")))?;
 
-    let task = tokio::spawn(accept_loop(listener, db, identity, app));
+    tokio::spawn(accept_loop(listener, db, identity, app));
 
-    Ok(ServerHandle { local_addr, task })
+    Ok(ServerHandle { local_addr })
 }
 
 async fn accept_loop(
@@ -60,8 +58,6 @@ async fn accept_loop(
     }
 }
 
-/// Build a fresh TlsAcceptor per connection so trusted_devices changes
-/// (e.g. after pairing) are picked up immediately without a restart.
 async fn handle_connection(
     tcp: TcpStream,
     db: SqlitePool,

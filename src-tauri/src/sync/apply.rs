@@ -439,8 +439,8 @@ fn split_composite<'a>(row_id: &'a str, table: &str) -> Result<(&'a str, &'a str
 mod tests {
     use super::*;
     use crate::sync::wire::ChangeRow;
-    use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::SqlitePool;
+    use sqlx::sqlite::SqlitePoolOptions;
 
     async fn fresh_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()

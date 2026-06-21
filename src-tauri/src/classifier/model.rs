@@ -1,5 +1,5 @@
 use candle_core::{DType, Device, Module, Result, Tensor};
-use candle_nn::{linear, Linear, VarBuilder};
+use candle_nn::{Linear, VarBuilder, linear};
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 
 pub const NUMERIC_DIM: usize = 64;

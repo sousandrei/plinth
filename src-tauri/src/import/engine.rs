@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use boa_engine::{
-    js_string, native_function::NativeFunction, object::FunctionObjectBuilder,
-    property::PropertyDescriptorBuilder, Context, JsArgs, JsError, JsValue, Source,
+    Context, JsArgs, JsError, JsValue, Source, js_string, native_function::NativeFunction,
+    object::FunctionObjectBuilder, property::PropertyDescriptorBuilder,
 };
 use serde::{Deserialize, Serialize};
 

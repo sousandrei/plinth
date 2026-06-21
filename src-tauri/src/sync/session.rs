@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
 use crate::error::AppError;
-use crate::sync::apply_guard::{run_as_device, GuardedFuture};
+use crate::sync::apply_guard::{GuardedFuture, run_as_device};
 use crate::sync::cert_match::PeerIdentity;
 use crate::sync::wire::{
     Bye, ChangeBatch, ChangeRow, CursorEntry, Cursors, Frame, Hello, ModelVersionSummary,
@@ -375,13 +375,13 @@ where
                 }
                 if peer.shared_space_ids.contains(&data.space_id) {
                     let local_ver = model_sync::local_version(&db, &data.space_id).await;
-                    if data.version > local_ver {
-                        if let Err(e) = model_sync::apply_model(&app, &db, &data).await {
-                            eprintln!(
-                                "session: apply model v{} for space {}: {e}",
-                                data.version, data.space_id
-                            );
-                        }
+                    if data.version > local_ver
+                        && let Err(e) = model_sync::apply_model(&app, &db, &data).await
+                    {
+                        eprintln!(
+                            "session: apply model v{} for space {}: {e}",
+                            data.version, data.space_id
+                        );
                     }
                 }
             }

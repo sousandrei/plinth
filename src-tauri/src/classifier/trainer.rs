@@ -3,7 +3,7 @@ use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarMap};
 
 use crate::error::AppError;
 
-use super::dataset::{make_embedded_batch, make_token_batch, TransactionSample};
+use super::dataset::{TransactionSample, make_embedded_batch, make_token_batch};
 use super::model::{ClassificationHead, MiniLmEncoder};
 
 pub struct TrainingConfig {
@@ -62,7 +62,6 @@ pub fn split_indices(num_samples: usize, train_ratio: f32) -> DataSplit {
 pub fn precompute_embeddings(
     encoder: &MiniLmEncoder,
     samples: &[TransactionSample],
-    num_classes: usize,
     batch_size: usize,
     device: &Device,
 ) -> Result<Vec<Tensor>, AppError> {
@@ -70,7 +69,7 @@ pub fn precompute_embeddings(
 
     for chunk in samples.chunks(batch_size) {
         let batch_refs: Vec<&TransactionSample> = chunk.iter().collect();
-        let batch = make_token_batch(&batch_refs, num_classes, device)?;
+        let batch = make_token_batch(&batch_refs, device)?;
 
         let emb = encoder
             .encode(&batch.input_ids, &batch.attention_mask)
@@ -235,10 +234,10 @@ fn forward_pass(
             if global_norm > MAX_GRAD_NORM {
                 let scale = MAX_GRAD_NORM / (global_norm + 1e-6);
                 for v in &vars {
-                    if let Some(g) = grads.remove(v.as_tensor()) {
-                        if let Ok(scaled) = g.affine(scale, 0.0) {
-                            grads.insert(v.as_tensor(), scaled);
-                        }
+                    if let Some(g) = grads.remove(v.as_tensor())
+                        && let Ok(scaled) = g.affine(scale, 0.0)
+                    {
+                        grads.insert(v.as_tensor(), scaled);
                     }
                 }
             }
