@@ -82,9 +82,22 @@ export const ImportDialog = ({
             <span>{result.transactions} transactions</span>
             <span>{result.account_summaries} account summaries</span>
           </div>
-          <div className="flex justify-end pt-2 border-t border-border-subtle">
+          <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle">
             <Button
               variant="secondary"
+              onClick={() => {
+                setResult(null);
+                setErrorMsg('');
+                setFilePath('');
+                setExistingSpaceId(null);
+                setNewSpaceName('');
+              }}
+              className="px-4 text-xs rounded-none h-9"
+            >
+              Import Another
+            </Button>
+            <Button
+              variant="ghost"
               onClick={onClose}
               className="px-4 text-xs rounded-none h-9"
             >

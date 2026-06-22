@@ -16,9 +16,9 @@ import { Spinner } from '@/components/ui/Spinner';
 
 export function UploadDialog(): React.JSX.Element {
   const queryClient = useQueryClient();
-  const [filePath, setFilePath] = useState('');
+  const [filePaths, setFilePaths] = useState<string[]>([]);
   const [parserKey, setParserKey] = useState('');
-  const [result, setResult] = useState<UploadResult | null>(null);
+  const [results, setResults] = useState<UploadResult[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
@@ -33,29 +33,48 @@ export function UploadDialog(): React.JSX.Element {
     queryFn: listAccounts,
   });
 
-  const displayName = result
-    ? (accounts?.find((a) => a.id === result.account_id)?.name ??
-      result.account_id)
-    : null;
+  const accountName = (id: string): string =>
+    accounts?.find((a) => a.id === id)?.name ?? id;
+
+  const totals = results.reduce(
+    (acc, r) => ({
+      inserted: acc.inserted + r.inserted,
+      skipped: acc.skipped + r.skipped,
+    }),
+    { inserted: 0, skipped: 0 },
+  );
+
+  const reset = () => {
+    setFilePaths([]);
+    setParserKey('');
+    setResults([]);
+    setErrorMsg('');
+    setShowLogs(false);
+  };
 
   const uploadMutation = useMutation({
-    mutationFn: () => uploadFile(filePath, parserKey),
+    mutationFn: async () => {
+      const collected: UploadResult[] = [];
+      for (const fp of filePaths) {
+        const r = await uploadFile(fp, parserKey);
+        collected.push(r);
+      }
+      return collected;
+    },
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
       queryClient.invalidateQueries({ queryKey: ['aggregations'] });
-      setResult(res);
+      setResults(res);
       setErrorMsg('');
-      setFilePath('');
-      setParserKey('');
+      setFilePaths([]);
     },
     onError: (err: unknown) => {
       setErrorMsg(err instanceof Error ? err.message : String(err));
-      setResult(null);
     },
   });
 
-  const handleSelectFile = async () => {
+  const handleSelectFiles = async () => {
     try {
       const selectedParser = parsers?.find((p) => p.key === parserKey);
       const extensions = selectedParser?.format
@@ -63,7 +82,7 @@ export function UploadDialog(): React.JSX.Element {
         : ['xlsx', 'pdf'];
 
       const selected = await open({
-        multiple: false,
+        multiple: true,
         filters: [
           {
             name: selectedParser
@@ -73,8 +92,8 @@ export function UploadDialog(): React.JSX.Element {
           },
         ],
       });
-      if (typeof selected === 'string') {
-        setFilePath(selected);
+      if (Array.isArray(selected)) {
+        setFilePaths(selected);
       }
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
@@ -88,27 +107,26 @@ export function UploadDialog(): React.JSX.Element {
     })) ?? [];
 
   let logCounter = 0;
-  const renderedLogs = result?.logs?.map((log) => {
-    logCounter += 1;
-    return (
-      <div key={logCounter} className="whitespace-pre-wrap leading-relaxed">
-        {log}
-      </div>
-    );
-  });
+  const renderedLogs = results.flatMap((r) =>
+    (r.logs ?? []).map((log) => {
+      logCounter += 1;
+      return (
+        <div key={logCounter} className="whitespace-pre-wrap leading-relaxed">
+          {log}
+        </div>
+      );
+    }),
+  );
+
+  const hasResults = results.length > 0;
+  const isProcessing = uploadMutation.isPending;
 
   return (
     <Dialog
       open={isOpen}
       onOpenChange={(open) => {
         setIsOpen(open);
-        if (!open) {
-          setResult(null);
-          setErrorMsg('');
-          setFilePath('');
-          setParserKey('');
-          setShowLogs(false);
-        }
+        if (!open) reset();
       }}
     >
       <DialogTrigger
@@ -116,7 +134,7 @@ export function UploadDialog(): React.JSX.Element {
       />
       <DialogContent
         title="Upload Financial Statement"
-        description="Import transactions or account summaries from a local file."
+        description="Import transactions or account summaries from one or more local files."
       >
         <div className="space-y-4">
           <div className="space-y-1.5">
@@ -139,34 +157,60 @@ export function UploadDialog(): React.JSX.Element {
 
           <div className="space-y-1.5">
             <span className="block text-[10px] font-mono uppercase tracking-widest text-muted-foreground font-semibold">
-              Statement File
+              Statement Files
             </span>
             <div className="flex gap-2">
               <input
                 type="text"
                 readOnly
-                placeholder="No file chosen"
-                value={filePath}
+                placeholder="No files chosen"
+                value={
+                  filePaths.length > 0
+                    ? `${filePaths.length} file${filePaths.length === 1 ? '' : 's'} selected`
+                    : ''
+                }
                 className="flex-1 min-w-0 px-3 py-2 text-xs font-mono border border-border-subtle bg-canvas text-foreground focus:outline-none"
               />
-              <Button variant="secondary" onClick={handleSelectFile}>
+              <Button variant="secondary" onClick={handleSelectFiles}>
                 Browse…
               </Button>
             </div>
+            {filePaths.length > 0 && (
+              <ul className="text-[10px] font-mono text-muted-foreground space-y-0.5 max-h-24 overflow-y-auto border border-border-subtle p-2">
+                {filePaths.map((p) => (
+                  <li key={p} className="truncate">
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
-          {result && (
+          {hasResults && (
             <div className="space-y-2">
               <div className="p-3 bg-canvas border border-border-muted text-xs font-mono text-muted-foreground space-y-1">
                 <p className="text-growth font-bold uppercase tracking-wider">
-                  Upload Successful
+                  Upload Successful — {results.length} file
+                  {results.length === 1 ? '' : 's'}
                 </p>
-                <p>Account: {displayName}</p>
-                <p>Inserted: {result.inserted}</p>
-                <p>Skipped: {result.skipped}</p>
+                {results.length === 1 && (
+                  <p>Account: {accountName(results[0].account_id)}</p>
+                )}
+                <p>Inserted: {totals.inserted}</p>
+                <p>Skipped: {totals.skipped}</p>
+                {results.length > 1 && (
+                  <ul className="pt-1 space-y-0.5">
+                    {results.map((r) => (
+                      <li key={r.account_id}>
+                        {accountName(r.account_id)} — inserted {r.inserted},
+                        skipped {r.skipped}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
-              {renderedLogs && renderedLogs.length > 0 && (
+              {renderedLogs.length > 0 && (
                 <div className="space-y-1.5">
                   <button
                     type="button"
@@ -195,18 +239,37 @@ export function UploadDialog(): React.JSX.Element {
           )}
 
           <div className="flex justify-end gap-3 pt-2">
-            <DialogClose render={<Button variant="ghost">Cancel</Button>} />
-            <Button
-              variant="primary"
-              disabled={!filePath || !parserKey || uploadMutation.isPending}
-              onClick={() => uploadMutation.mutate()}
-            >
-              {uploadMutation.isPending ? (
-                <Spinner size="sm" />
-              ) : (
-                'Process File'
-              )}
-            </Button>
+            {hasResults && !isProcessing ? (
+              <>
+                <Button variant="secondary" onClick={reset}>
+                  Import Another
+                </Button>
+                <DialogClose render={<Button variant="ghost">Close</Button>} />
+              </>
+            ) : (
+              <>
+                <DialogClose render={<Button variant="ghost">Cancel</Button>} />
+                <Button
+                  variant="primary"
+                  disabled={
+                    filePaths.length === 0 || !parserKey || isProcessing
+                  }
+                  onClick={() => uploadMutation.mutate()}
+                >
+                  {isProcessing ? (
+                    <>
+                      <Spinner size="sm" />
+                      <span className="ml-2">
+                        Processing {filePaths.length} file
+                        {filePaths.length === 1 ? '' : 's'}…
+                      </span>
+                    </>
+                  ) : (
+                    `Process ${filePaths.length > 0 ? `${filePaths.length} ` : ''}File${filePaths.length === 1 ? '' : 's'}`
+                  )}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </DialogContent>
