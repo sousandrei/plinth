@@ -1,3 +1,5 @@
+import { Check } from '@phosphor-icons/react';
+
 import { cn } from '@/lib/util';
 
 interface CheckboxProps {
@@ -40,18 +42,12 @@ export const Checkbox = ({
         )}
       />
       {checked && (
-        <svg
-          className="pointer-events-none absolute h-3 w-3 text-canvas"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+        <Check
+          weight="bold"
           aria-hidden="true"
-        >
-          <path d="M3 8.5 L6.5 12 L13 4" />
-        </svg>
+          size={12}
+          className="pointer-events-none absolute text-canvas"
+        />
       )}
       {indeterminate && !checked && (
         <span

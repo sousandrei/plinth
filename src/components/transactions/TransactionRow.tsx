@@ -1,3 +1,4 @@
+import { ArrowClockwise } from '@phosphor-icons/react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { updateTransaction } from '@/api/transactions';
@@ -190,26 +191,14 @@ export const TransactionRow = ({
             title="Predict category"
             className={cn(
               'shrink-0 w-7 h-7 flex items-center justify-center text-muted-foreground hover:text-foreground border border-border-subtle hover:bg-muted/60 transition-colors duration-100 disabled:opacity-40 disabled:cursor-not-allowed',
-              predictMutation.isPending && 'animate-spin',
             )}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="11"
-              height="11"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
+            <ArrowClockwise
+              size={11}
+              weight="bold"
               aria-hidden="true"
-            >
-              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-              <path d="M21 3v5h-5" />
-              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-              <path d="M8 16H3v5" />
-            </svg>
+              className={predictMutation.isPending ? 'animate-spin' : ''}
+            />
           </button>
         </div>
       </td>

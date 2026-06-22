@@ -1,3 +1,4 @@
+import { CaretDown } from '@phosphor-icons/react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import { logout } from '@/api/spaces';
 import logoClean from '@/assets/logo-clean.svg';
@@ -92,22 +93,11 @@ export const AppNav = (): React.JSX.Element => {
                   className={cn(navLinkBase, isFinanceActive && navLinkActive)}
                 >
                   Finance
-                  <svg
-                    className="w-3 h-3 transition-transform duration-200 text-muted-foreground group-hover:rotate-180"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    role="img"
-                    aria-label="Toggle Finance Menu"
-                  >
-                    <title>Toggle Finance Menu</title>
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M19 9l-7 7-7-7"
-                    />
-                  </svg>
+                  <CaretDown
+                    size={12}
+                    weight="bold"
+                    className="transition-transform duration-200 text-muted-foreground group-hover:rotate-180"
+                  />
                 </button>
 
                 <div className="absolute left-0 w-48 bg-canvas-raised border border-border-muted shadow-lg z-50 hidden group-hover:flex flex-col py-1 animate-in fade-in slide-in-from-top-1 duration-150">
@@ -151,22 +141,11 @@ export const AppNav = (): React.JSX.Element => {
                   className={cn(navLinkBase, isManageActive && navLinkActive)}
                 >
                   Manage
-                  <svg
-                    className="w-3 h-3 transition-transform duration-200 text-muted-foreground group-hover:rotate-180"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    role="img"
-                    aria-label="Toggle Manage Menu"
-                  >
-                    <title>Toggle Manage Menu</title>
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M19 9l-7 7-7-7"
-                    />
-                  </svg>
+                  <CaretDown
+                    size={12}
+                    weight="bold"
+                    className="transition-transform duration-200 text-muted-foreground group-hover:rotate-180"
+                  />
                 </button>
 
                 <div className="absolute left-0 w-48 bg-canvas-raised border border-border-muted shadow-lg z-50 hidden group-hover:flex flex-col py-1 animate-in fade-in slide-in-from-top-1 duration-150">

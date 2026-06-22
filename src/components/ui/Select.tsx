@@ -1,4 +1,5 @@
 import { Select as BaseSelect } from '@base-ui/react/select';
+import { CaretDown } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/util';
 
@@ -18,16 +19,12 @@ interface SelectProps {
 }
 
 const ChevronIcon = (): React.JSX.Element => (
-  <svg
-    width="10"
-    height="10"
-    viewBox="0 0 10 10"
-    fill="none"
+  <CaretDown
+    size={10}
+    weight="bold"
     aria-hidden="true"
     className="shrink-0 transition-transform duration-200 group-data-[open]:rotate-180"
-  >
-    <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" />
-  </svg>
+  />
 );
 
 export const Select = ({
