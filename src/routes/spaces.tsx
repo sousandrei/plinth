@@ -8,7 +8,6 @@ import {
   listMySpaces,
   setActiveSpace,
 } from '@/api/spaces';
-import { forceSyncNow } from '@/api/sync';
 import { ImportDialog } from '@/components/spaces/ImportDialog';
 import { JoinSpaceModal } from '@/components/spaces/JoinSpaceModal';
 import { SpaceEditDialog } from '@/components/spaces/SpaceEditDialog';
@@ -93,18 +92,6 @@ function SpacesPage(): React.JSX.Element {
     }
   };
 
-  const syncNowMutation = useMutation({
-    mutationFn: forceSyncNow,
-    onSuccess: (peerCount) => {
-      setExportMsg(
-        peerCount > 0
-          ? `Sync started with ${peerCount} peer${peerCount === 1 ? '' : 's'} on the network.`
-          : 'No peers visible on the network right now.',
-      );
-    },
-    onError: (e) => setExportErr(String(e)),
-  });
-
   return (
     <div className="max-w-[800px] mx-auto px-6 py-10 flex flex-col gap-8">
       <div className="flex items-center justify-between animate-fade-in">
@@ -118,15 +105,6 @@ function SpacesPage(): React.JSX.Element {
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            className="text-xs rounded-none h-9"
-            disabled={syncNowMutation.isPending}
-            onClick={() => syncNowMutation.mutate()}
-          >
-            {syncNowMutation.isPending ? 'Syncing…' : 'Sync Now'}
-          </Button>
-
           <Dialog open={importOpen} onOpenChange={setImportOpen}>
             <DialogTrigger
               render={

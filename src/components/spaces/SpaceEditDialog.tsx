@@ -9,6 +9,7 @@ import {
   renameSpace,
   updateMemberRole,
 } from '@/api/spaces';
+import { forceSyncNow } from '@/api/sync';
 import { addAppUser, listUsers, removeUser } from '@/api/users';
 import { Button } from '@/components/ui/Button';
 import {
@@ -19,6 +20,7 @@ import {
 } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
+import { toast } from '@/components/ui/Toast';
 import { cn } from '@/lib/util';
 import type { Space, SpaceMember } from '@/types';
 import { DevicesSection } from './DevicesSection';
@@ -137,6 +139,24 @@ export const SpaceEditDialog = ({
       queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
       onDeleted();
     },
+  });
+
+  const syncNowMutation = useMutation({
+    mutationFn: forceSyncNow,
+    onSuccess: (peerCount) => {
+      if (peerCount > 0) {
+        toast.info(
+          'Sync started',
+          `Dialing ${peerCount} peer${peerCount === 1 ? '' : 's'} on the network.`,
+        );
+      } else {
+        toast.warning(
+          'No peers visible',
+          'No trusted devices are on the network right now.',
+        );
+      }
+    },
+    onError: (e) => toast.error('Sync failed', String(e)),
   });
 
   const roleOptions = [
@@ -392,6 +412,14 @@ export const SpaceEditDialog = ({
             {leaveMutation.isPending ? 'Leaving…' : 'Leave Space'}
           </Button>
         )}
+        <Button
+          variant="secondary"
+          onClick={() => syncNowMutation.mutate()}
+          disabled={syncNowMutation.isPending}
+          className="ml-auto text-xs rounded-none h-9"
+        >
+          {syncNowMutation.isPending ? 'Syncing…' : 'Sync Now'}
+        </Button>
       </div>
     </div>
   );
