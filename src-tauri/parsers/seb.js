@@ -8,7 +8,7 @@ function transformSEB(data, unitName, unitAccountType) {
     for (var key in row) {
       var match = String(row[key]).match(/\(([\d\s]+)\)/);
       if (match) {
-        accountNumber = match[1].replace(/\s+/g, '');
+        accountNumber = match[1].trim();
         break;
       }
     }
