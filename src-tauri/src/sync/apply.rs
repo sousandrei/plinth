@@ -510,4 +510,67 @@ mod tests {
             "space row must still exist for sync queries"
         );
     }
+
+    /// A trusted_devices upsert arriving from a peer with a different `id`
+    /// but the same `(space_id, device_id)` must update the existing row
+    /// instead of failing the UNIQUE constraint. This happens when pairing
+    /// creates a row locally with a fresh UUID, and the peer's changelog
+    /// later ships the same trust relationship with its own UUID.
+    #[tokio::test]
+    async fn apply_trusted_device_upsert_handles_id_mismatch() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+        let s1 = "s1";
+
+        sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Simulate pairing: local row with a local UUID.
+        sqlx::query!(
+            "INSERT INTO trusted_devices (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
+             VALUES ('local-uuid', 's1', 'peer-1', 'Local Name', 'LOCAL-CERT', 1, ?1)",
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Apply a changelog row from the peer with a DIFFERENT id.
+        let row = ChangeRow {
+            id: "cl-1".into(),
+            space_id: s1.into(),
+            table_name: "trusted_devices".into(),
+            row_id: "remote-uuid".into(),
+            operation: "insert".into(),
+            payload: Some(TablePayload::TrustedDevice(TrustedDevicePayload {
+                id: "remote-uuid".into(),
+                space_id: s1.into(),
+                device_id: "peer-1".into(),
+                display_name: "Remote Name".into(),
+                cert_pem: "REMOTE-CERT".into(),
+                sync_enabled: 1,
+                paired_at: ts.into(),
+            })),
+            seq: 1,
+            device_id: "peer-1".into(),
+            changed_at: ts.into(),
+        };
+
+        let mut tx = pool.begin().await.unwrap();
+        apply_change(&mut tx, &row).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let row = sqlx::query!(
+            "SELECT id, display_name, cert_pem FROM trusted_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(row.id, "local-uuid", "local PK should be preserved");
+        assert_eq!(row.display_name, "Remote Name");
+        assert_eq!(row.cert_pem, "REMOTE-CERT");
+    }
 }

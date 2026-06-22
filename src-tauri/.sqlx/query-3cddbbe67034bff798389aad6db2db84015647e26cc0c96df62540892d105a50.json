@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "-- List every space_settings row for a space. Used by the pairing flow\n-- to ship the full snapshot of settings to a newly joining device,\n-- so sync catch-up isn't needed for settings that may already have been\n-- GC'd from the host's change_log.\nSELECT space_id, key, value\nFROM space_settings\nWHERE space_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_settings",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "key",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_settings",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "name": "value",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_settings",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3cddbbe67034bff798389aad6db2db84015647e26cc0c96df62540892d105a50"
+}

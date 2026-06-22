@@ -10,8 +10,8 @@ use crate::{
     sync::{
         PeerInfo, PeerRegistry,
         pairing::{
-            self, PAIRING_PORT, PairToken, PairingState, SpaceBundle, WireMember, WireSpace,
-            WireUser,
+            self, PAIRING_PORT, PairToken, PairingState, WireAccount, WireAccountSummary,
+            WireCategory, WireMember, WireSpace, WireSpaceSetting, WireTransaction, WireUser,
         },
     },
 };
@@ -204,6 +204,87 @@ pub async fn generate_pair_token(
             })
             .collect();
 
+    let categories = sqlx::query_file!("queries/sync/list_pairing_categories.sql", active.space_id)
+        .fetch_all(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("list pairing categories: {e}")))?
+        .into_iter()
+        .map(|r| WireCategory {
+            id: r.id,
+            name: r.name,
+            color: r.color,
+            space_id: r.space_id,
+        })
+        .collect();
+
+    let accounts = sqlx::query_file!("queries/sync/list_pairing_accounts.sql", active.space_id)
+        .fetch_all(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("list pairing accounts: {e}")))?
+        .into_iter()
+        .map(|r| WireAccount {
+            id: r.id,
+            name: r.name,
+            currency: r.currency,
+            account_type: r.account_type,
+            account_source: r.account_source,
+            color: r.color,
+            space_id: r.space_id,
+        })
+        .collect();
+
+    let transactions = sqlx::query_file!("queries/spaces/export_transactions.sql", active.space_id)
+        .fetch_all(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("list pairing transactions: {e}")))?
+        .into_iter()
+        .map(|r| WireTransaction {
+            id: r.id,
+            booking_date: r.booking_date,
+            value_date: r.value_date,
+            reference: r.reference,
+            text: r.text,
+            currency: r.currency,
+            amount: r.amount,
+            balance: r.balance,
+            approved: r.approved,
+            note: r.note,
+            category: if r.category.is_empty() {
+                None
+            } else {
+                Some(r.category)
+            },
+            account_id: r.account_id,
+        })
+        .collect();
+
+    let account_summaries = sqlx::query_file!(
+        "queries/spaces/export_account_summaries.sql",
+        active.space_id
+    )
+    .fetch_all(&*db)
+    .await
+    .map_err(|e| AppError::Db(format!("list pairing account summaries: {e}")))?
+    .into_iter()
+    .map(|r| WireAccountSummary {
+        month: r.month,
+        account_id: r.account_id,
+        balance: r.balance,
+    })
+    .collect();
+
+    let space_settings = sqlx::query_file!("queries/sync/list_space_settings.sql", active.space_id)
+        .fetch_all(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("list pairing space settings: {e}")))?
+        .into_iter()
+        .map(|r| WireSpaceSetting {
+            space_id: r.space_id,
+            key: r.key,
+            value: r.value,
+        })
+        .collect();
+
     pairing::start_host_session(
         (*db).clone(),
         pairing.inner().clone(),
@@ -213,6 +294,11 @@ pub async fn generate_pair_token(
             member_users,
             owner_user,
             host_display_name,
+            categories,
+            accounts,
+            transactions,
+            account_summaries,
+            space_settings,
         },
     )
     .await
@@ -252,12 +338,12 @@ pub async fn accept_pair_token_from_peer(
         updated_at: user_row.updated_at,
     };
 
-    let bundle: SpaceBundle =
+    let result =
         pairing::run_joiner((*db).clone(), address, Some(joining), device_display_name).await?;
 
     Ok(JoinResult {
-        space_id: bundle.space.id,
-        space_name: bundle.space.name,
+        space_id: result.space_id,
+        space_name: result.space_name,
     })
 }
 
@@ -287,12 +373,12 @@ pub async fn join_space(
 
     let pairing_port = peer.pairing_port.unwrap_or(PAIRING_PORT);
     let address = format!("{token}|{}:{}", peer.host, pairing_port);
-    let bundle = pairing::run_joiner((*db).clone(), address, None, device_display_name).await?;
+    let result = pairing::run_joiner((*db).clone(), address, None, device_display_name).await?;
 
     Ok(SpaceUsers {
-        space_id: bundle.space.id,
-        space_name: bundle.space.name,
-        users: bundle
+        space_id: result.space_id,
+        space_name: result.space_name,
+        users: result
             .users
             .into_iter()
             .map(|u| BundleUser {
@@ -339,11 +425,11 @@ pub async fn accept_pair_token(
         updated_at: user_row.updated_at,
     };
 
-    let bundle: SpaceBundle =
+    let result =
         pairing::run_joiner((*db).clone(), address, Some(joining), device_display_name).await?;
 
     Ok(JoinResult {
-        space_id: bundle.space.id,
-        space_name: bundle.space.name,
+        space_id: result.space_id,
+        space_name: result.space_name,
     })
 }

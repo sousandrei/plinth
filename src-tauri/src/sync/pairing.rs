@@ -93,6 +93,55 @@ pub struct WireMember {
     pub joined_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireCategory {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub space_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireAccount {
+    pub id: String,
+    pub name: String,
+    pub currency: String,
+    pub account_type: String,
+    pub account_source: String,
+    pub color: String,
+    pub space_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireTransaction {
+    pub id: String,
+    pub booking_date: String,
+    pub value_date: String,
+    pub reference: String,
+    pub text: String,
+    pub currency: String,
+    pub amount: i64,
+    pub balance: i64,
+    pub approved: i64,
+    pub note: String,
+    pub category: Option<String>,
+    pub account_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireAccountSummary {
+    pub month: String,
+    pub account_id: String,
+    pub balance: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireSpaceSetting {
+    pub space_id: String,
+    pub key: String,
+    pub value: String,
+}
+
 /// Sent by the joiner. Tells the host who is joining and how to reach
 /// this device later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +162,11 @@ pub struct SpaceBundle {
     pub space: WireSpace,
     pub members: Vec<WireMember>,
     pub users: Vec<WireUser>,
+    pub categories: Vec<WireCategory>,
+    pub accounts: Vec<WireAccount>,
+    pub transactions: Vec<WireTransaction>,
+    pub account_summaries: Vec<WireAccountSummary>,
+    pub space_settings: Vec<WireSpaceSetting>,
     pub host_device_id: String,
     pub host_device_name: String,
     pub host_cert_pem: String,
@@ -179,6 +233,11 @@ pub struct HostInputs {
     pub member_users: Vec<WireUser>,
     pub owner_user: WireUser,
     pub host_display_name: String,
+    pub categories: Vec<WireCategory>,
+    pub accounts: Vec<WireAccount>,
+    pub transactions: Vec<WireTransaction>,
+    pub account_summaries: Vec<WireAccountSummary>,
+    pub space_settings: Vec<WireSpaceSetting>,
 }
 
 /// Generates a fresh 6-digit token, starts a single-shot listener on an
@@ -222,6 +281,11 @@ pub async fn start_host_session(
             }
             u
         },
+        categories: inputs.categories,
+        accounts: inputs.accounts,
+        transactions: inputs.transactions,
+        account_summaries: inputs.account_summaries,
+        space_settings: inputs.space_settings,
         host_device_id: identity.device_id.clone(),
         host_device_name: inputs.host_display_name,
         host_cert_pem: identity.cert_pem.clone(),
@@ -312,6 +376,16 @@ async fn run_host_session(
 // Joiner side — connect using a token+address
 // ---------------------------------------------------------------------------
 
+/// Minimal info returned to the caller after successful pairing. The
+/// full `SpaceBundle` has been persisted to the local DB and consumed
+/// by the apply path; only the fields the UI needs go back.
+#[derive(Debug, Clone)]
+pub struct PairingResult {
+    pub space_id: String,
+    pub space_name: String,
+    pub users: Vec<WireUser>,
+}
+
 /// Connects to the host using the `digits|host:port` form of the token,
 /// runs SPAKE2, exchanges identity, and persists everything locally.
 pub async fn run_joiner(
@@ -319,7 +393,7 @@ pub async fn run_joiner(
     address: String,
     joining_user: Option<WireUser>,
     device_display_name: String,
-) -> Result<SpaceBundle, AppError> {
+) -> Result<PairingResult, AppError> {
     let (digits, target) = parse_address(&address)?;
     let identity = crate::sync::identity::ensure_identity(&db).await?;
 
@@ -353,25 +427,122 @@ pub async fn run_joiner(
 
     let bundle: SpaceBundle = read_encrypted(&mut stream, &cipher).await?;
 
-    // Persist everything received.
-    upsert_space(&db, &bundle.space).await?;
-    for u in &bundle.users {
-        upsert_user(&db, u).await?;
-    }
-    for m in &bundle.members {
-        upsert_space_member(&db, &m.space_id, &m.user_id, &m.role).await?;
-    }
-    upsert_trusted_device(
-        &db,
-        &bundle.space.id,
-        &bundle.host_device_id,
-        &bundle.host_device_name,
-        &bundle.host_cert_pem,
-    )
-    .await?;
+    // Persist everything received. Run inside apply_guard so the
+    // change_log override is set to the host's device_id — every
+    // change_log trigger on a synced table stamps the host's id, so
+    // the inserted rows originated on the host and don't echo back as
+    // local changes on subsequent sync sessions.
+    let host_device_id = bundle.host_device_id.clone();
+    let space_id = bundle.space.id.clone();
+    let space_name = bundle.space.name.clone();
+    let users = bundle.users.clone();
+    crate::sync::apply_guard::run_as_device(&db, &host_device_id, move |tx| {
+        Box::pin(async move {
+            upsert_space_tx(tx, &bundle.space).await?;
+            for u in &bundle.users {
+                upsert_user_tx(tx, u).await?;
+            }
+            for m in &bundle.members {
+                upsert_space_member_tx(tx, m).await?;
+            }
+            upsert_trusted_device_tx(
+                tx,
+                &bundle.space.id,
+                &bundle.host_device_id,
+                &bundle.host_device_name,
+                &bundle.host_cert_pem,
+            )
+            .await?;
+
+            for c in &bundle.categories {
+                upsert_category_tx(tx, c).await?;
+            }
+            for a in &bundle.accounts {
+                upsert_account_tx(tx, a).await?;
+            }
+            for t in &bundle.transactions {
+                upsert_transaction_tx(tx, t).await?;
+            }
+            for s in &bundle.account_summaries {
+                upsert_account_summary_tx(tx, s).await?;
+            }
+            for s in &bundle.space_settings {
+                upsert_space_setting_tx(tx, s).await?;
+            }
+
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| AppError::Db(format!("pairing persist: {e}")))?;
 
     stream.shutdown().await.ok();
-    Ok(bundle)
+    Ok(PairingResult {
+        space_id,
+        space_name,
+        users,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Host-side upserts (run outside apply_guard — the host is creating
+// its own rows, not applying a peer's data)
+// ---------------------------------------------------------------------------
+
+async fn upsert_user(db: &SqlitePool, user: &WireUser) -> Result<(), AppError> {
+    let pin = user.pin_hash.clone();
+    sqlx::query_file!(
+        "queries/sync/upsert_user.sql",
+        user.id,
+        user.name,
+        pin,
+        user.created_at,
+        user.updated_at,
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_user: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_space_member(
+    db: &SqlitePool,
+    space_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/upsert_space_member.sql",
+        space_id,
+        user_id,
+        role
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_space_member: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_trusted_device(
+    db: &SqlitePool,
+    space_id: &str,
+    device_id: &str,
+    display_name: &str,
+    cert_pem: &str,
+) -> Result<(), AppError> {
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query_file!(
+        "queries/sync/upsert_trusted_device.sql",
+        id,
+        space_id,
+        device_id,
+        display_name,
+        cert_pem,
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_trusted_device: {e}")))?;
+    Ok(())
 }
 
 fn parse_address(s: &str) -> Result<(String, SocketAddr), AppError> {
@@ -414,8 +585,8 @@ async fn read_raw(stream: &mut TcpStream) -> Result<Vec<u8>, AppError> {
         .await
         .map_err(|e| AppError::Io(format!("pair read len: {e}")))?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 1024 * 1024 {
-        return Err(AppError::Internal("pair frame > 1 MiB".into()));
+    if len > 16 * 1024 * 1024 {
+        return Err(AppError::Internal("pair frame > 16 MiB".into()));
     }
     let mut buf = vec![0u8; len];
     stream
@@ -465,56 +636,8 @@ async fn read_encrypted<T: for<'de> Deserialize<'de>>(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-async fn upsert_user(db: &SqlitePool, user: &WireUser) -> Result<(), AppError> {
-    let pin = user.pin_hash.clone();
-    sqlx::query_file!(
-        "queries/sync/upsert_user.sql",
-        user.id,
-        user.name,
-        pin,
-        user.created_at,
-        user.updated_at,
-    )
-    .execute(db)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_user: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_space(db: &SqlitePool, space: &WireSpace) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/upsert_space.sql",
-        space.id,
-        space.name,
-        space.created_at,
-        space.updated_at,
-    )
-    .execute(db)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_space: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_space_member(
-    db: &SqlitePool,
-    space_id: &str,
-    user_id: &str,
-    role: &str,
-) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/upsert_space_member.sql",
-        space_id,
-        user_id,
-        role
-    )
-    .execute(db)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_space_member: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_trusted_device(
-    db: &SqlitePool,
+async fn upsert_trusted_device_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space_id: &str,
     device_id: &str,
     display_name: &str,
@@ -529,8 +652,154 @@ async fn upsert_trusted_device(
         display_name,
         cert_pem,
     )
-    .execute(db)
+    .execute(&mut **tx)
     .await
     .map_err(|e| AppError::Db(format!("upsert_trusted_device: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_space_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space: &WireSpace,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/upsert_space.sql",
+        space.id,
+        space.name,
+        space.created_at,
+        space.updated_at,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_space: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_user_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    user: &WireUser,
+) -> Result<(), AppError> {
+    let pin = user.pin_hash.clone();
+    sqlx::query_file!(
+        "queries/sync/upsert_user.sql",
+        user.id,
+        user.name,
+        pin,
+        user.created_at,
+        user.updated_at,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_user: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_space_member_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    m: &WireMember,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/upsert_space_member.sql",
+        m.space_id,
+        m.user_id,
+        m.role
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_space_member: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_category_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    c: &WireCategory,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_category.sql",
+        c.id,
+        c.name,
+        c.color,
+        c.space_id,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_category: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_account_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    a: &WireAccount,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_account.sql",
+        a.id,
+        a.name,
+        a.currency,
+        a.account_type,
+        a.account_source,
+        a.color,
+        a.space_id,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_account: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_transaction_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    t: &WireTransaction,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_transaction.sql",
+        t.id,
+        t.booking_date,
+        t.value_date,
+        t.reference,
+        t.text,
+        t.currency,
+        t.amount,
+        t.balance,
+        t.approved,
+        t.note,
+        t.category,
+        t.account_id,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_transaction: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_account_summary_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    s: &WireAccountSummary,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_account_summary.sql",
+        s.month,
+        s.account_id,
+        s.balance,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_account_summary: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_space_setting_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    s: &WireSpaceSetting,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_space_setting.sql",
+        s.space_id,
+        s.key,
+        s.value,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_space_setting: {e}")))?;
     Ok(())
 }

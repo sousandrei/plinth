@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Pairing snapshot: list every account in a space with its space_id.\n-- The export_accounts.sql query doesn't include space_id, so this is a\n-- pairing-specific variant.\nSELECT id, name, currency, account_type, account_source, color, space_id\nFROM accounts\nWHERE space_id = ?1\nORDER BY name ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "currency",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "currency"
+          }
+        }
+      },
+      {
+        "name": "account_type",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "account_type"
+          }
+        }
+      },
+      {
+        "name": "account_source",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "account_source"
+          }
+        }
+      },
+      {
+        "name": "color",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "color"
+          }
+        }
+      },
+      {
+        "name": "space_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "space_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1e0134b7410ee4dfa9cd13fe8e36b02230f62396b3e2ec6aed218a14a3d8cc4a"
+}
