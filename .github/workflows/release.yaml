@@ -97,8 +97,19 @@ jobs:
         with:
           cuda: '12.4.0'
 
-      - name: Build and release (CPU)
-        if: ${{ !matrix.cuda }}
+      - name: Customize product name for CUDA build
+        if: matrix.cuda
+        shell: bash
+        run: |
+          bun -e "
+            const fs = require('fs');
+            const file = 'src-tauri/tauri.conf.json';
+            const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+            config.productName = 'Plinth-cuda';
+            fs.writeFileSync(file, JSON.stringify(config, null, 2));
+          "
+
+      - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -112,45 +123,3 @@ jobs:
           prerelease: false
           includeUpdater: true
           args: ${{ matrix.args }}
-
-      - name: Build (CUDA)
-        if: ${{ matrix.cuda }}
-        run: bunx tauri build ${{ matrix.args }}
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-      - name: Rename CUDA artifacts (windows)
-        if: ${{ matrix.cuda && matrix.platform == 'windows-2022' }}
-        shell: pwsh
-        run: |
-          Get-ChildItem src-tauri/target/release/bundle/msi/*, src-tauri/target/release/bundle/nsis/* | ForEach-Object {
-              $newName = $_.Name -replace "Plinth_(\d+\.\d+\.\d+)_", "Plinth_`$1-cuda_"
-              if ($_.Name -ne $newName) {
-                  Rename-Item $_.FullName -NewName $newName
-              }
-          }
-
-      - name: Rename CUDA artifacts (linux)
-        if: ${{ matrix.cuda && matrix.platform == 'ubuntu-latest' }}
-        run: |
-          for f in src-tauri/target/release/bundle/deb/*; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f")
-            new_base=$(echo "$base" | sed -E 's/plinth_([0-9]+\.[0-9]+\.[0-9]+)_/plinth_\1_cuda_/')
-            if [ "$base" != "$new_base" ]; then
-              mv "$f" "$(dirname "$f")/$new_base"
-            fi
-          done
-
-      - name: Upload CUDA artifacts
-        if: ${{ matrix.cuda }}
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            src-tauri/target/release/bundle/msi/*-cuda*
-            src-tauri/target/release/bundle/nsis/*-cuda*
-            src-tauri/target/release/bundle/deb/*-cuda*
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
