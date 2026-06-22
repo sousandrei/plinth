@@ -19,7 +19,6 @@ function transformSEB(data, unitName, unitAccountType) {
     throw new Error(`${unitName}: could not extract account number from xlsx`);
   }
 
-  var accountId = md5(accountNumber);
   var transactions = [];
 
   for (var j = 0; j < rows.length; j++) {
@@ -61,7 +60,7 @@ function transformSEB(data, unitName, unitAccountType) {
 
   return {
     type: unitAccountType,
-    account_id: accountId,
+    account_id: accountNumber,
     transactions: transactions,
   };
 }

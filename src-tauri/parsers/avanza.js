@@ -23,7 +23,6 @@ export default {
           );
         }
         var accountNumber = accountMatch[1].trim();
-        var accountId = md5(accountNumber);
 
         // Extract total portfolio value.
         // Pattern from Go source: Totalt[\d\s]+,\d{2}([\d\s,]+)Ranta
@@ -52,7 +51,7 @@ export default {
 
         return {
           type: 'investment',
-          account_id: accountId,
+          account_id: accountNumber,
           month: month,
           balance: balance,
         };
