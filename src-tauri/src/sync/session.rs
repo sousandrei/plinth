@@ -211,6 +211,7 @@ where
         ship_batches(
             &mut wr,
             &db,
+            &app,
             &entry.space_id,
             &entry.device_id,
             entry.last_seq,
@@ -231,10 +232,10 @@ where
 
             for d in devices {
                 if d.device_id != peer.device_id {
-                    ship_batches(&mut wr, &db, space_id, &d.device_id, 0).await?;
+                    ship_batches(&mut wr, &db, &app, space_id, &d.device_id, 0).await?;
                 }
             }
-            ship_batches(&mut wr, &db, space_id, &local_device_id, 0).await?;
+            ship_batches(&mut wr, &db, &app, space_id, &local_device_id, 0).await?;
         }
     }
 
@@ -280,6 +281,7 @@ where
 async fn ship_batches<W>(
     wr: &mut W,
     db: &SqlitePool,
+    app: &AppHandle,
     space_id: &str,
     device_id: &str,
     peer_last_seq: i64,
@@ -293,8 +295,14 @@ where
     if peer_last_seq > 0 && min_seq > 0 && peer_last_seq < min_seq {
         eprintln!(
             "session: peer cursor {peer_last_seq} < min_seq {min_seq} for space {space_id} device {device_id}; \
-             full snapshot required (not yet implemented)"
+             streaming full snapshot"
         );
+        stream_space_snapshot(wr, db, app, space_id, device_id).await?;
+        write_frame(wr, &Frame::SnapshotEnd).await?;
+        // After the snapshot is applied, the joiner is caught up to
+        // final_seq by construction (the snapshot contains every row
+        // currently in the synced tables). Emit an empty batch to mark
+        // the cursor advance.
         write_frame(
             wr,
             &Frame::Batch(ChangeBatch {
@@ -347,6 +355,116 @@ where
     Ok(())
 }
 
+/// Stream every row of every synced table for `space_id` as a sequence
+/// of `Frame::Snapshot(SnapshotChunk)` frames. The first frame carries
+/// the space row + members + users + the host's trusted_device entry;
+/// subsequent frames carry table data in 500-row chunks. Each frame is
+/// self-contained and applied independently by the joiner.
+async fn stream_space_snapshot<W>(
+    wr: &mut W,
+    db: &SqlitePool,
+    app: &AppHandle,
+    space_id: &str,
+    device_id: &str,
+) -> Result<(), AppError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let identity = crate::sync::identity::ensure_identity(db).await?;
+    let display_name = gethostname::gethostname().to_string_lossy().into_owned();
+    let snapshot = crate::sync::snapshot::collect_snapshot(
+        db,
+        app,
+        space_id,
+        identity.device_id.clone(),
+        display_name,
+        identity.cert_pem.clone(),
+    )
+    .await?;
+
+    let space_id_owned = snapshot.space.id.clone();
+
+    // First chunk: space + members + users + categories (the seed
+    // data needed before any of the dependent tables can be inserted).
+    // Categories are seeded in `create_space` on a fresh space, so they
+    // fit comfortably in one frame.
+    write_frame(
+        wr,
+        &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
+            space_id: space_id_owned.clone(),
+            frame: crate::sync::snapshot::SnapshotFrame::Space(snapshot.space.clone()),
+        }),
+    )
+    .await?;
+    write_frame(
+        wr,
+        &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
+            space_id: space_id_owned.clone(),
+            frame: crate::sync::snapshot::SnapshotFrame::Members(snapshot.members.clone()),
+        }),
+    )
+    .await?;
+    write_frame(
+        wr,
+        &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
+            space_id: space_id_owned.clone(),
+            frame: crate::sync::snapshot::SnapshotFrame::Users(snapshot.users.clone()),
+        }),
+    )
+    .await?;
+
+    stream_chunked(wr, &space_id_owned, snapshot.categories, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::Categories(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.accounts, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::Accounts(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.transactions, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::Transactions(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.account_summaries, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::AccountSummaries(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.space_settings, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::SpaceSettings(chunk)
+    })
+    .await?;
+
+    let _ = device_id; // included in identity above
+    Ok(())
+}
+
+const SNAPSHOT_CHUNK_SIZE: usize = 500;
+
+async fn stream_chunked<W, T, F>(
+    wr: &mut W,
+    space_id: &str,
+    items: Vec<T>,
+    wrap: F,
+) -> Result<(), AppError>
+where
+    W: AsyncWrite + Unpin,
+    T: Clone,
+    F: Fn(Vec<T>) -> crate::sync::snapshot::SnapshotFrame,
+{
+    for chunk in items.chunks(SNAPSHOT_CHUNK_SIZE) {
+        let owned: Vec<T> = chunk.to_vec();
+        write_frame(
+            wr,
+            &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
+                space_id: space_id.to_string(),
+                frame: wrap(owned),
+            }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Receive half
 // ---------------------------------------------------------------------------
@@ -377,14 +495,57 @@ where
         AppError::Internal("session: send half dropped before receiving Cursors".into())
     })?;
 
-    // Frame loop: ChangeBatch* then ModelVersionSummary then ModelData* then Bye
+    // Frame loop: ChangeBatch* (or Snapshot* SnapshotEnd Batch) then
+    // ModelVersionSummary then ModelData* then Bye
     let mut peer_model_summary_sent = false;
     let mut model_versions_tx = Some(model_versions_tx);
+    // When the host streams a full snapshot for one space, it sends
+    // Snapshot* frames followed by SnapshotEnd. We accumulate the
+    // chunks, apply them under apply_guard once SnapshotEnd arrives,
+    // then continue with the normal Batch flow.
+    let mut snapshot_buf: Vec<crate::sync::wire::SnapshotChunk> = Vec::new();
+    let mut snapshot_space: Option<String> = None;
+    let mut snapshot_host: Option<crate::sync::snapshot::SpaceSnapshot> = None;
     loop {
         let frame = crate::sync::frame::read_frame(&mut rd).await?;
         match frame {
             Frame::Batch(batch) => {
                 apply_batch(&db, &local_device_id, &peer, batch, &app).await?;
+            }
+            Frame::Snapshot(chunk) => {
+                if snapshot_space.is_none() {
+                    snapshot_space = Some(chunk.space_id.clone());
+                    // Fetch host identity lazily — we'll create a
+                    // SpaceSnapshot skeleton when SnapshotEnd arrives.
+                    let identity = crate::sync::identity::ensure_identity(&db).await?;
+                    let display_name = gethostname::gethostname().to_string_lossy().into_owned();
+                    snapshot_host = Some(crate::sync::snapshot::SpaceSnapshot {
+                        space: crate::sync::snapshot::WireSpace {
+                            id: String::new(),
+                            name: String::new(),
+                            created_at: String::new(),
+                            updated_at: String::new(),
+                        },
+                        members: vec![],
+                        users: vec![],
+                        categories: vec![],
+                        accounts: vec![],
+                        transactions: vec![],
+                        account_summaries: vec![],
+                        space_settings: vec![],
+                        host_device_id: identity.device_id.clone(),
+                        host_device_name: display_name,
+                        host_cert_pem: identity.cert_pem.clone(),
+                    });
+                }
+                snapshot_buf.push(chunk);
+            }
+            Frame::SnapshotEnd => {
+                if let (Some(_space_id), Some(host)) = (snapshot_space.take(), snapshot_host.take())
+                {
+                    apply_snapshot_stream(&db, host, &snapshot_buf).await?;
+                }
+                snapshot_buf.clear();
             }
             Frame::ModelVersionSummary(summary) => {
                 if let Some(tx) = model_versions_tx.take() {
@@ -424,6 +585,37 @@ where
             }
         }
     }
+    Ok(())
+}
+
+/// Apply a buffered snapshot stream under `apply_guard` so the host
+/// device (not the local device) is stamped as the author of every
+/// change_log row. The body collapses the chunk buffer back into a
+/// `SpaceSnapshot` and reuses `snapshot::apply_snapshot_frame`.
+async fn apply_snapshot_stream(
+    db: &SqlitePool,
+    mut snapshot: crate::sync::snapshot::SpaceSnapshot,
+    chunks: &[crate::sync::wire::SnapshotChunk],
+) -> Result<(), AppError> {
+    // Apply each frame independently so a mid-stream failure aborts the
+    // whole batch (apply_guard transaction rolls back).
+    let host_device_id = snapshot.host_device_id.clone();
+    let chunks_owned: Vec<_> = chunks.to_vec();
+    crate::sync::apply_guard::run_as_device(db, &host_device_id, move |tx| {
+        Box::pin(async move {
+            for chunk in &chunks_owned {
+                crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot, &chunk.frame).await?;
+                // Lift the space identity out of the first Space frame
+                // so the End frame's trusted_device upsert can find it.
+                if let crate::sync::snapshot::SnapshotFrame::Space(s) = &chunk.frame {
+                    snapshot.space = s.clone();
+                }
+            }
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| AppError::Db(format!("apply_snapshot_stream: {e}")))?;
     Ok(())
 }
 

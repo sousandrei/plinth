@@ -16,6 +16,7 @@ pub mod payloads;
 pub mod scheduler;
 pub mod server;
 pub mod session;
+pub mod snapshot;
 pub mod startup;
 pub mod tls;
 pub mod wire;

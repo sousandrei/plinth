@@ -1,0 +1,158 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Snapshot: list every transaction in this space, via account_id → accounts.\nSELECT t.id, t.booking_date, t.value_date, t.reference, t.text,\n       t.currency, t.amount, t.balance, t.approved, t.note,\n       t.category, t.account_id\nFROM transactions t\nJOIN accounts a ON a.id = t.account_id\nWHERE a.space_id = ?1\nORDER BY t.booking_date ASC, t.id ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "booking_date",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "booking_date"
+          }
+        }
+      },
+      {
+        "name": "value_date",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "value_date"
+          }
+        }
+      },
+      {
+        "name": "reference",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "reference"
+          }
+        }
+      },
+      {
+        "name": "text",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "text"
+          }
+        }
+      },
+      {
+        "name": "currency",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "currency"
+          }
+        }
+      },
+      {
+        "name": "amount",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "amount"
+          }
+        }
+      },
+      {
+        "name": "balance",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "balance"
+          }
+        }
+      },
+      {
+        "name": "approved",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "approved"
+          }
+        }
+      },
+      {
+        "name": "note",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "name": "category",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "account_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "56c8c62da9772e5c466c4dcee6264d97b7191c06f68a82fd58930d74f0dd30f3"
+}

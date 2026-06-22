@@ -67,80 +67,12 @@ pub struct PairToken {
     pub expires_at_unix: u64,
 }
 
-/// Identity exchanged over the encrypted channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireUser {
-    pub id: String,
-    pub name: String,
-    pub pin_hash: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireSpace {
-    pub id: String,
-    pub name: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireMember {
-    pub space_id: String,
-    pub user_id: String,
-    pub role: String,
-    pub joined_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireCategory {
-    pub id: String,
-    pub name: String,
-    pub color: String,
-    pub space_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireAccount {
-    pub id: String,
-    pub name: String,
-    pub currency: String,
-    pub account_type: String,
-    pub account_source: String,
-    pub color: String,
-    pub space_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireTransaction {
-    pub id: String,
-    pub booking_date: String,
-    pub value_date: String,
-    pub reference: String,
-    pub text: String,
-    pub currency: String,
-    pub amount: i64,
-    pub balance: i64,
-    pub approved: i64,
-    pub note: String,
-    pub category: Option<String>,
-    pub account_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireAccountSummary {
-    pub month: String,
-    pub account_id: String,
-    pub balance: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireSpaceSetting {
-    pub space_id: String,
-    pub key: String,
-    pub value: String,
-}
+// Wire types live in `snapshot` so they can be reused by the sync
+// session fallback. Re-exported here for backwards-compat callers.
+pub use crate::sync::snapshot::{
+    SnapshotFrame, SpaceSnapshot, WireAccount, WireAccountSummary, WireCategory, WireMember,
+    WireSpace, WireSpaceSetting, WireTransaction, WireUser,
+};
 
 /// Sent by the joiner. Tells the host who is joining and how to reach
 /// this device later.
@@ -157,6 +89,10 @@ pub struct JoinPayload {
 
 /// Sent by the host. Carries the full space context so the joiner can
 /// materialize the space on its end.
+///
+/// Thin wrapper over `SpaceSnapshot` that adds the member list and
+/// member users (which the host gathers separately for the pairing
+/// handshake and aren't part of the reusable snapshot structure).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpaceBundle {
     pub space: WireSpace,
@@ -172,10 +108,10 @@ pub struct SpaceBundle {
     pub host_cert_pem: String,
 }
 
-/// Small, always-fits-in-1MB header sent first in the host→joiner stream.
-/// Contains the space identity, members, users, and the host's network
-/// identity. The joiner persists this before any table data so it can
-/// reject obviously-invalid transfers early.
+/// Small, always-fits-in-1MB header sent first in the host→joiner
+/// stream. Contains the space identity, members, users, and the host's
+/// network identity. The joiner persists this before any table data so
+/// it can reject obviously-invalid transfers early.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PairHeader {
     space: WireSpace,
@@ -193,12 +129,29 @@ struct PairHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum PairFrame {
     Header(PairHeader),
-    Categories(Vec<WireCategory>),
-    Accounts(Vec<WireAccount>),
-    Transactions(Vec<WireTransaction>),
-    AccountSummaries(Vec<WireAccountSummary>),
-    SpaceSettings(Vec<WireSpaceSetting>),
+    Chunk(SnapshotFrame),
     End,
+}
+
+/// Stream snapshot data in chunks, producing one `PairFrame::Chunk`
+/// per chunk. The host sends these between `PairFrame::Header` and
+/// `PairFrame::End`. `wrap` converts an owned `Vec<T>` chunk into the
+/// corresponding `SnapshotFrame` variant.
+async fn stream_pair_chunks<T>(
+    stream: &mut TcpStream,
+    cipher: &ChaCha20Poly1305,
+    items: &[T],
+    wrap: impl Fn(Vec<T>) -> SnapshotFrame,
+) -> Result<(), AppError>
+where
+    T: Clone,
+{
+    for slice in items.chunks(CHUNK_SIZE) {
+        let owned: Vec<T> = slice.to_vec();
+        let frame = wrap(owned);
+        write_encrypted(stream, cipher, &PairFrame::Chunk(frame)).await?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -389,24 +342,24 @@ async fn run_host_session(
     };
     write_encrypted(&mut stream, &cipher, &PairFrame::Header(header)).await?;
 
-    stream_chunks(&mut stream, &cipher, &bundle.categories, |c| {
-        PairFrame::Categories(c.into_iter().cloned().collect())
+    stream_pair_chunks(&mut stream, &cipher, &bundle.categories, |c| {
+        SnapshotFrame::Categories(c)
     })
     .await?;
-    stream_chunks(&mut stream, &cipher, &bundle.accounts, |c| {
-        PairFrame::Accounts(c.into_iter().cloned().collect())
+    stream_pair_chunks(&mut stream, &cipher, &bundle.accounts, |c| {
+        SnapshotFrame::Accounts(c)
     })
     .await?;
-    stream_chunks(&mut stream, &cipher, &bundle.transactions, |c| {
-        PairFrame::Transactions(c.into_iter().cloned().collect())
+    stream_pair_chunks(&mut stream, &cipher, &bundle.transactions, |c| {
+        SnapshotFrame::Transactions(c)
     })
     .await?;
-    stream_chunks(&mut stream, &cipher, &bundle.account_summaries, |c| {
-        PairFrame::AccountSummaries(c.into_iter().cloned().collect())
+    stream_pair_chunks(&mut stream, &cipher, &bundle.account_summaries, |c| {
+        SnapshotFrame::AccountSummaries(c)
     })
     .await?;
-    stream_chunks(&mut stream, &cipher, &bundle.space_settings, |c| {
-        PairFrame::SpaceSettings(c.into_iter().cloned().collect())
+    stream_pair_chunks(&mut stream, &cipher, &bundle.space_settings, |c| {
+        SnapshotFrame::SpaceSettings(c)
     })
     .await?;
 
@@ -516,6 +469,23 @@ pub async fn run_joiner(
     // back every DB write; the joiner can then retry pairing.
     crate::sync::apply_guard::run_as_device(&db, &host_device_id, move |tx| {
         Box::pin(async move {
+            // Build a SpaceSnapshot skeleton from the header so we can
+            // pass it to the reusable `apply_snapshot_frame` helper.
+            // The space row gets filled in from the first Space chunk
+            // (or we already have it from the header).
+            let mut snapshot = SpaceSnapshot {
+                space: header.space.clone(),
+                members: header.members.clone(),
+                users: header.users.clone(),
+                categories: Vec::new(),
+                accounts: Vec::new(),
+                transactions: Vec::new(),
+                account_summaries: Vec::new(),
+                space_settings: Vec::new(),
+                host_device_id: header.host_device_id.clone(),
+                host_device_name: header.host_device_name.clone(),
+                host_cert_pem: header.host_cert_pem.clone(),
+            };
             apply_header(tx, &header).await?;
             loop {
                 let frame: PairFrame = read_encrypted(&mut stream, &cipher).await?;
@@ -523,30 +493,13 @@ pub async fn run_joiner(
                     PairFrame::Header(_) => {
                         return Err(AppError::Internal("pairing: duplicate Header frame".into()));
                     }
-                    PairFrame::Categories(chunk) => {
-                        for c in &chunk {
-                            upsert_category_tx(tx, c).await?;
+                    PairFrame::Chunk(chunk) => {
+                        // Lift the space identity if we ever get a Space
+                        // chunk (defensive — host sends it in the header).
+                        if let SnapshotFrame::Space(s) = &chunk {
+                            snapshot.space = s.clone();
                         }
-                    }
-                    PairFrame::Accounts(chunk) => {
-                        for a in &chunk {
-                            upsert_account_tx(tx, a).await?;
-                        }
-                    }
-                    PairFrame::Transactions(chunk) => {
-                        for t in &chunk {
-                            upsert_transaction_tx(tx, t).await?;
-                        }
-                    }
-                    PairFrame::AccountSummaries(chunk) => {
-                        for s in &chunk {
-                            upsert_account_summary_tx(tx, s).await?;
-                        }
-                    }
-                    PairFrame::SpaceSettings(chunk) => {
-                        for s in &chunk {
-                            upsert_space_setting_tx(tx, s).await?;
-                        }
+                        crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot, &chunk).await?;
                     }
                     PairFrame::End => {
                         stream.shutdown().await.ok();
@@ -715,25 +668,11 @@ async fn read_encrypted<T: for<'de> Deserialize<'de>>(
 }
 
 /// Slice `items` into chunks of CHUNK_SIZE and send each one as an
-/// independently-encrypted `PairFrame` variant produced by `wrap`.
-/// `wrap` receives a borrowed slice of the items and returns the
-/// appropriate frame variant. Items that serialize to more than 1 MB
-/// in one chunk will be rejected by `read_raw` — keep `CHUNK_SIZE`
-/// conservative.
+/// independently-encrypted `PairFrame::Chunk` wrapping a `SnapshotFrame`.
+/// `wrap` receives the chunk (owned) and produces a `SnapshotFrame`
+/// variant. Items that serialize to more than 1 MB in one chunk will
+/// be rejected by `read_raw` — keep `CHUNK_SIZE` conservative.
 const CHUNK_SIZE: usize = 500;
-
-async fn stream_chunks<T: Serialize>(
-    stream: &mut TcpStream,
-    cipher: &ChaCha20Poly1305,
-    items: &[T],
-    wrap: impl Fn(Vec<&T>) -> PairFrame,
-) -> Result<(), AppError> {
-    for chunk in items.chunks(CHUNK_SIZE) {
-        let frame = wrap(chunk.iter().collect());
-        write_encrypted(stream, cipher, &frame).await?;
-    }
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // DB upserts used by both sides
@@ -741,194 +680,44 @@ async fn stream_chunks<T: Serialize>(
 // ---------------------------------------------------------------------------
 
 /// Persist the header's space, members, users, and trusted_device
-/// inside an open apply_guard transaction. Runs first in the stream
-/// loop so every subsequent chunk sees the space context.
+/// inside an open apply_guard transaction. Delegates to the shared
+/// `apply_snapshot_frame` helper so the pairing path uses exactly the
+/// same upserts as the sync-session snapshot fallback.
 async fn apply_header(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     header: &PairHeader,
 ) -> Result<(), AppError> {
-    upsert_space_tx(tx, &header.space).await?;
-    for u in &header.users {
-        upsert_user_tx(tx, u).await?;
-    }
-    for m in &header.members {
-        upsert_space_member_tx(tx, m).await?;
-    }
-    upsert_trusted_device_tx(
+    let skeleton = SpaceSnapshot {
+        space: header.space.clone(),
+        members: header.members.clone(),
+        users: header.users.clone(),
+        categories: Vec::new(),
+        accounts: Vec::new(),
+        transactions: Vec::new(),
+        account_summaries: Vec::new(),
+        space_settings: Vec::new(),
+        host_device_id: header.host_device_id.clone(),
+        host_device_name: header.host_device_name.clone(),
+        host_cert_pem: header.host_cert_pem.clone(),
+    };
+    crate::sync::snapshot::apply_snapshot_frame(
         tx,
-        &header.space.id,
-        &header.host_device_id,
-        &header.host_device_name,
-        &header.host_cert_pem,
+        &skeleton,
+        &SnapshotFrame::Space(header.space.clone()),
     )
     .await?;
-    Ok(())
-}
-
-async fn upsert_trusted_device_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    space_id: &str,
-    device_id: &str,
-    display_name: &str,
-    cert_pem: &str,
-) -> Result<(), AppError> {
-    let id = uuid::Uuid::new_v4().to_string();
-    sqlx::query_file!(
-        "queries/sync/upsert_trusted_device.sql",
-        id,
-        space_id,
-        device_id,
-        display_name,
-        cert_pem,
+    crate::sync::snapshot::apply_snapshot_frame(
+        tx,
+        &skeleton,
+        &SnapshotFrame::Members(header.members.clone()),
     )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_trusted_device: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_space_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    space: &WireSpace,
-) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/upsert_space.sql",
-        space.id,
-        space.name,
-        space.created_at,
-        space.updated_at,
+    .await?;
+    crate::sync::snapshot::apply_snapshot_frame(
+        tx,
+        &skeleton,
+        &SnapshotFrame::Users(header.users.clone()),
     )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_space: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_user_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    user: &WireUser,
-) -> Result<(), AppError> {
-    let pin = user.pin_hash.clone();
-    sqlx::query_file!(
-        "queries/sync/upsert_user.sql",
-        user.id,
-        user.name,
-        pin,
-        user.created_at,
-        user.updated_at,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_user: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_space_member_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    m: &WireMember,
-) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/upsert_space_member.sql",
-        m.space_id,
-        m.user_id,
-        m.role
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_space_member: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_category_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    c: &WireCategory,
-) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/apply/upsert_category.sql",
-        c.id,
-        c.name,
-        c.color,
-        c.space_id,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_category: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_account_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    a: &WireAccount,
-) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/apply/upsert_account.sql",
-        a.id,
-        a.name,
-        a.currency,
-        a.account_type,
-        a.account_source,
-        a.color,
-        a.space_id,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_account: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_transaction_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    t: &WireTransaction,
-) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/apply/upsert_transaction.sql",
-        t.id,
-        t.booking_date,
-        t.value_date,
-        t.reference,
-        t.text,
-        t.currency,
-        t.amount,
-        t.balance,
-        t.approved,
-        t.note,
-        t.category,
-        t.account_id,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_transaction: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_account_summary_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    s: &WireAccountSummary,
-) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/apply/upsert_account_summary.sql",
-        s.month,
-        s.account_id,
-        s.balance,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_account_summary: {e}")))?;
-    Ok(())
-}
-
-async fn upsert_space_setting_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    s: &WireSpaceSetting,
-) -> Result<(), AppError> {
-    sqlx::query_file!(
-        "queries/sync/apply/upsert_space_setting.sql",
-        s.space_id,
-        s.key,
-        s.value,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| AppError::Db(format!("upsert_space_setting: {e}")))?;
+    .await?;
+    crate::sync::snapshot::apply_snapshot_frame(tx, &skeleton, &SnapshotFrame::End).await?;
     Ok(())
 }

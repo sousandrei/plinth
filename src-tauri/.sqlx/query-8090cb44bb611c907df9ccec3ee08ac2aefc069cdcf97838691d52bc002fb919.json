@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Snapshot: list every account_summary in this space, via account_id → accounts.\nSELECT s.month, s.account_id, s.balance\nFROM account_summaries s\nJOIN accounts a ON a.id = s.account_id\nWHERE a.space_id = ?1\nORDER BY s.month ASC, s.account_id ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "month",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "month"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "balance",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_summaries",
+            "name": "balance"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8090cb44bb611c907df9ccec3ee08ac2aefc069cdcf97838691d52bc002fb919"
+}

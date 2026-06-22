@@ -114,7 +114,25 @@ pub enum Frame {
     Hello(Hello),
     Cursors(Cursors),
     Batch(ChangeBatch),
+    /// Full snapshot for a single space, streamed in chunks. Sent by the
+    /// host when the peer's cursor is behind `change_log.min_seq` and
+    /// incremental replay can no longer catch the joiner up. The host
+    /// sends `Snapshot` frames until it emits `SnapshotEnd`; the joiner
+    /// reads in a loop, applies each frame under `apply_guard`, and
+    /// then resumes the normal sync session from `final_seq`.
+    Snapshot(SnapshotChunk),
+    SnapshotEnd,
     ModelVersionSummary(ModelVersionSummary),
     ModelData(ModelData),
     Bye(Bye),
+}
+
+/// One chunk of a space snapshot. The host breaks each table's rows
+/// into 500-item slices (same `CHUNK_SIZE` as the pairing transfer) so
+/// every frame stays well under the 1 MiB ceiling. The joiner applies
+/// each frame inside an `apply_guard` transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotChunk {
+    pub space_id: String,
+    pub frame: crate::sync::snapshot::SnapshotFrame,
 }

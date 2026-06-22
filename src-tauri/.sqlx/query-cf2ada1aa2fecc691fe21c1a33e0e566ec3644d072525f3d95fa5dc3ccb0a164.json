@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Snapshot: list every member of a space.\nSELECT space_id, user_id, role, joined_at\nFROM space_members\nWHERE space_id = ?1\nORDER BY joined_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "user_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "name": "role",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "name": "joined_at",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "joined_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cf2ada1aa2fecc691fe21c1a33e0e566ec3644d072525f3d95fa5dc3ccb0a164"
+}
