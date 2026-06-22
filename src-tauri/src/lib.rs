@@ -173,6 +173,7 @@ pub fn run() {
             })?;
             app.manage(runtime.peers.clone());
             app.manage(runtime.pairing.clone());
+            app.manage(runtime.in_flight.clone());
 
             Ok(())
         })
@@ -236,6 +237,7 @@ pub fn run() {
             commands::settings::get_app_setting,
             commands::settings::set_app_setting,
             commands::sync::list_peers,
+            commands::sync::force_sync_now,
             commands::sync::list_trusted_devices,
             commands::sync::remove_trusted_device,
             commands::sync::generate_pair_token,

@@ -15,14 +15,27 @@ use crate::sync::identity::DeviceIdentity;
 
 const DIAL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Shared set of device_ids currently being dialled. Used by both the
+/// scheduler and `force_sync_now` to avoid launching two parallel
+/// sessions for the same peer.
+#[derive(Default, Clone)]
+pub struct DialInFlight(pub Arc<Mutex<HashSet<String>>>);
+
+impl DialInFlight {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 pub fn spawn(
     peers: PeerRegistry,
     db: SqlitePool,
     identity: Arc<DeviceIdentity>,
     app: AppHandle,
     debounce: DebounceTrigger,
+    in_flight: DialInFlight,
 ) -> JoinHandle<()> {
-    tokio::spawn(run(peers, db, identity, app, debounce))
+    tokio::spawn(run(peers, db, identity, app, debounce, in_flight))
 }
 
 async fn run(
@@ -31,9 +44,8 @@ async fn run(
     identity: Arc<DeviceIdentity>,
     app: AppHandle,
     mut debounce: DebounceTrigger,
+    in_flight: DialInFlight,
 ) {
-    let in_flight: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-
     loop {
         tokio::select! {
             _ = sleep(DIAL_INTERVAL) => {},
@@ -60,12 +72,12 @@ async fn trusted_device_ids(db: &SqlitePool) -> HashSet<String> {
     }
 }
 
-async fn dial_all_peers(
+pub async fn dial_all_peers(
     peers: &PeerRegistry,
     db: &SqlitePool,
     identity: &Arc<DeviceIdentity>,
     app: &AppHandle,
-    in_flight: &Arc<Mutex<HashSet<String>>>,
+    in_flight: &DialInFlight,
 ) {
     // Only dial peers we have a trusted_devices row for — this prevents
     // handshake failures against unknown LAN peers and stops the noise
@@ -86,7 +98,7 @@ async fn dial_all_peers(
         };
 
         {
-            let mut guard = match in_flight.lock() {
+            let mut guard = match in_flight.0.lock() {
                 Ok(g) => g,
                 Err(e) => {
                     eprintln!("scheduler: in_flight mutex poisoned: {e}");
@@ -117,7 +129,7 @@ async fn dial_all_peers(
                     eprintln!("scheduler: dial {device_id} failed: {e}");
                 }
             }
-            match in_flight.lock() {
+            match in_flight.0.lock() {
                 Ok(mut guard) => {
                     guard.remove(&device_id);
                 }

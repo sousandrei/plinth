@@ -10,6 +10,7 @@ use crate::sync::{PairingState, PeerRegistry, discovery, identity, scheduler, se
 pub struct SyncRuntime {
     pub peers: PeerRegistry,
     pub pairing: Arc<PairingState>,
+    pub in_flight: crate::sync::scheduler::DialInFlight,
 }
 
 pub async fn start(handle: AppHandle, db: SqlitePool) -> Result<SyncRuntime, AppError> {
@@ -24,10 +25,19 @@ pub async fn start(handle: AppHandle, db: SqlitePool) -> Result<SyncRuntime, App
     discovery::spawn(db.clone(), peers.clone(), server_handle.local_addr.port());
 
     let debounce_trigger = new_debounce();
-    scheduler::spawn(peers.clone(), db, identity, handle, debounce_trigger);
+    let in_flight = crate::sync::scheduler::DialInFlight::new();
+    scheduler::spawn(
+        peers.clone(),
+        db,
+        identity,
+        handle,
+        debounce_trigger,
+        in_flight.clone(),
+    );
 
     Ok(SyncRuntime {
         peers,
         pairing: Arc::new(PairingState::new()),
+        in_flight,
     })
 }

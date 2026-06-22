@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::{
     Session,
@@ -39,6 +39,25 @@ pub fn get_local_address() -> Option<String> {
 #[tauri::command]
 pub async fn list_peers(registry: State<'_, PeerRegistry>) -> Result<Vec<PeerInfo>, AppError> {
     Ok(registry.snapshot())
+}
+
+/// Trigger an immediate sync with every visible trusted peer, bypassing
+/// the scheduler's 30s polling interval. The existing snapshot fallback
+/// in the session protocol handles the case where the peer's cursor is
+/// behind `change_log.min_seq`, so this also works as a "full pull"
+/// when the user has missed batches that have since been GC'd.
+#[tauri::command]
+pub async fn force_sync_now(
+    peers: State<'_, PeerRegistry>,
+    db: State<'_, DbPool>,
+    in_flight: State<'_, crate::sync::scheduler::DialInFlight>,
+    app: AppHandle,
+) -> Result<u64, AppError> {
+let identity = crate::sync::identity::ensure_identity(&db).await?;
+    let identity = Arc::new(identity);
+    let peer_count = peers.snapshot().len() as u64;
+    crate::sync::scheduler::dial_all_peers(&peers, &db, &identity, &app, &in_flight).await;
+    Ok(peer_count)
 }
 
 // ---------------------------------------------------------------------------
