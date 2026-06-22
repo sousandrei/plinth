@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/sousandrei/plinth/compare/plinth-v1.2.0...plinth-v1.2.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* another try in release workflow to avoid duplicate artifacts ([5d58263](https://github.com/sousandrei/plinth/commit/5d582637409d671f621e7be3c32b7c1734786537))
+* multi point sync with multiple devices per space ([f7cd2ff](https://github.com/sousandrei/plinth/commit/f7cd2ff4b2c0dff0de3142a354b71eb47fc5cd57))
+
 ## [1.2.0](https://github.com/sousandrei/plinth/compare/plinth-v1.1.3...plinth-v1.2.0) (2026-06-21)
 
 
