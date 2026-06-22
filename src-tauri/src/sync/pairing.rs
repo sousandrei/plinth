@@ -43,7 +43,7 @@ use tokio::{
 use crate::error::AppError;
 
 const TOKEN_TTL_SECS: u64 = 90;
-const HANDSHAKE_DEADLINE_SECS: u64 = 60;
+const HANDSHAKE_DEADLINE_SECS: u64 = 300;
 const PAKE_IDENTITY: &[u8] = b"plinth-pairing-v1";
 
 /// Fixed TCP port the host always listens on for pairing connections.
@@ -170,6 +170,35 @@ pub struct SpaceBundle {
     pub host_device_id: String,
     pub host_device_name: String,
     pub host_cert_pem: String,
+}
+
+/// Small, always-fits-in-1MB header sent first in the host→joiner stream.
+/// Contains the space identity, members, users, and the host's network
+/// identity. The joiner persists this before any table data so it can
+/// reject obviously-invalid transfers early.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PairHeader {
+    space: WireSpace,
+    members: Vec<WireMember>,
+    users: Vec<WireUser>,
+    host_device_id: String,
+    host_device_name: String,
+    host_cert_pem: String,
+}
+
+/// Tagged envelope for the host→joiner pairing stream. Each variant is
+/// serialized, encrypted with a fresh nonce, and sent as an independent
+/// length-prefixed frame under the 1 MB cap. Postcard encodes the variant
+/// tag as one byte.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum PairFrame {
+    Header(PairHeader),
+    Categories(Vec<WireCategory>),
+    Accounts(Vec<WireAccount>),
+    Transactions(Vec<WireTransaction>),
+    AccountSummaries(Vec<WireAccountSummary>),
+    SpaceSettings(Vec<WireSpaceSetting>),
+    End,
 }
 
 // ---------------------------------------------------------------------------
@@ -347,8 +376,41 @@ async fn run_host_session(
     // Receive JoinPayload from the joiner.
     let join: JoinPayload = read_encrypted(&mut stream, &cipher).await?;
 
-    // Send the space bundle back.
-    write_encrypted(&mut stream, &cipher, &bundle).await?;
+    // Stream the space data: header first, then chunked table data, then
+    // an End marker. Each frame is independently encrypted and stays
+    // under the 1 MB cap regardless of space size.
+    let header = PairHeader {
+        space: bundle.space.clone(),
+        members: bundle.members.clone(),
+        users: bundle.users.clone(),
+        host_device_id: bundle.host_device_id.clone(),
+        host_device_name: bundle.host_device_name.clone(),
+        host_cert_pem: bundle.host_cert_pem.clone(),
+    };
+    write_encrypted(&mut stream, &cipher, &PairFrame::Header(header)).await?;
+
+    stream_chunks(&mut stream, &cipher, &bundle.categories, |c| {
+        PairFrame::Categories(c.into_iter().cloned().collect())
+    })
+    .await?;
+    stream_chunks(&mut stream, &cipher, &bundle.accounts, |c| {
+        PairFrame::Accounts(c.into_iter().cloned().collect())
+    })
+    .await?;
+    stream_chunks(&mut stream, &cipher, &bundle.transactions, |c| {
+        PairFrame::Transactions(c.into_iter().cloned().collect())
+    })
+    .await?;
+    stream_chunks(&mut stream, &cipher, &bundle.account_summaries, |c| {
+        PairFrame::AccountSummaries(c.into_iter().cloned().collect())
+    })
+    .await?;
+    stream_chunks(&mut stream, &cipher, &bundle.space_settings, |c| {
+        PairFrame::SpaceSettings(c.into_iter().cloned().collect())
+    })
+    .await?;
+
+    write_encrypted(&mut stream, &cipher, &PairFrame::End).await?;
 
     // Persist the joiner as a trusted device of this space.
     upsert_trusted_device(
@@ -425,58 +487,79 @@ pub async fn run_joiner(
     };
     write_encrypted(&mut stream, &cipher, &join).await?;
 
-    let bundle: SpaceBundle = read_encrypted(&mut stream, &cipher).await?;
+    // Read the header first (outside any transaction) so we know the
+    // host's device_id before we open the apply_guard transaction —
+    // the override must be set as the very first statement.
+    let header: PairHeader = match read_encrypted(&mut stream, &cipher).await? {
+        PairFrame::Header(h) => h,
+        other => {
+            return Err(AppError::Internal(format!(
+                "pairing: expected Header, got {:?}",
+                std::mem::discriminant(&other)
+            )));
+        }
+    };
+
+    let host_device_id = header.host_device_id.clone();
+    let space_id = header.space.id.clone();
+    let space_name = header.space.name.clone();
+    let users = header.users.clone();
 
     // Persist everything received. Run inside apply_guard so the
     // change_log override is set to the host's device_id — every
     // change_log trigger on a synced table stamps the host's id, so
     // the inserted rows originated on the host and don't echo back as
     // local changes on subsequent sync sessions.
-    let host_device_id = bundle.host_device_id.clone();
-    let space_id = bundle.space.id.clone();
-    let space_name = bundle.space.name.clone();
-    let users = bundle.users.clone();
+    //
+    // The stream is moved into the closure so the remaining frames
+    // can be read inside the transaction. A mid-stream failure rolls
+    // back every DB write; the joiner can then retry pairing.
     crate::sync::apply_guard::run_as_device(&db, &host_device_id, move |tx| {
         Box::pin(async move {
-            upsert_space_tx(tx, &bundle.space).await?;
-            for u in &bundle.users {
-                upsert_user_tx(tx, u).await?;
+            apply_header(tx, &header).await?;
+            loop {
+                let frame: PairFrame = read_encrypted(&mut stream, &cipher).await?;
+                match frame {
+                    PairFrame::Header(_) => {
+                        return Err(AppError::Internal("pairing: duplicate Header frame".into()));
+                    }
+                    PairFrame::Categories(chunk) => {
+                        for c in &chunk {
+                            upsert_category_tx(tx, c).await?;
+                        }
+                    }
+                    PairFrame::Accounts(chunk) => {
+                        for a in &chunk {
+                            upsert_account_tx(tx, a).await?;
+                        }
+                    }
+                    PairFrame::Transactions(chunk) => {
+                        for t in &chunk {
+                            upsert_transaction_tx(tx, t).await?;
+                        }
+                    }
+                    PairFrame::AccountSummaries(chunk) => {
+                        for s in &chunk {
+                            upsert_account_summary_tx(tx, s).await?;
+                        }
+                    }
+                    PairFrame::SpaceSettings(chunk) => {
+                        for s in &chunk {
+                            upsert_space_setting_tx(tx, s).await?;
+                        }
+                    }
+                    PairFrame::End => {
+                        stream.shutdown().await.ok();
+                        break;
+                    }
+                }
             }
-            for m in &bundle.members {
-                upsert_space_member_tx(tx, m).await?;
-            }
-            upsert_trusted_device_tx(
-                tx,
-                &bundle.space.id,
-                &bundle.host_device_id,
-                &bundle.host_device_name,
-                &bundle.host_cert_pem,
-            )
-            .await?;
-
-            for c in &bundle.categories {
-                upsert_category_tx(tx, c).await?;
-            }
-            for a in &bundle.accounts {
-                upsert_account_tx(tx, a).await?;
-            }
-            for t in &bundle.transactions {
-                upsert_transaction_tx(tx, t).await?;
-            }
-            for s in &bundle.account_summaries {
-                upsert_account_summary_tx(tx, s).await?;
-            }
-            for s in &bundle.space_settings {
-                upsert_space_setting_tx(tx, s).await?;
-            }
-
             Ok(())
         })
     })
     .await
     .map_err(|e| AppError::Db(format!("pairing persist: {e}")))?;
 
-    stream.shutdown().await.ok();
     Ok(PairingResult {
         space_id,
         space_name,
@@ -585,8 +668,8 @@ async fn read_raw(stream: &mut TcpStream) -> Result<Vec<u8>, AppError> {
         .await
         .map_err(|e| AppError::Io(format!("pair read len: {e}")))?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 16 * 1024 * 1024 {
-        return Err(AppError::Internal("pair frame > 16 MiB".into()));
+    if len > 1024 * 1024 {
+        return Err(AppError::Internal("pair frame > 1 MiB".into()));
     }
     let mut buf = vec![0u8; len];
     stream
@@ -631,10 +714,56 @@ async fn read_encrypted<T: for<'de> Deserialize<'de>>(
     postcard::from_bytes::<T>(&plain).map_err(|e| AppError::Internal(format!("pair decode: {e}")))
 }
 
+/// Slice `items` into chunks of CHUNK_SIZE and send each one as an
+/// independently-encrypted `PairFrame` variant produced by `wrap`.
+/// `wrap` receives a borrowed slice of the items and returns the
+/// appropriate frame variant. Items that serialize to more than 1 MB
+/// in one chunk will be rejected by `read_raw` — keep `CHUNK_SIZE`
+/// conservative.
+const CHUNK_SIZE: usize = 500;
+
+async fn stream_chunks<T: Serialize>(
+    stream: &mut TcpStream,
+    cipher: &ChaCha20Poly1305,
+    items: &[T],
+    wrap: impl Fn(Vec<&T>) -> PairFrame,
+) -> Result<(), AppError> {
+    for chunk in items.chunks(CHUNK_SIZE) {
+        let frame = wrap(chunk.iter().collect());
+        write_encrypted(stream, cipher, &frame).await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // DB upserts used by both sides
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+/// Persist the header's space, members, users, and trusted_device
+/// inside an open apply_guard transaction. Runs first in the stream
+/// loop so every subsequent chunk sees the space context.
+async fn apply_header(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    header: &PairHeader,
+) -> Result<(), AppError> {
+    upsert_space_tx(tx, &header.space).await?;
+    for u in &header.users {
+        upsert_user_tx(tx, u).await?;
+    }
+    for m in &header.members {
+        upsert_space_member_tx(tx, m).await?;
+    }
+    upsert_trusted_device_tx(
+        tx,
+        &header.space.id,
+        &header.host_device_id,
+        &header.host_device_name,
+        &header.host_cert_pem,
+    )
+    .await?;
+    Ok(())
+}
 
 async fn upsert_trusted_device_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
