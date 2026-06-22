@@ -68,7 +68,7 @@ export const Select = ({
       <ChevronIcon />
     </BaseSelect.Trigger>
     <BaseSelect.Portal>
-      <BaseSelect.Positioner>
+      <BaseSelect.Positioner className="z-[60]">
         <BaseSelect.Popup
           className={cn(
             'bg-canvas-raised border border-border-muted py-1',
