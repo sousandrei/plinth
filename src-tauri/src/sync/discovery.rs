@@ -12,7 +12,6 @@ use crate::error::AppError;
 use crate::sync::pairing::PAIRING_PORT;
 
 const SERVICE_TYPE: &str = "_plinth._tcp.local.";
-const PEER_TTL_SECS: u64 = 90;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PeerInfo {
@@ -65,18 +64,6 @@ impl PeerRegistry {
                 Vec::new()
             }
         }
-    }
-
-    fn reap(&self, ttl_secs: u64) {
-        let now = now_unix();
-        let mut guard = match self.inner.lock() {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("sync::discovery: peer registry poisoned on reap: {e}");
-                return;
-            }
-        };
-        guard.retain(|_, p| now.saturating_sub(p.last_seen) < ttl_secs);
     }
 }
 
@@ -158,17 +145,15 @@ async fn run(
 
     let receiver = daemon.browse(SERVICE_TYPE)?;
 
-    let reaper_registry = registry.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(PEER_TTL_SECS / 3));
-        loop {
-            ticker.tick().await;
-            reaper_registry.reap(PEER_TTL_SECS);
-        }
-    });
-
     // Block on mDNS events. The channel is sync, so we hop to a blocking
     // thread for the recv loop.
+    //
+    // Note: there is no separate TTL-based reaper. mdns_sd emits
+    // ServiceRemoved when a peer goes offline (via explicit goodbye
+    // packet or cache TTL expiry), which is the authoritative signal.
+    // A last-seen reaper would be wrong here because ServiceResolved
+    // only fires once at discovery — there's no periodic refresh
+    // event to update a timestamp.
     let registry_for_loop = registry.clone();
     let self_device_id = device_id.clone();
     tokio::task::spawn_blocking(move || {

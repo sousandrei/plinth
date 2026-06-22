@@ -139,6 +139,7 @@ export interface PeerInfo {
   name: string;
   host: string;
   port: number;
+  last_seen: number;
 }
 
 export interface TrustedDevice {
