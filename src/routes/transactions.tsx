@@ -171,6 +171,7 @@ function Transactions(): React.JSX.Element {
                 transactions={transactions}
                 categories={categories}
                 isLoading={isLoading}
+                isDemoMode={isDemoMode}
                 selectedIds={selection.selectedIds}
                 onToggleRow={selection.toggle}
                 onTogglePage={selection.toggleAll}

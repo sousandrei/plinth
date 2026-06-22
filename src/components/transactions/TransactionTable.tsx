@@ -7,6 +7,7 @@ interface TransactionTableProps {
   transactions: Transaction[];
   categories: string[];
   isLoading: boolean;
+  isDemoMode: boolean;
   selectedIds: string[];
   onToggleRow: (id: string) => void;
   onTogglePage: (ids: string[], selectAll: boolean) => void;
@@ -27,6 +28,7 @@ export const TransactionTable = ({
   transactions,
   categories,
   isLoading,
+  isDemoMode,
   selectedIds,
   onToggleRow,
   onTogglePage,
@@ -100,6 +102,7 @@ export const TransactionTable = ({
               transaction={t}
               categories={categories}
               selected={selectedIds.includes(t.id)}
+              isDemoMode={isDemoMode}
               onToggleSelect={onToggleRow}
             />
           ))}

@@ -28,3 +28,17 @@ export const uploadFile = (
     filePath,
     parserKey,
   });
+
+export interface TransactionInput {
+  text: string;
+  amount: number;
+  booking_date: string;
+}
+
+/// Predict categories for one or more transactions using the locally
+/// loaded finetuned model. Returns one prediction per input in the same
+/// order. An empty string means the classifier had no opinion.
+export const classifyTransactions = (
+  transactions: TransactionInput[],
+): Promise<string[]> =>
+  invoke<string[]>('classify_transactions', { transactions });

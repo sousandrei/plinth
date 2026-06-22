@@ -53,7 +53,7 @@ pub async fn force_sync_now(
     in_flight: State<'_, crate::sync::scheduler::DialInFlight>,
     app: AppHandle,
 ) -> Result<u64, AppError> {
-let identity = crate::sync::identity::ensure_identity(&db).await?;
+    let identity = crate::sync::identity::ensure_identity(&db).await?;
     let identity = Arc::new(identity);
     let peer_count = peers.snapshot().len() as u64;
     crate::sync::scheduler::dial_all_peers(&peers, &db, &identity, &app, &in_flight).await;

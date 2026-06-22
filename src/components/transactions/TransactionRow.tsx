@@ -1,12 +1,14 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { updateTransaction } from '@/api/transactions';
+import { classifyTransactions } from '@/api/upload';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Select } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
+import { toast } from '@/components/ui/Toast';
 import { categoryChipStyle } from '@/lib/category-color';
 import { cn } from '@/lib/util';
-import type { Transaction } from '@/types';
+import type { Transaction, TransactionPage } from '@/types';
 
 // Amounts are stored as minor units (cents ×100). Format to 2 decimal places.
 export const formatAmount = (amount: number, currency: string): string => {
@@ -18,10 +20,22 @@ export const formatAmount = (amount: number, currency: string): string => {
   }).format(value);
 };
 
+/// Translate classifier/predict failures into a user-facing toast. The
+/// most common cause is "no trained model yet" — show a hint to train
+/// one. Other failures fall back to the raw error message.
+const describePredictError = (err: unknown): string => {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('classifier not ready')) {
+    return 'Train a model first — the classifier has nothing loaded yet.';
+  }
+  return msg;
+};
+
 interface TransactionRowProps {
   transaction: Transaction;
   categories: string[];
   selected: boolean;
+  isDemoMode: boolean;
   onToggleSelect: (id: string) => void;
 }
 
@@ -29,6 +43,7 @@ export const TransactionRow = ({
   transaction: t,
   categories,
   selected,
+  isDemoMode,
   onToggleSelect,
 }: TransactionRowProps): React.JSX.Element => {
   const isPositive = t.amount >= 0;
@@ -51,9 +66,51 @@ export const TransactionRow = ({
     },
   });
 
+  const predictMutation = useMutation({
+    mutationFn: async () => {
+      const inputs = [
+        {
+          text: t.text,
+          amount: t.amount,
+          booking_date: t.booking_date,
+        },
+      ];
+      const [prediction] = await classifyTransactions(inputs);
+      if (!prediction) return;
+      if (isDemoMode) {
+        queryClient.setQueriesData<TransactionPage>(
+          { queryKey: ['transactions', 'demo'] },
+          (old) => {
+            if (!old) return old;
+            return {
+              ...old,
+              transactions: old.transactions.map((row) =>
+                row.id === t.id ? { ...row, category: prediction } : row,
+              ),
+            };
+          },
+        );
+        return;
+      }
+      await updateTransaction(t.id, t.approved, t.note, prediction);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['categories'] });
+      queryClient.invalidateQueries({ queryKey: ['aggregations'] });
+    },
+    onError: (err: unknown) => {
+      handlePredictError(err);
+    },
+  });
+
   const handleCategoryChange = (val: string | null | undefined) => {
     const category = !val || val === '__clear__' ? null : val;
     categoryMutation.mutate({ category });
+  };
+
+  const handlePredictError = (err: unknown): void => {
+    toast.error('Prediction failed', describePredictError(err));
   };
 
   const rowBg = !t.approved
@@ -104,26 +161,57 @@ export const TransactionRow = ({
 
       {/* Category Dropdown */}
       <td className="px-6 py-2 whitespace-nowrap w-[24%] min-w-[160px]">
-        <Select
-          value={t.category ?? '__clear__'}
-          onValueChange={(val) => handleCategoryChange(val)}
-          disabled={categoryMutation.isPending}
-          options={[
-            { value: '__clear__', label: 'NONE' },
-            ...categories.map((cat) => ({
-              value: cat,
-              label: cat.toUpperCase(),
-            })),
-          ]}
-          style={t.category ? categoryChipStyle(t.category) : undefined}
-          className={cn(
-            'h-7 py-0 px-2 text-[10px] font-mono uppercase tracking-widest bg-transparent border shadow-none hover:bg-muted/60 cursor-pointer outline-none transition-all duration-100',
-            t.category
-              ? 'border-transparent text-foreground'
-              : 'border-border-subtle border-dashed text-muted-foreground',
-            categoryMutation.isPending && 'opacity-50 pointer-events-none',
-          )}
-        />
+        <div className="flex items-center gap-1.5">
+          <Select
+            value={t.category ?? '__clear__'}
+            onValueChange={(val) => handleCategoryChange(val)}
+            disabled={categoryMutation.isPending}
+            options={[
+              { value: '__clear__', label: 'NONE' },
+              ...categories.map((cat) => ({
+                value: cat,
+                label: cat.toUpperCase(),
+              })),
+            ]}
+            style={t.category ? categoryChipStyle(t.category) : undefined}
+            className={cn(
+              'flex-1 min-w-0 h-7 py-0 px-2 text-[10px] font-mono uppercase tracking-widest bg-transparent border shadow-none hover:bg-muted/60 cursor-pointer outline-none transition-all duration-100',
+              t.category
+                ? 'border-transparent text-foreground'
+                : 'border-border-subtle border-dashed text-muted-foreground',
+              categoryMutation.isPending && 'opacity-50 pointer-events-none',
+            )}
+          />
+          <button
+            type="button"
+            onClick={() => predictMutation.mutate()}
+            disabled={predictMutation.isPending}
+            aria-label="Predict category"
+            title="Predict category"
+            className={cn(
+              'shrink-0 w-7 h-7 flex items-center justify-center text-muted-foreground hover:text-foreground border border-border-subtle hover:bg-muted/60 transition-colors duration-100 disabled:opacity-40 disabled:cursor-not-allowed',
+              predictMutation.isPending && 'animate-spin',
+            )}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+              <path d="M21 3v5h-5" />
+              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+              <path d="M8 16H3v5" />
+            </svg>
+          </button>
+        </div>
       </td>
 
       {/* Amount */}

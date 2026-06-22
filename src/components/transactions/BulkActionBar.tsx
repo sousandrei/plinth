@@ -5,8 +5,10 @@ import {
   bulkApproveTransactions,
   bulkCategorizeTransactions,
 } from '@/api/transactions';
+import { classifyTransactions } from '@/api/upload';
 import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
+import { toast } from '@/components/ui/Toast';
 import type { TransactionPage } from '@/types';
 
 interface BulkActionBarProps {
@@ -15,6 +17,14 @@ interface BulkActionBarProps {
   isDemoMode: boolean;
   onClear: () => void;
 }
+
+const describePredictError = (err: unknown): string => {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('classifier not ready')) {
+    return 'Train a model first — the classifier has nothing loaded yet.';
+  }
+  return msg;
+};
 
 export const BulkActionBar = ({
   selectedIds,
@@ -82,6 +92,102 @@ export const BulkActionBar = ({
     },
   });
 
+  const predictMutation = useMutation({
+    mutationFn: async () => {
+      if (isDemoMode) {
+        // Look up selected rows from the demo cache so we can show
+        // predictions in-place without touching the DB. The transactions
+        // query is keyed by [transactions, demo, page, ...filters] so
+        // we use a prefix match to gather every cached page.
+        const pages = queryClient.getQueriesData<TransactionPage>({
+          queryKey: ['transactions', 'demo'],
+        });
+        const selected: Array<{
+          id: string;
+          text: string;
+          amount: number;
+          booking_date: string;
+        }> = [];
+        for (const [, data] of pages) {
+          if (!data) continue;
+          for (const t of data.transactions) {
+            if (selectedIds.includes(t.id)) {
+              selected.push({
+                id: t.id,
+                text: t.text,
+                amount: t.amount,
+                booking_date: t.booking_date,
+              });
+            }
+          }
+        }
+        if (selected.length === 0) {
+          throw new Error('No selected transactions found in cache.');
+        }
+        const predictions = await classifyTransactions(selected);
+        queryClient.setQueriesData<TransactionPage>(
+          { queryKey: ['transactions', 'demo'] },
+          (old) => {
+            if (!old) return old;
+            const byId = new Map(
+              selected.map((s, i) => [s.id, predictions[i] ?? '']),
+            );
+            return {
+              ...old,
+              transactions: old.transactions.map((t) =>
+                byId.has(t.id) ? { ...t, category: byId.get(t.id) ?? '' } : t,
+              ),
+            };
+          },
+        );
+        return;
+      }
+      // Real flow: gather the selected transactions' inputs across every
+      // cached page, run the classifier once, then apply each prediction
+      // back to the DB.
+      const pages = queryClient.getQueriesData<TransactionPage>({
+        queryKey: ['transactions', 'live'],
+      });
+      const selectedInputs: Array<{
+        text: string;
+        amount: number;
+        booking_date: string;
+      }> = [];
+      const idOrder: string[] = [];
+      for (const [, data] of pages) {
+        if (!data) continue;
+        for (const t of data.transactions) {
+          if (selectedIds.includes(t.id)) {
+            selectedInputs.push({
+              text: t.text,
+              amount: t.amount,
+              booking_date: t.booking_date,
+            });
+            idOrder.push(t.id);
+          }
+        }
+      }
+      if (selectedInputs.length === 0) {
+        throw new Error('No selected transactions found in cache.');
+      }
+      const predictions = await classifyTransactions(selectedInputs);
+      // Apply each prediction to the matching row. The classifier can
+      // return an empty string when no model is loaded — skip those.
+      for (let i = 0; i < idOrder.length; i++) {
+        const cat = predictions[i];
+        if (cat && cat.length > 0) {
+          await bulkCategorizeTransactions([idOrder[i]], cat);
+        }
+      }
+    },
+    onSuccess: () => {
+      invalidate();
+    },
+    onError: (err: unknown) => {
+      toast.error('Prediction failed', describePredictError(err));
+    },
+  });
+
   if (count === 0) return null;
 
   return createPortal(
@@ -96,7 +202,7 @@ export const BulkActionBar = ({
 
           <Button
             variant="secondary"
-            disabled={approveMutation.isPending}
+            disabled={approveMutation.isPending || predictMutation.isPending}
             onClick={() => approveMutation.mutate(true)}
             className="px-3 py-1.5 text-xs h-8"
           >
@@ -109,6 +215,17 @@ export const BulkActionBar = ({
             className="px-3 py-1.5 text-xs h-8"
           >
             Unapprove
+          </Button>
+
+          <div className="h-5 w-px bg-border-muted" />
+
+          <Button
+            variant="secondary"
+            disabled={predictMutation.isPending}
+            onClick={() => predictMutation.mutate()}
+            className="px-3 py-1.5 text-xs h-8"
+          >
+            {predictMutation.isPending ? 'Predicting…' : 'Predict'}
           </Button>
 
           <div className="h-5 w-px bg-border-muted" />
