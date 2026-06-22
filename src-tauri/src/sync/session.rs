@@ -167,11 +167,24 @@ where
     // --- Cursor exchange ---
     let mut cursor_entries = Vec::new();
     for space_id in &peer.shared_space_ids {
-        let last_seq = cursors::get(&db, space_id, &peer.device_id).await?;
-        cursor_entries.push(CursorEntry {
-            space_id: space_id.clone(),
-            last_seq,
-        });
+        let devices = sqlx::query_file!(
+            "queries/sync/list_trusted_devices.sql",
+            space_id
+        )
+        .fetch_all(&db)
+        .await
+        .map_err(|e| AppError::Db(format!("session cursors query: {e}")))?;
+
+        for d in devices {
+            if d.device_id != local_device_id {
+                let last_seq = cursors::get(&db, space_id, &d.device_id).await?;
+                cursor_entries.push(CursorEntry {
+                    space_id: space_id.clone(),
+                    device_id: d.device_id,
+                    last_seq,
+                });
+            }
+        }
     }
     write_frame(
         &mut wr,
@@ -194,7 +207,7 @@ where
             &mut wr,
             &db,
             &entry.space_id,
-            &local_device_id,
+            &entry.device_id,
             entry.last_seq,
         )
         .await?;
@@ -206,6 +219,19 @@ where
         .collect();
     for space_id in &peer.shared_space_ids {
         if !mentioned.contains(space_id.as_str()) {
+            let devices = sqlx::query_file!(
+                "queries/sync/list_trusted_devices.sql",
+                space_id
+            )
+            .fetch_all(&db)
+            .await
+            .map_err(|e| AppError::Db(format!("session fallback devices query: {e}")))?;
+
+            for d in devices {
+                if d.device_id != peer.device_id {
+                    ship_batches(&mut wr, &db, space_id, &d.device_id, 0).await?;
+                }
+            }
             ship_batches(&mut wr, &db, space_id, &local_device_id, 0).await?;
         }
     }
@@ -253,24 +279,25 @@ async fn ship_batches<W>(
     wr: &mut W,
     db: &SqlitePool,
     space_id: &str,
-    local_device_id: &str,
+    device_id: &str,
     peer_last_seq: i64,
 ) -> Result<(), AppError>
 where
     W: AsyncWrite + Unpin,
 {
-    let final_seq = changelog::max_seq(db, space_id, local_device_id).await?;
-    let min_seq = changelog::min_seq(db, space_id, local_device_id).await?;
+    let final_seq = changelog::max_seq(db, space_id, device_id).await?;
+    let min_seq = changelog::min_seq(db, space_id, device_id).await?;
 
     if peer_last_seq > 0 && min_seq > 0 && peer_last_seq < min_seq {
         eprintln!(
-            "session: peer cursor {peer_last_seq} < min_seq {min_seq} for space {space_id}; \
+            "session: peer cursor {peer_last_seq} < min_seq {min_seq} for space {space_id} device {device_id}; \
              full snapshot required (not yet implemented)"
         );
         write_frame(
             wr,
             &Frame::Batch(ChangeBatch {
                 space_id: space_id.to_string(),
+                device_id: device_id.to_string(),
                 rows: vec![],
                 final_seq,
             }),
@@ -284,7 +311,7 @@ where
         let rows = changelog::read_since(
             db,
             space_id,
-            local_device_id,
+            device_id,
             last_sent,
             changelog::DEFAULT_BATCH_LIMIT,
         )
@@ -304,6 +331,7 @@ where
             wr,
             &Frame::Batch(ChangeBatch {
                 space_id: space_id.to_string(),
+                device_id: device_id.to_string(),
                 rows,
                 final_seq: batch_final,
             }),
@@ -416,7 +444,7 @@ async fn apply_batch(
 
     let space_id = batch.space_id.clone();
     let evicted_space_id = batch.space_id.clone();
-    let peer_device_id = peer.device_id.clone();
+    let batch_device_id = batch.device_id.clone();
     let final_seq = batch.final_seq;
     let batch_space_id = batch.space_id.clone();
 
@@ -439,12 +467,14 @@ async fn apply_batch(
         .unwrap_or(0);
 
         if own_rows > 0 {
-            run_as_device(db, &peer.device_id, move |tx| -> GuardedFuture<'_, ()> {
+            let device_id_for_closure = batch_device_id.clone();
+            run_as_device(db, &batch_device_id, move |tx| -> GuardedFuture<'_, ()> {
+                let device_id_inner = device_id_for_closure.clone();
                 Box::pin(async move {
                     for row in &batch.rows {
                         apply::apply_change(tx, row).await?;
                     }
-                    cursors::advance(tx, &space_id, &peer_device_id, final_seq).await?;
+                    cursors::advance(tx, &space_id, &device_id_inner, final_seq).await?;
                     Ok(())
                 })
             })
@@ -456,12 +486,14 @@ async fn apply_batch(
         }
     }
 
-    run_as_device(db, &peer.device_id, move |tx| -> GuardedFuture<'_, ()> {
+    let device_id_for_closure = batch_device_id.clone();
+    run_as_device(db, &batch_device_id, move |tx| -> GuardedFuture<'_, ()> {
+        let device_id_inner = device_id_for_closure.clone();
         Box::pin(async move {
             for row in &batch.rows {
                 apply::apply_change(tx, row).await?;
             }
-            cursors::advance(tx, &batch_space_id, &peer_device_id, final_seq).await?;
+            cursors::advance(tx, &batch_space_id, &device_id_inner, final_seq).await?;
             Ok(())
         })
     })

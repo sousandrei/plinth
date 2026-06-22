@@ -21,8 +21,9 @@ pub struct Hello {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CursorEntry {
     pub space_id: String,
+    pub device_id: String,
     /// Highest `seq` already applied locally for changes originating
-    /// from the remote peer in this space.
+    /// from the specified device in this space.
     pub last_seq: i64,
 }
 
@@ -62,6 +63,7 @@ pub struct ChangeRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangeBatch {
     pub space_id: String,
+    pub device_id: String,
     pub rows: Vec<ChangeRow>,
     pub final_seq: i64,
 }
