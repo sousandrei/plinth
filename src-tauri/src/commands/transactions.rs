@@ -48,10 +48,24 @@ fn build_filter_query(
     if let Some(ref search) = params.search
         && !search.trim().is_empty()
     {
-        let term = format!("\"{}\"*", search.trim().replace('"', "\"\""));
-        builder.push(" AND t.id IN (SELECT id FROM transactions_fts WHERE transactions_fts MATCH ");
-        builder.push_bind(term);
-        builder.push(")");
+        let cleaned = search.trim();
+        if cleaned.chars().count() < 3 {
+            let term = format!("%{}%", cleaned);
+            builder.push(" AND (t.text LIKE ");
+            builder.push_bind(term.clone());
+            builder.push(" OR CAST(t.amount AS TEXT) LIKE ");
+            builder.push_bind(term.clone());
+            builder.push(" OR printf('%.2f', t.amount / 100.0) LIKE ");
+            builder.push_bind(term);
+            builder.push(")");
+        } else {
+            let term = format!("\"{}\"", cleaned.replace('"', "\"\""));
+            builder.push(
+                " AND t.id IN (SELECT id FROM transactions_fts WHERE transactions_fts MATCH ",
+            );
+            builder.push_bind(term);
+            builder.push(")");
+        }
     }
 
     if let Some(approved) = params.approved {

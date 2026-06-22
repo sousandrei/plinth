@@ -104,8 +104,16 @@ where
     );
 
     let (send_res, recv_res) = tokio::join!(send_fut, recv_fut);
-    send_res?;
+
+    if let Err(e) = &recv_res {
+        eprintln!("session: recv half failed: {e}");
+    }
+    if let Err(e) = &send_res {
+        eprintln!("session: send half failed: {e}");
+    }
+
     recv_res?;
+    send_res?;
 
     for space_id in &peer.shared_space_ids {
         let _ = sqlx::query_file!(
@@ -167,13 +175,10 @@ where
     // --- Cursor exchange ---
     let mut cursor_entries = Vec::new();
     for space_id in &peer.shared_space_ids {
-        let devices = sqlx::query_file!(
-            "queries/sync/list_trusted_devices.sql",
-            space_id
-        )
-        .fetch_all(&db)
-        .await
-        .map_err(|e| AppError::Db(format!("session cursors query: {e}")))?;
+        let devices = sqlx::query_file!("queries/sync/list_trusted_devices.sql", space_id)
+            .fetch_all(&db)
+            .await
+            .map_err(|e| AppError::Db(format!("session cursors query: {e}")))?;
 
         for d in devices {
             if d.device_id != local_device_id {
@@ -219,13 +224,10 @@ where
         .collect();
     for space_id in &peer.shared_space_ids {
         if !mentioned.contains(space_id.as_str()) {
-            let devices = sqlx::query_file!(
-                "queries/sync/list_trusted_devices.sql",
-                space_id
-            )
-            .fetch_all(&db)
-            .await
-            .map_err(|e| AppError::Db(format!("session fallback devices query: {e}")))?;
+            let devices = sqlx::query_file!("queries/sync/list_trusted_devices.sql", space_id)
+                .fetch_all(&db)
+                .await
+                .map_err(|e| AppError::Db(format!("session fallback devices query: {e}")))?;
 
             for d in devices {
                 if d.device_id != peer.device_id {
