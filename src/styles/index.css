@@ -129,6 +129,20 @@ body {
   animation: fade-in 0.22s ease both;
 }
 
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-slide-up {
+  animation: slide-up 0.25s var(--ease-spring) both;
+}
+
 /* Sonner close button SVG sizing */
 [data-close-button] svg {
   width: 20px;

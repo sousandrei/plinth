@@ -167,22 +167,14 @@ function Transactions(): React.JSX.Element {
             )}
 
             {!isError && (transactions.length > 0 || isLoading) && (
-              <>
-                <BulkActionBar
-                  selectedIds={selection.selectedIds}
-                  categories={categories}
-                  isDemoMode={isDemoMode}
-                  onClear={selection.clear}
-                />
-                <TransactionTable
-                  transactions={transactions}
-                  categories={categories}
-                  isLoading={isLoading}
-                  selectedIds={selection.selectedIds}
-                  onToggleRow={selection.toggle}
-                  onTogglePage={selection.toggleAll}
-                />
-              </>
+              <TransactionTable
+                transactions={transactions}
+                categories={categories}
+                isLoading={isLoading}
+                selectedIds={selection.selectedIds}
+                onToggleRow={selection.toggle}
+                onTogglePage={selection.toggleAll}
+              />
             )}
 
             {!isLoading && !isError && transactions.length === 0 && (
@@ -196,6 +188,13 @@ function Transactions(): React.JSX.Element {
 
       {/* Pagination */}
       <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
+
+      <BulkActionBar
+        selectedIds={selection.selectedIds}
+        categories={categories}
+        isDemoMode={isDemoMode}
+        onClear={selection.clear}
+      />
     </div>
   );
 }
