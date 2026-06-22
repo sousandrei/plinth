@@ -76,6 +76,15 @@ pub struct FinetuneProgress {
     pub val_accuracy: f32,
 }
 
+/// Emitted during the MiniLM encoder precompute pass that runs before the
+/// epoch loop. `total` is the number of approved samples; `current` grows
+/// in `batch_size` increments as each encoder batch completes.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EmbedProgress {
+    pub current: u32,
+    pub total: u32,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct FinetuneResult {
     pub version: u32,
@@ -302,9 +311,11 @@ pub async fn fine_tune(
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel::<FinetuneProgress>();
+    let (embed_tx, mut embed_rx) = mpsc::unbounded_channel::<EmbedProgress>();
 
     let save_path = weights_path(&dir, version);
     let classes_clone = classes.clone();
+    let total_samples_u32 = u32::try_from(samples.len()).unwrap_or(u32::MAX);
     let train_handle = tokio::task::spawn_blocking(move || -> Result<FinetuneResult, AppError> {
         let trainable = if from_scratch {
             TrainableClassifier::load_fresh(&app_data, classes_clone)?
@@ -317,12 +328,23 @@ pub async fn fine_tune(
         let num_classes = trainable.classes.len();
 
         // Pre-compute all MiniLM embeddings once — frozen encoder never
-        // runs again during the epoch loop.
+        // runs again during the epoch loop. Emit a progress event per
+        // batch so the UI can show long precompute passes on big datasets.
+        let _ = embed_tx.send(EmbedProgress {
+            current: 0,
+            total: total_samples_u32,
+        });
         let embeddings = precompute_embeddings(
             &trainable.encoder,
             &samples,
             training_config.batch_size,
             &trainable.device,
+            |embedded, _total| {
+                let _ = embed_tx.send(EmbedProgress {
+                    current: u32::try_from(embedded).unwrap_or(u32::MAX),
+                    total: total_samples_u32,
+                });
+            },
         )?;
 
         let mut last_result = None;
@@ -386,6 +408,9 @@ pub async fn fine_tune(
                 }
                 let _ = app.emit("training://progress", ());
             }
+            Some(embed) = embed_rx.recv() => {
+                let _ = app.emit("training://precompute", &embed);
+            }
             result = &mut train_handle => {
                 // Drain any remaining messages before breaking.
                 while let Ok(progress) = rx.try_recv() {
@@ -393,6 +418,9 @@ pub async fn fine_tune(
                         h.push(progress.clone());
                     }
                     let _ = app.emit("training://progress", ());
+                }
+                while let Ok(embed) = embed_rx.try_recv() {
+                    let _ = app.emit("training://precompute", &embed);
                 }
                 let result = result.map_err(|e| AppError::Internal(format!("training task: {e}")))??;
                 break result;

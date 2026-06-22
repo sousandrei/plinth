@@ -95,6 +95,7 @@ function TrainingPage(): React.JSX.Element {
               history={training.progress}
               totalEpochs={totalEpochs}
               isTraining={training.isTraining}
+              embedProgress={training.embedProgress}
             />
           ) : (
             <ModelDetail model={detailModel} />

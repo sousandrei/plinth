@@ -15,6 +15,7 @@ export function ModelDetail({
       history={model.epoch_history}
       totalEpochs={model.epochs}
       isTraining={false}
+      embedProgress={null}
     />
   );
 }

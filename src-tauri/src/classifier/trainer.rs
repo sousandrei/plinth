@@ -59,13 +59,22 @@ pub fn split_indices(num_samples: usize, train_ratio: f32) -> DataSplit {
 
 /// Run the frozen MiniLM encoder once over all samples before the epoch loop.
 /// Returns one [384] embedding tensor per sample, in sample order.
-pub fn precompute_embeddings(
+///
+/// `progress` is invoked after each encoder batch with the cumulative count
+/// of embedded samples and the total, so the caller can surface progress
+/// to the UI during long precompute passes.
+pub fn precompute_embeddings<F>(
     encoder: &MiniLmEncoder,
     samples: &[TransactionSample],
     batch_size: usize,
     device: &Device,
-) -> Result<Vec<Tensor>, AppError> {
+    mut progress: F,
+) -> Result<Vec<Tensor>, AppError>
+where
+    F: FnMut(usize, usize),
+{
     let mut embeddings: Vec<Tensor> = Vec::with_capacity(samples.len());
+    let total = samples.len();
 
     for chunk in samples.chunks(batch_size) {
         let batch_refs: Vec<&TransactionSample> = chunk.iter().collect();
@@ -81,6 +90,8 @@ pub fn precompute_embeddings(
                     .map_err(|e| AppError::Internal(format!("embedding row {i}: {e}")))?,
             );
         }
+
+        progress(embeddings.len(), total);
     }
 
     Ok(embeddings)

@@ -9,30 +9,39 @@ import {
   YAxis,
 } from 'recharts';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
-import type { FinetuneProgress } from '@/types';
+import type { EmbedProgress, FinetuneProgress } from '@/types';
 
 interface ProgressChartProps {
   history: FinetuneProgress[];
   totalEpochs: number;
   isTraining: boolean;
+  embedProgress: EmbedProgress | null;
 }
 
 export function ProgressChart({
   history,
   totalEpochs,
   isTraining,
+  embedProgress,
 }: ProgressChartProps): React.JSX.Element {
-  const meta = isTraining
-    ? `Epoch ${history.length} / ${totalEpochs}`
-    : history.length > 0
-      ? `${history.length} epochs`
-      : '';
+  const isEmbedding = embedProgress !== null && embedProgress.total > 0;
+  const meta = isEmbedding
+    ? `Embedding ${embedProgress.current} / ${embedProgress.total}`
+    : isTraining
+      ? `Epoch ${history.length} / ${totalEpochs}`
+      : history.length > 0
+        ? `${history.length} epochs`
+        : '';
 
   return (
     <Card>
       <CardHeader label="Training Progress" meta={meta} />
       <CardBody>
-        {history.length === 0 ? (
+        {isEmbedding ? (
+          <p className="text-xs font-mono text-muted-foreground py-8 text-center">
+            Pre-computing MiniLM embeddings before the epoch loop…
+          </p>
+        ) : history.length === 0 ? (
           <p className="text-xs font-mono text-muted-foreground py-8 text-center">
             {isTraining ? 'Starting…' : 'No training run yet'}
           </p>

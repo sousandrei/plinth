@@ -94,6 +94,11 @@ export interface FinetuneProgress {
   val_accuracy: number;
 }
 
+export interface EmbedProgress {
+  current: number;
+  total: number;
+}
+
 export interface FinetuneResult {
   version: number;
   epochs_completed: number;

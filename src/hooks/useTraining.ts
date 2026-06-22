@@ -15,6 +15,7 @@ import {
 import { getDemoModels } from '@/demo/generators';
 import { useDemoMode } from '@/hooks/useDemoMode';
 import type {
+  EmbedProgress,
   FinetuneConfig,
   FinetuneProgress,
   FinetuneResult,
@@ -28,6 +29,7 @@ const APPROVED_COUNT_KEY = ['approved-count'] as const;
 const SAMPLES_KEY_PREFIX = ['training-samples'] as const;
 const SAMPLES_KEY = (limit: number, version: number | null) =>
   ['training-samples', limit, version] as const;
+const EMBED_PROGRESS_KEY = ['training-precompute'] as const;
 
 const DEFAULT_CONFIG: FinetuneConfig = {
   epochs: 10,
@@ -44,6 +46,7 @@ export interface TrainingState {
   approvedCount: number;
   progress: FinetuneProgress[];
   result: FinetuneResult | null;
+  embedProgress: EmbedProgress | null;
 
   // Status
   isClassifierReady: boolean;
@@ -66,6 +69,9 @@ export function useTraining(
   const queryClient = useQueryClient();
   const { isDemoMode } = useDemoMode();
   const [isClassifierReady, setIsClassifierReady] = useState(false);
+  const [embedProgress, setEmbedProgress] = useState<EmbedProgress | null>(
+    null,
+  );
 
   // Check immediately in case the classifier finished loading before this
   // component mounted (event would have been missed).
@@ -98,8 +104,22 @@ export function useTraining(
       else unlisteners.push(fn);
     });
 
+    listen<EmbedProgress>('training://precompute', (event) => {
+      if (cancelled) return;
+      setEmbedProgress(event.payload);
+      queryClient.setQueryData(EMBED_PROGRESS_KEY, event.payload);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisteners.push(fn);
+    });
+
     listen<void>('training://done', () => {
-      if (!cancelled) queryClient.invalidateQueries({ queryKey: MODELS_KEY });
+      if (cancelled) {
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: MODELS_KEY });
+      setEmbedProgress(null);
+      queryClient.setQueryData(EMBED_PROGRESS_KEY, null);
     }).then((fn) => {
       if (cancelled) fn();
       else unlisteners.push(fn);
@@ -143,10 +163,14 @@ export function useTraining(
     mutationFn: (config: FinetuneConfig) => fineTune(config),
     onMutate: () => {
       queryClient.setQueryData(PROGRESS_KEY, []);
+      setEmbedProgress(null);
+      queryClient.setQueryData(EMBED_PROGRESS_KEY, null);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: MODELS_KEY });
       queryClient.invalidateQueries({ queryKey: PROGRESS_KEY });
+      setEmbedProgress(null);
+      queryClient.setQueryData(EMBED_PROGRESS_KEY, null);
     },
   });
 
@@ -216,6 +240,7 @@ export function useTraining(
     approvedCount: approvedCountQuery.data ?? 0,
     progress: progressQuery.data,
     result: trainMutation.data ?? null,
+    embedProgress,
     isClassifierReady,
     isLoadingModels: modelsQuery.isLoading,
     isLoadingSamples: samplesQuery.isLoading || !isClassifierReady,
