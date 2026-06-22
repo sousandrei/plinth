@@ -9,7 +9,7 @@ interface TransactionTableProps {
   isLoading: boolean;
   selectedIds: string[];
   onToggleRow: (id: string) => void;
-  onTogglePage: (ids: string[]) => void;
+  onTogglePage: (ids: string[], selectAll: boolean) => void;
 }
 
 const COLS = [
@@ -57,7 +57,7 @@ export const TransactionTable = ({
                   <Checkbox
                     checked={allSelected}
                     indeterminate={someSelected}
-                    onCheckedChange={() => onTogglePage(pageIds)}
+                    onCheckedChange={() => onTogglePage(pageIds, !allSelected)}
                     label="Select all on page"
                   />
                 ) : (

@@ -1,5 +1,4 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
 
 import {
   bulkApproveTransactions,
@@ -23,7 +22,6 @@ export const BulkActionBar = ({
   onClear,
 }: BulkActionBarProps): React.JSX.Element | null => {
   const queryClient = useQueryClient();
-  const [category, setCategory] = useState<string | null>(null);
   const count = selectedIds.length;
 
   const invalidate = (): void => {
@@ -80,8 +78,6 @@ export const BulkActionBar = ({
         : bulkCategorizeTransactions(selectedIds, cat).then(() => undefined),
     onSuccess: () => {
       invalidate();
-      onClear();
-      setCategory(null);
     },
   });
 
@@ -113,27 +109,25 @@ export const BulkActionBar = ({
       <div className="h-5 w-px bg-border-muted" />
 
       <Select
-        value={category ?? undefined}
-        onValueChange={(val) => setCategory(val ?? null)}
+        value={undefined}
+        onValueChange={(val) => {
+          if (categorizeMutation.isPending) return;
+          categorizeMutation.mutate(
+            val === undefined || val === '__clear__' ? null : val,
+          );
+        }}
         options={[
-          { value: '__clear__', label: 'UNCATEGORIZED' },
+          { value: '__clear__', label: 'NONE' },
           ...categories.map((cat) => ({
             value: cat,
             label: cat.toUpperCase(),
           })),
         ]}
-        placeholder="Set category…"
+        placeholder={
+          categorizeMutation.isPending ? 'Applying…' : 'Set category…'
+        }
         className="h-8 py-0 px-3 text-xs font-mono uppercase tracking-wider w-44 bg-canvas border border-border-muted"
       />
-      <Button
-        variant="primary"
-        disabled={categorizeMutation.isPending || category === null}
-        onClick={() =>
-          categorizeMutation.mutate(category === '__clear__' ? null : category)
-        }
-      >
-        Apply
-      </Button>
 
       <div className="flex-1" />
 

@@ -35,7 +35,7 @@ export const TransactionRow = ({
   const queryClient = useQueryClient();
 
   const categoryMutation = useMutation({
-    mutationFn: ({ category }: { category: string }) =>
+    mutationFn: ({ category }: { category: string | null }) =>
       updateTransaction(t.id, t.approved, t.note, category),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
@@ -51,8 +51,9 @@ export const TransactionRow = ({
     },
   });
 
-  const handleCategoryChange = (val: string) => {
-    categoryMutation.mutate({ category: val });
+  const handleCategoryChange = (val: string | null | undefined) => {
+    const category = !val || val === '__clear__' ? null : val;
+    categoryMutation.mutate({ category });
   };
 
   const rowBg = !t.approved
@@ -104,15 +105,16 @@ export const TransactionRow = ({
       {/* Category Dropdown */}
       <td className="px-6 py-2 whitespace-nowrap w-[24%] min-w-[160px]">
         <Select
-          value={t.category || 'Uncategorized'}
-          onValueChange={(val) => {
-            if (val) handleCategoryChange(val);
-          }}
+          value={t.category ?? '__clear__'}
+          onValueChange={(val) => handleCategoryChange(val)}
           disabled={categoryMutation.isPending}
-          options={categories.map((cat) => ({
-            value: cat,
-            label: cat.toUpperCase(),
-          }))}
+          options={[
+            { value: '__clear__', label: 'NONE' },
+            ...categories.map((cat) => ({
+              value: cat,
+              label: cat.toUpperCase(),
+            })),
+          ]}
           style={t.category ? categoryChipStyle(t.category) : undefined}
           className={cn(
             'h-7 py-0 px-2 text-[10px] font-mono uppercase tracking-widest bg-transparent border shadow-none hover:bg-muted/60 cursor-pointer outline-none transition-all duration-100',
