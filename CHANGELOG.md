@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.3.0](https://github.com/sousandrei/plinth/compare/plinth-v1.2.1...plinth-v1.3.0) (2026-06-22)
+
+
+### Features
+
+* add embedding progress on pre training step ([139b399](https://github.com/sousandrei/plinth/commit/139b3991d793ea3e78ec353603eb68bebe1f7258))
+* auto refresh pages on sync data ([3a75c19](https://github.com/sousandrei/plinth/commit/3a75c19b8b14e3e050ff02afe1cdb765795908b5))
+* better bulk actions ([058c37e](https://github.com/sousandrei/plinth/commit/058c37e7adf6e995fcab5c0923225b6c32f43bd6))
+* better file import ux ([bc104f8](https://github.com/sousandrei/plinth/commit/bc104f8e65f09b991aac10bbb282108dd5331bf5))
+* better streaming based pairing for large spaces ([18ab290](https://github.com/sousandrei/plinth/commit/18ab2905eb665228c76607d2e9467a5cde04f1be))
+* better transaction categorization with ML predictions on page ([2494799](https://github.com/sousandrei/plinth/commit/2494799aa7daec1abb2e3fb94ed2eddc4cfdd5d8))
+* delete account and all related data flow ([9feef95](https://github.com/sousandrei/plinth/commit/9feef950af65629a33bba2acfc857718e96e95e2))
+* force sync with all peers from Spaces page ([c66a49e](https://github.com/sousandrei/plinth/commit/c66a49e67b6cd7d42944a79138f3133d95ad291c))
+* full snapshot syncronization ([3c9eec6](https://github.com/sousandrei/plinth/commit/3c9eec6e46a1838b096f0a533b218788ebaba30d))
+* full text search with trigram tokenizer and all fields ([400fc55](https://github.com/sousandrei/plinth/commit/400fc55bcf7f122a417dfb10c0af2613fb905ac4))
+* online indicator for local network devices ([2e5a662](https://github.com/sousandrei/plinth/commit/2e5a662966d8160de2f5a6379e960c5b628ac9ba))
+* refine online indicator and mDNS peer tracking ([7e419d7](https://github.com/sousandrei/plinth/commit/7e419d71128307c2c1e10f209a232855d179776f))
+
+
+### Bug Fixes
+
+* bulk edit category select z-index issue ([fb983fc](https://github.com/sousandrei/plinth/commit/fb983fc19f8e7903b0d65ce80f191200b6939a98))
+* conflict on upsert trusted device query ([fa01e22](https://github.com/sousandrei/plinth/commit/fa01e228c3553ee432c0aee3e77b758c7c5c2bef))
+* disable auto-correct and auto-capitalize for search input ([48c9c59](https://github.com/sousandrei/plinth/commit/48c9c592ee6a7681dd9c78f2885b3112c527edd3))
+* keep spaces on seb parsers ([e5d2e75](https://github.com/sousandrei/plinth/commit/e5d2e75722eab09bd87b38ac94edab294948a8f8))
+* polish transaction selection logic and category handling ([db4a07b](https://github.com/sousandrei/plinth/commit/db4a07b2e87fcff3fc88b184de65915ee79659bb))
+* remove md5 from account id in SEB and Avanza parsers ([7263b81](https://github.com/sousandrei/plinth/commit/7263b81f06ed69ba55e32192ba8b13c967fec62d))
+
 ## [1.2.1](https://github.com/sousandrei/plinth/compare/plinth-v1.2.0...plinth-v1.2.1) (2026-06-22)
 
 
