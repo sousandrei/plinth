@@ -40,6 +40,9 @@ export const TransactionFilters = ({
         onChange={(e) => set({ search: e.target.value })}
         placeholder="Search…"
         className={cn(inputBase, 'w-52')}
+        autoCorrect="off"
+        autoCapitalize="none"
+        spellCheck={false}
       />
 
       {/* Approved toggle */}
