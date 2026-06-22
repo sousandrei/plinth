@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { updateAccount } from '@/api/accounts';
+import { deleteAccount, updateAccount } from '@/api/accounts';
 import { Button } from '@/components/ui/Button';
 import {
   Dialog,
@@ -51,14 +51,32 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(account.name);
   const [selectedColor, setSelectedColor] = useState(account.color);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
 
-  // Reset draft & color when modal opens
+  // Reset draft, color & delete-confirm state when modal opens/closes
   useEffect(() => {
     if (open) {
       setDraft(account.name);
       setSelectedColor(account.color);
+      setDeleteConfirm(false);
     }
   }, [open, account.name, account.color]);
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteAccount(account.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['account_summaries'] });
+      setOpen(false);
+    },
+    onError: (err: unknown) => {
+      toast.error(
+        'Delete failed',
+        err instanceof Error ? err.message : String(err),
+      );
+      setDeleteConfirm(false);
+    },
+  });
 
   const mutation = useMutation({
     mutationFn: ({ name, color }: { name: string; color: string }) =>
@@ -257,6 +275,44 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
                 </div>
               </div>
 
+              {/* Danger Zone */}
+              <div className="pt-3 border-t border-border-subtle">
+                {!deleteConfirm ? (
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirm(true)}
+                    disabled={mutation.isPending || deleteMutation.isPending}
+                    className="text-[11px] font-mono uppercase tracking-wider text-red-500 hover:text-red-400 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    Delete Account
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <span className="text-[11px] font-mono text-muted-foreground">
+                      This will delete all transactions and history.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirm(false)}
+                      disabled={deleteMutation.isPending}
+                      className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteMutation.mutate()}
+                      disabled={deleteMutation.isPending}
+                      className="text-[11px] font-mono uppercase tracking-wider text-red-500 border border-red-500/40 px-2 py-1 hover:bg-red-500/10 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    >
+                      {deleteMutation.isPending
+                        ? 'Deleting...'
+                        : 'Confirm Delete'}
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {/* Actions Footer */}
               <div className="flex justify-end gap-2 pt-3 border-t border-border-subtle">
                 <DialogClose
@@ -274,6 +330,7 @@ export const AccountRow = ({ account }: AccountRowProps): React.JSX.Element => {
                   onClick={commit}
                   disabled={
                     mutation.isPending ||
+                    deleteMutation.isPending ||
                     !draft.trim() ||
                     (draft.trim() === account.name &&
                       selectedColor === account.color)

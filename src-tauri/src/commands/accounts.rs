@@ -72,3 +72,55 @@ pub async fn update_account(
 
     Ok(account)
 }
+
+#[tauri::command]
+pub async fn delete_account(
+    id: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+) -> Result<(), AppError> {
+    let data = session.require()?;
+
+    // Verify the account belongs to the active space before touching anything.
+    let exists = sqlx::query_file_as!(Account, "queries/accounts/get_account.sql", id)
+        .fetch_optional(db.inner())
+        .await
+        .map_err(|e| AppError::Db(format!("delete_account fetch: {e}")))?;
+
+    let account = exists.ok_or_else(|| AppError::NotFound(format!("account {id}")))?;
+    if account.space_id != data.space_id {
+        return Err(AppError::NotFound(format!("account {id}")));
+    }
+
+    // The change_log triggers on transactions and account_summaries resolve
+    // space_id by looking up accounts.id at trigger-fire time.  If we let the
+    // FK cascade do the deletions the account row is already gone, so the
+    // subquery returns NULL and violates the NOT NULL constraint.  Delete
+    // children first (while the parent row still exists), then the account.
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("delete_account begin tx: {e}")))?;
+
+    sqlx::query_file!("queries/accounts/delete_account_transactions.sql", id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_account_transactions: {e}")))?;
+
+    sqlx::query_file!("queries/accounts/delete_account_summaries.sql", id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_account_summaries: {e}")))?;
+
+    sqlx::query_file!("queries/accounts/delete_account.sql", id, data.space_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_account: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("delete_account commit: {e}")))?;
+
+    Ok(())
+}

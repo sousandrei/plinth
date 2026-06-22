@@ -201,6 +201,7 @@ pub fn run() {
             commands::spaces::update_member_role,
             commands::accounts::list_accounts,
             commands::accounts::update_account,
+            commands::accounts::delete_account,
             commands::transactions::list_transactions,
             commands::transactions::update_transaction,
             commands::transactions::bulk_approve_transactions,

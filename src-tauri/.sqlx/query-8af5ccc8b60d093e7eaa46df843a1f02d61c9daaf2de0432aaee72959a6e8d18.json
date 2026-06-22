@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM accounts\nWHERE id = ?1\n  AND space_id = ?2;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "8af5ccc8b60d093e7eaa46df843a1f02d61c9daaf2de0432aaee72959a6e8d18"
+}
