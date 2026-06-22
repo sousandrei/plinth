@@ -1,3 +1,4 @@
+use serde::Serialize;
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -11,6 +12,16 @@ use crate::sync::wire::{
     PROTOCOL_VERSION,
 };
 use crate::sync::{apply, changelog, cursors, model_sync};
+
+/// Payload for `sync://applied`. Emitted after every successful
+/// `Batch` or `Snapshot` apply so the frontend can invalidate its
+/// query cache and surface a "synced just now" indicator.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncAppliedPayload {
+    pub space_id: String,
+    pub rows: u64,
+    pub snapshot: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -541,9 +552,17 @@ where
                 snapshot_buf.push(chunk);
             }
             Frame::SnapshotEnd => {
-                if let (Some(_space_id), Some(host)) = (snapshot_space.take(), snapshot_host.take())
+                if let (Some(space_id), Some(host)) = (snapshot_space.take(), snapshot_host.take())
                 {
                     apply_snapshot_stream(&db, host, &snapshot_buf).await?;
+                    let _ = app.emit(
+                        "sync://applied",
+                        SyncAppliedPayload {
+                            space_id,
+                            rows: snapshot_buf.len() as u64,
+                            snapshot: true,
+                        },
+                    );
                 }
                 snapshot_buf.clear();
             }
@@ -681,6 +700,7 @@ async fn apply_batch(
     }
 
     let device_id_for_closure = batch_device_id.clone();
+    let rows_count = batch.rows.len() as u64;
     run_as_device(db, &batch_device_id, move |tx| -> GuardedFuture<'_, ()> {
         let device_id_inner = device_id_for_closure.clone();
         Box::pin(async move {
@@ -697,6 +717,15 @@ async fn apply_batch(
     if is_space_deletion {
         let _ = app.emit("sync://space-deleted", &space_id);
     }
+
+    let _ = app.emit(
+        "sync://applied",
+        SyncAppliedPayload {
+            space_id: space_id.clone(),
+            rows: rows_count,
+            snapshot: false,
+        },
+    );
 
     Ok(())
 }

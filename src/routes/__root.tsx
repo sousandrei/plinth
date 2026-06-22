@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { listen } from '@tauri-apps/api/event';
 import { check } from '@tauri-apps/plugin-updater';
@@ -15,10 +16,12 @@ export const Route = createRootRoute({
 
 function RootLayout(): React.JSX.Element {
   const { user, spaceId, setSpaceId } = useAuth();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     let unlistenEvicted: (() => void) | null = null;
     let unlistenDeleted: (() => void) | null = null;
+    let unlistenApplied: (() => void) | null = null;
 
     listen<string>('sync://evicted', (event) => {
       const evictedSpaceId = event.payload;
@@ -40,11 +43,32 @@ function RootLayout(): React.JSX.Element {
       unlistenDeleted = fn;
     });
 
+    // Emitted by the Rust sync session after every successful Batch
+    // or Snapshot apply. Invalidate every cache key the UI reads so
+    // pages refresh without the user having to reload.
+    listen<{ space_id: string; rows: number; snapshot: boolean }>(
+      'sync://applied',
+      () => {
+        queryClient.invalidateQueries({ queryKey: ['transactions'] });
+        queryClient.invalidateQueries({ queryKey: ['accounts'] });
+        queryClient.invalidateQueries({ queryKey: ['aggregations'] });
+        queryClient.invalidateQueries({ queryKey: ['categories'] });
+        queryClient.invalidateQueries({ queryKey: ['account-summaries'] });
+        queryClient.invalidateQueries({ queryKey: ['models'] });
+        queryClient.invalidateQueries({ queryKey: ['training'] });
+        queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
+        queryClient.invalidateQueries({ queryKey: ['trusted-devices'] });
+      },
+    ).then((fn) => {
+      unlistenApplied = fn;
+    });
+
     return () => {
       unlistenEvicted?.();
       unlistenDeleted?.();
+      unlistenApplied?.();
     };
-  }, [spaceId, setSpaceId]);
+  }, [spaceId, setSpaceId, queryClient]);
 
   useEffect(() => {
     void (async () => {
