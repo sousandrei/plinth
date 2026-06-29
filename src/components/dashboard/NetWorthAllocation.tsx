@@ -1,6 +1,7 @@
 import { Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { Card, CardBody } from '@/components/ui/Card';
 import type { AllocationPoint } from '@/hooks/dashboard/types';
+import { fmtMajor } from '@/lib/format';
 import type { Account } from '@/types';
 
 interface Props {
@@ -8,13 +9,6 @@ interface Props {
   accounts: Account[];
   currency?: string;
 }
-
-const fmt = (value: number, currency: string): string =>
-  new Intl.NumberFormat('sv-SE', {
-    style: 'currency',
-    currency,
-    maximumFractionDigits: 0,
-  }).format(value);
 
 const fmtPct = (value: number): string =>
   new Intl.NumberFormat('sv-SE', {
@@ -61,7 +55,7 @@ export const NetWorthAllocation = ({
                   formatter={(v, name) => {
                     const slice = slices.find((s) => s.account.id === name);
                     return [
-                      fmt(Number(v), currency),
+                      fmtMajor(Number(v), currency),
                       slice?.account.name ?? String(name),
                     ];
                   }}
@@ -106,7 +100,7 @@ export const NetWorthAllocation = ({
                     {slice.account.name}
                   </p>
                   <p className="text-[10px] font-mono text-muted-foreground mt-0.5">
-                    {fmt(slice.value, currency)}
+                    {fmtMajor(slice.value, currency)}
                     <span className="ml-1 text-muted-foreground/60">
                       {fmtPct(slice.value / total)}
                     </span>

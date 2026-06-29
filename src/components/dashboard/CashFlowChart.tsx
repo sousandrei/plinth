@@ -6,6 +6,7 @@ import type {
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import { Card, CardBody } from '@/components/ui/Card';
 import type { CashFlowPoint } from '@/hooks/dashboard/types';
+import { fmtMajor, fmtMonth } from '@/lib/format';
 
 interface Props {
   series: CashFlowPoint[];
@@ -14,25 +15,6 @@ interface Props {
 
 const COLOR_POSITIVE = 'oklch(48% 0.19 145)';
 const COLOR_NEGATIVE = 'oklch(52% 0.23 22)';
-
-const fmt = (value: number, currency: string): string =>
-  new Intl.NumberFormat('sv-SE', {
-    style: 'currency',
-    currency,
-    maximumFractionDigits: 0,
-  }).format(value);
-
-const fmtMonth = (ym: string): string => {
-  const parts = ym.split('-');
-  if (parts.length < 2) return ym;
-  const year = Number(parts[0]);
-  const month = Number(parts[1]);
-  if (Number.isNaN(year) || Number.isNaN(month)) return ym;
-  return new Date(year, month - 1).toLocaleString(undefined, {
-    month: 'short',
-    year: '2-digit',
-  });
-};
 
 const CashFlowTooltip = ({
   active,
@@ -61,7 +43,9 @@ const CashFlowTooltip = ({
           style={{ background: color }}
         />
         <span className="text-muted-foreground flex-1">Net</span>
-        <span className="text-foreground ml-3">{fmt(value, currency)}</span>
+        <span className="text-foreground ml-3">
+          {fmtMajor(value, currency)}
+        </span>
       </div>
     </div>
   );
@@ -85,7 +69,7 @@ export const CashFlowChart = ({
 
           <div className="mt-2">
             <span className="text-[2.25rem] font-semibold tracking-tight text-foreground leading-none tabular-nums">
-              {latest ? fmt(latest.net, currency) : '—'}
+              {latest ? fmtMajor(latest.net, currency) : '—'}
             </span>
           </div>
 

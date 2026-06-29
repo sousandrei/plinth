@@ -13,19 +13,13 @@ import {
 } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { toast } from '@/components/ui/Toast';
+import { fmtMinor } from '@/lib/format';
 import type { Account, AccountSummary } from '@/types';
 
 interface Props {
   summary: AccountSummary;
   account: Account | undefined;
 }
-
-const fmt = (minor: number, currency: string): string =>
-  new Intl.NumberFormat('sv-SE', {
-    style: 'currency',
-    currency,
-    maximumFractionDigits: 0,
-  }).format(minor / 100);
 
 const fmtMonth = (ym: string): string => {
   const parts = ym.split('-');
@@ -106,7 +100,7 @@ export const AccountSummaryRow = ({
         {account?.account_type ?? '—'}
       </td>
       <td className="px-6 py-3 text-right font-mono text-sm font-semibold tabular-nums text-foreground">
-        {fmt(summary.balance, account?.currency ?? 'SEK')}
+        {fmtMinor(summary.balance, account?.currency ?? 'SEK')}
       </td>
       <td className="px-6 py-3 text-right">
         <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">

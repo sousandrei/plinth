@@ -13,31 +13,13 @@ import type {
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import { Card, CardBody } from '@/components/ui/Card';
 import type { CategoryMeta, SpendingPoint } from '@/hooks/dashboard/types';
+import { fmtMajor, fmtMonth } from '@/lib/format';
 
 interface Props {
   series: SpendingPoint[];
   categories: CategoryMeta[];
   currency?: string;
 }
-
-const fmt = (value: number, currency: string): string =>
-  new Intl.NumberFormat('sv-SE', {
-    style: 'currency',
-    currency,
-    maximumFractionDigits: 0,
-  }).format(value);
-
-const fmtMonth = (ym: string): string => {
-  const parts = ym.split('-');
-  if (parts.length < 2) return ym;
-  const year = Number(parts[0]);
-  const month = Number(parts[1]);
-  if (Number.isNaN(year) || Number.isNaN(month)) return ym;
-  return new Date(year, month - 1).toLocaleString(undefined, {
-    month: 'short',
-    year: '2-digit',
-  });
-};
 
 const SpendingTooltip = ({
   active,
@@ -69,7 +51,7 @@ const SpendingTooltip = ({
             />
             <span className="text-muted-foreground flex-1">{entry.name}</span>
             <span className="text-foreground ml-3">
-              {fmt(Number(entry.value), currency)}
+              {fmtMajor(Number(entry.value), currency)}
             </span>
           </div>
         );

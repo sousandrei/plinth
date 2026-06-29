@@ -1,6 +1,12 @@
 import { Line, LineChart, ResponsiveContainer, Tooltip } from 'recharts';
+import type {
+  NameType,
+  ValueType,
+} from 'recharts/types/component/DefaultTooltipContent';
+import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import { Card, CardBody } from '@/components/ui/Card';
 import type { AccountSeries } from '@/hooks/dashboard/types';
+import { fmtMajor, fmtMonth } from '@/lib/format';
 
 interface Props {
   accountSeries: AccountSeries[];
@@ -16,29 +22,41 @@ const TYPE_LABELS: Record<string, string> = {
   other: 'Other',
 };
 
-const fmt = (value: number, currency: string): string =>
-  new Intl.NumberFormat('sv-SE', {
-    style: 'currency',
-    currency,
-    maximumFractionDigits: 0,
-  }).format(value);
-
-const fmtMonth = (ym: string): string => {
-  const parts = ym.split('-');
-  if (parts.length < 2) return ym;
-  const year = Number(parts[0]);
-  const month = Number(parts[1]);
-  if (Number.isNaN(year) || Number.isNaN(month)) return ym;
-  return new Date(year, month - 1).toLocaleString(undefined, {
-    month: 'short',
-    year: '2-digit',
-  });
-};
-
 interface SparklineProps {
   history: { month: string; value: number }[];
   currency: string;
 }
+
+const SparklineTooltip = ({
+  active,
+  payload,
+  currency,
+}: TooltipContentProps<ValueType, NameType> & {
+  currency: string;
+}): React.JSX.Element | null => {
+  if (!active || !payload?.length) return null;
+
+  const entry = payload[0];
+  const month = entry?.payload?.month;
+  const value = Number(entry?.value ?? 0);
+
+  return (
+    <div className="bg-canvas-raised border border-border-muted text-[11px] font-mono px-2.5 py-2">
+      {month && (
+        <p className="text-muted-foreground mb-1.5 font-medium">
+          {fmtMonth(String(month))}
+        </p>
+      )}
+      <div className="flex items-center gap-1.5">
+        <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-[oklch(50%_0.25_264)]" />
+        <span className="text-muted-foreground flex-1">Balance</span>
+        <span className="text-foreground ml-3">
+          {fmtMajor(value, currency)}
+        </span>
+      </div>
+    </div>
+  );
+};
 
 const Sparkline = ({
   history,
@@ -47,20 +65,9 @@ const Sparkline = ({
   <ResponsiveContainer width="100%" height="100%">
     <LineChart data={history} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
       <Tooltip
-        formatter={(v) => [fmt(Number(v), currency), 'Balance']}
-        labelFormatter={(_, payload) => {
-          const month = payload?.[0]?.payload?.month;
-          return month ? fmtMonth(String(month)) : '';
-        }}
-        contentStyle={{
-          background: 'oklch(99.5% 0.002 80)',
-          border: '1px solid oklch(84% 0.005 240)',
-          borderRadius: 0,
-          fontSize: 11,
-          fontFamily: 'var(--font-mono)',
-        }}
-        itemStyle={{ color: 'oklch(8% 0.005 264)' }}
-        labelStyle={{ color: 'oklch(44% 0.006 264)', marginBottom: 4 }}
+        content={(props) => <SparklineTooltip {...props} currency={currency} />}
+        cursor={false}
+        wrapperStyle={{ zIndex: 10 }}
       />
       <Line
         type="monotone"
@@ -116,7 +123,7 @@ export const AccountsTable = ({
             {/* Balance — fixed width, right-aligned */}
             <div className="w-32 shrink-0 text-right">
               <p className="text-sm font-mono font-semibold tabular-nums text-foreground">
-                {fmt(latestBalance, currency)}
+                {fmtMajor(latestBalance, currency)}
               </p>
             </div>
           </div>
