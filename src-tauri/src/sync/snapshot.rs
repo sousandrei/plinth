@@ -85,6 +85,19 @@ pub struct WireSpaceSetting {
     pub value: String,
 }
 
+/// One row of the mesh-wide `model_versions` registry. Joins the
+/// snapshot so the joiner has the canonical MD5s immediately, then
+/// receives the file bytes via `Frame::ModelData` in the model-sync
+/// phase that follows the snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireModelVersion {
+    pub space_id: String,
+    pub version: i64,
+    pub weights_md5: String,
+    pub card_md5: String,
+    pub trained_at: String,
+}
+
 /// Full snapshot of one space: identity, members, users, every synced
 /// table's rows, and the host's device identity (for `trusted_devices`).
 /// Constructed via `collect_snapshot`, applied via `apply_snapshot`.
@@ -98,6 +111,7 @@ pub struct SpaceSnapshot {
     pub transactions: Vec<WireTransaction>,
     pub account_summaries: Vec<WireAccountSummary>,
     pub space_settings: Vec<WireSpaceSetting>,
+    pub model_versions: Vec<WireModelVersion>,
     pub host_device_id: String,
     pub host_device_name: String,
     pub host_cert_pem: String,
@@ -117,6 +131,7 @@ pub enum SnapshotFrame {
     Transactions(Vec<WireTransaction>),
     AccountSummaries(Vec<WireAccountSummary>),
     SpaceSettings(Vec<WireSpaceSetting>),
+    ModelVersions(Vec<WireModelVersion>),
     End,
 }
 
@@ -229,6 +244,15 @@ pub async fn collect_snapshot(
         }
     }
 
+    let model_versions: Vec<WireModelVersion> = sqlx::query_file_as!(
+        WireModelVersion,
+        "queries/snapshots/list_model_versions.sql",
+        space_id
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot model_versions: {e}")))?;
+
     let _ = app; // reserved for future "include model files in snapshot"
 
     Ok(SpaceSnapshot {
@@ -240,6 +264,7 @@ pub async fn collect_snapshot(
         transactions,
         account_summaries,
         space_settings,
+        model_versions,
         host_device_id,
         host_device_name,
         host_cert_pem,
@@ -296,6 +321,11 @@ pub async fn apply_snapshot_frame(
         SnapshotFrame::SpaceSettings(chunk) => {
             for s in chunk {
                 upsert_space_setting(tx, s).await?;
+            }
+        }
+        SnapshotFrame::ModelVersions(chunk) => {
+            for m in chunk {
+                upsert_model_version(tx, m).await?;
             }
         }
         SnapshotFrame::End => {
@@ -487,5 +517,23 @@ async fn upsert_space_setting(
     .execute(&mut **tx)
     .await
     .map_err(|e| AppError::Db(format!("upsert_space_setting: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_model_version(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    m: &WireModelVersion,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_model_version.sql",
+        m.space_id,
+        m.version,
+        m.weights_md5,
+        m.card_md5,
+        m.trained_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_model_version snapshot: {e}")))?;
     Ok(())
 }

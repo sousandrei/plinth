@@ -85,35 +85,40 @@ pub struct Ping {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pong {}
 
-/// One entry in a `ModelVersionSummary` — the sender's active trained
-/// model version for one shared space. Version 0 means no finetuned
-/// model exists (only the shipped base model). The two MD5 fields let
-/// peers detect divergence: same version but different content
-/// (corruption, partial transfer, or two devices training the same
-/// version number independently). Empty string means "unknown" — the
-/// sender chose not to include the hash for this entry.
+/// One entry in a `ModelVersionSummary` — a peer's view of one shared
+/// space's model state. The per-version MD5s live in the mesh-wide
+/// `model_versions` table (synced via change_log) instead of being
+/// shipped on the wire; the summary just tells the peer which
+/// versions this device has files for locally so the receiver knows
+/// what to push.
+///
+/// `active_version` is the version currently selected as the
+/// prediction source (0 = shipped base model, no finetune).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelVersionEntry {
     pub space_id: String,
-    pub version: u32,
-    pub weights_md5: String,
-    pub card_md5: String,
+    pub active_version: u32,
+    /// Versions this peer has files for locally. Subset of the
+    /// `model_versions` registry for this space (rows propagated via
+    /// change_log), filtered to ones whose on-disk bytes are present
+    /// (recv_half hasn't arrived yet for the rest).
+    pub versions: Vec<u32>,
 }
 
 /// Sent by each side after all `Batch` frames are exhausted. Lets both
-/// peers compare their active model versions and decide who needs to
-/// receive a `ModelData` transfer. One entry per shared space.
+/// peers compare which model versions each side has locally and decide
+/// which `ModelData` transfers are needed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelVersionSummary {
     pub entries: Vec<ModelVersionEntry>,
 }
 
 /// Carries the binary weights and JSON card for one model version.
-/// Transferred by the peer with the higher version immediately after
-/// both `ModelVersionSummary` frames have been exchanged. The receiver
-/// writes the files atomically (temp-file + rename), verifies the
-/// MD5s in this frame against the received bytes, and updates its
-/// `space_settings` active model version. See data/PLAN.md §8.
+/// Transferred for every version the peer is missing after both
+/// `ModelVersionSummary` frames have been exchanged — no version-only
+/// gating. The receiver writes the files atomically (temp-file +
+/// rename) and verifies the MD5s in this frame against the received
+/// bytes; the canonical mesh-wide MD5 lives in `model_versions`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelData {
     pub space_id: String,

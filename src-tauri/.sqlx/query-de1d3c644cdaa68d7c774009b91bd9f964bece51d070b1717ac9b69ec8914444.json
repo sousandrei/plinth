@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- LWW upsert for `model_versions`. The `model_versions` table is the\n-- mesh-wide registry of trained-model metadata + MD5s; the on-disk\n-- weights and card files are transferred separately via `ModelData`\n-- frames, so this upsert only touches the DB row. The model-sync GC\n-- step cleans up orphan files whose `model_versions` row was deleted.\nINSERT INTO model_versions (space_id, version, weights_md5, card_md5, trained_at)\nVALUES (?1, ?2, ?3, ?4, ?5)\nON CONFLICT (space_id, version) DO UPDATE SET\n    weights_md5 = excluded.weights_md5,\n    card_md5    = excluded.card_md5,\n    trained_at  = excluded.trained_at;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "de1d3c644cdaa68d7c774009b91bd9f964bece51d070b1717ac9b69ec8914444"
+}

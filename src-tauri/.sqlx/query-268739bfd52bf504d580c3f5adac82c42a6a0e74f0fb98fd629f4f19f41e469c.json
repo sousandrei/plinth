@@ -1,0 +1,69 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Snapshot: list every `model_versions` row for this space. The\n-- joiner receives the canonical MD5s up front, then the file bytes\n-- over `Frame::ModelData` in the model-sync phase that follows the\n-- snapshot stream. Ascending order keeps the wire stream deterministic.\nSELECT space_id, CAST(version AS INTEGER) AS version, weights_md5, card_md5, trained_at\nFROM model_versions\nWHERE space_id = ?1\nORDER BY version ASC;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "version",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "weights_md5",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "weights_md5"
+          }
+        }
+      },
+      {
+        "name": "card_md5",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "card_md5"
+          }
+        }
+      },
+      {
+        "name": "trained_at",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "trained_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "268739bfd52bf504d580c3f5adac82c42a6a0e74f0fb98fd629f4f19f41e469c"
+}

@@ -106,6 +106,20 @@ pub struct TrustedDevicePayload {
     pub paired_at: String,
 }
 
+/// One row of the `model_versions` registry — the mesh-wide record of
+/// which trained-model versions exist, authored by whom, and their
+/// MD5s for transfer integrity. The on-disk weights + card files are
+/// transferred separately via `Frame::ModelData`; this payload only
+/// describes the row. See `data/PLAN.md §Phase 21`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelVersionPayload {
+    pub space_id: String,
+    pub version: u32,
+    pub weights_md5: String,
+    pub card_md5: String,
+    pub trained_at: String,
+}
+
 /// Tagged union of all synced table payloads. The discriminant is the
 /// SQLite table name from `change_log.table_name` — `from_json` matches
 /// on it and `as_table_name` is the inverse, useful for diagnostics.
@@ -122,6 +136,7 @@ pub enum TablePayload {
     AccountSummary(AccountSummaryPayload),
     SpaceSetting(SpaceSettingPayload),
     TrustedDevice(TrustedDevicePayload),
+    ModelVersion(ModelVersionPayload),
 }
 
 impl TablePayload {
@@ -137,6 +152,7 @@ impl TablePayload {
             Self::AccountSummary(_) => "account_summaries",
             Self::SpaceSetting(_) => "space_settings",
             Self::TrustedDevice(_) => "trusted_devices",
+            Self::ModelVersion(_) => "model_versions",
         }
     }
 }
@@ -165,6 +181,7 @@ pub fn from_json(table_name: &str, json: &str) -> Result<TablePayload, PayloadEr
         "account_summaries" => decode!(AccountSummary, AccountSummaryPayload),
         "space_settings" => decode!(SpaceSetting, SpaceSettingPayload),
         "trusted_devices" => decode!(TrustedDevice, TrustedDevicePayload),
+        "model_versions" => decode!(ModelVersion, ModelVersionPayload),
         other => Err(PayloadError::UnknownTable(other.to_string())),
     }
 }

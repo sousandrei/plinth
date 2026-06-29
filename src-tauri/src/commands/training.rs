@@ -480,7 +480,7 @@ pub async fn fine_tune(
     }
 
     set_active_version(&db, &space_id, version).await?;
-    model_sync::cache_md5s_for_version(&db, &app, &space_id, version).await?;
+    model_sync::register_trained_model(&db, &app, &space_id, version).await?;
     debounce.notify_mutation();
 
     let _ = app.emit("training://done", ());
@@ -508,26 +508,20 @@ pub async fn list_models(
     let dir = models_dir(&app, &active_session.space_id)?;
     let active = get_active_version(&db, &active_session.space_id).await;
 
+    let versions = sqlx::query_file!(
+        "queries/training/list_model_versions.sql",
+        active_session.space_id
+    )
+    .fetch_all(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("list_models: {e}")))?;
+
     let mut cards: Vec<ModelCard> = Vec::new();
-
-    // Versioned models — read from card JSON files on disk.
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        let mut versions: Vec<u32> = entries
-            .flatten()
-            .filter_map(|e| {
-                let name = e.file_name();
-                let s = name.to_string_lossy().into_owned();
-                let rest = s.strip_prefix("model_v")?.strip_suffix(".json")?;
-                rest.parse::<u32>().ok()
-            })
-            .collect();
-        versions.sort_unstable();
-
-        for v in versions {
-            if let Some(mut card) = read_card(&dir, v) {
-                card.is_active = active == v;
-                cards.push(card);
-            }
+    for row in versions {
+        let v = row.version as u32;
+        if let Some(mut card) = read_card(&dir, v) {
+            card.is_active = active == v;
+            cards.push(card);
         }
     }
 
@@ -553,11 +547,6 @@ pub async fn set_active_model(
     let weights = p;
 
     set_active_version(&db, &active_session.space_id, version).await?;
-    if let Err(e) =
-        model_sync::cache_md5s_for_version(&db, &app, &active_session.space_id, version).await
-    {
-        eprintln!("set_active_model: cache_md5s_for_version v{version}: {e}");
-    }
     debounce.notify_mutation();
     let mut guard = classifier
         .lock()
@@ -686,6 +675,7 @@ pub async fn delete_model(
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
     session: State<'_, Session>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     if version == 0 {
         return Err(AppError::InvalidInput(
@@ -698,15 +688,21 @@ pub async fn delete_model(
     let dir = models_dir(&app, &space_id)?;
     let active = get_active_version(&db, &space_id).await;
 
-    let w = weights_path(&dir, version);
-    let c = card_path(&dir, version);
+    // Remove the row from `model_versions` first so the change_log
+    // records the deletion before we touch the filesystem. The
+    // change_log trigger stamps this row with our own device_id; peers
+    // receive the DELETE via the change_log apply path and their
+    // model-sync phase GC removes the orphan files on their side.
+    sqlx::query_file!(
+        "queries/training/delete_model_version.sql",
+        space_id,
+        version
+    )
+    .execute(&*db)
+    .await
+    .map_err(|e| AppError::Db(format!("delete_model_version: {e}")))?;
 
-    if w.exists() {
-        std::fs::remove_file(&w).map_err(|e| AppError::Io(format!("remove weights: {e}")))?;
-    }
-    if c.exists() {
-        std::fs::remove_file(&c).map_err(|e| AppError::Io(format!("remove card: {e}")))?;
-    }
+    model_sync::delete_local_files(&app, &space_id, version)?;
 
     // If the deleted version was active, unload the classifier — no base model exists.
     // The user must train a new version to restore predictions.
@@ -732,6 +728,8 @@ pub async fn delete_model(
             let _ = cl.load_version(&weights_path(&dir, active));
         }
     }
+
+    debounce.notify_mutation();
 
     Ok(())
 }

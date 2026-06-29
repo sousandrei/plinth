@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Ascending version list for one space. Drives `list_models` and the\n-- model-sync phase file GC; the on-disk `.safetensors` / `.json` files\n-- are validated separately by reading the directory in Rust.\nSELECT version\nFROM model_versions\nWHERE space_id = ?1\nORDER BY version ASC;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "version",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "58c6f632b2bec9dce6c54c73c831528d533da2156b04281be196d34d66d7b28b"
+}

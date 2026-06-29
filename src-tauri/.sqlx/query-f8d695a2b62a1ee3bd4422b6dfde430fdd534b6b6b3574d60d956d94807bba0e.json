@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Delete one row from `model_versions`. The on-disk `.safetensors` /\n-- `.json` files are intentionally not touched here — `delete_model`\n-- removes them locally, and peers handle orphan-file cleanup in the\n-- model-sync phase GC. Change_log propagates this DELETE so other\n-- peers remove the row, then GC sweeps the orphan files.\nDELETE FROM model_versions\nWHERE space_id = ?1 AND version = ?2;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f8d695a2b62a1ee3bd4422b6dfde430fdd534b6b6b3574d60d956d94807bba0e"
+}

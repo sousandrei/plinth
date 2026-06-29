@@ -137,11 +137,17 @@ fn verify_hello(hello: &Hello, expected_device_id: &str) -> Result<(), AppError>
 /// Send and receive halves run concurrently. Protocol order:
 ///
 ///   Cursors ↔ Cursors
-///   ChangeBatch* (from us to peer, per peer's cursors)
+///   ChangeBatch* (from us to peer, per peer's cursors — includes
+///               `model_versions` INSERT/DELETE rows since training or
+///               deletion mutations)
 ///   ↕ simultaneous with peer shipping their batches to us
 ///   ModelVersionSummary ↔ ModelVersionSummary
-///   ModelData* (when local_ver > peer_ver, OR same ver with
-///               divergent MD5 — see `model_sync::should_send_model`)
+///                          (peer versions list: which `model_versions`
+///                          rows the peer has files for locally;
+///                          canonical MD5s are in the table already)
+///   ModelData* (one frame per version we have files for that the peer
+///               doesn't have files for — `apply_model` does the
+///               MD5/canonical verification on the receiver side)
 ///   Bye ↔ Bye
 async fn run_session<R, W>(
     read_half: R,
@@ -291,6 +297,17 @@ where
     }
 
     // --- Model version exchange ---
+    // Sweep orphan files for each shared space BEFORE building the
+    // summary — change_log DELETE on `model_versions` may have
+    // propagated since the previous session, and the local files
+    // matching that deletion should be removed now so the summary
+    // doesn't claim we still have them.
+    for space_id in &peer.shared_space_ids {
+        if let Err(e) = model_sync::gc_orphan_files(&db, &app, space_id).await {
+            eprintln!("session: gc_orphan_files {space_id}: {e}");
+        }
+    }
+
     let local_summary = model_sync::local_summary(&db, &app, &peer.shared_space_ids).await;
     write_frame(&mut wr, &Frame::ModelVersionSummary(local_summary)).await?;
 
@@ -298,37 +315,32 @@ where
         AppError::Internal("session: recv half dropped before sending ModelVersionSummary".into())
     })?;
 
-    // Push our model to the peer. Transfer if we have a higher version,
-    // or the same version with divergent MD5 (torn writes, independent
-    // training producing the same version number, etc.). The tiebreak
-    // ensures only one side sends on divergence, so convergence is
-    // deterministic rather than racing to a last-writer-wins state.
+    // Push every model version the peer is missing. The per-version
+    // MD5s live in `model_versions` (synced via change_log), so this
+    // loop just compares version sets: any local version whose number
+    // isn't in the peer's `versions` list is in flight or hasn't been
+    // seeded yet, so we ship it. MD5 verification — both transfer
+    // integrity and canonical disagreement — happens in
+    // `model_sync::apply_model` on the receiver side.
     for peer_entry in &peer_summary.entries {
         if !peer.shared_space_ids.contains(&peer_entry.space_id) {
             continue;
         }
-        let local_ver = model_sync::local_version(&db, &app, &peer_entry.space_id).await;
-        let (local_w_md5, _local_c_md5) = if local_ver > 0 {
-            model_sync::local_md5s(&db, &app, &peer_entry.space_id, local_ver).await
-        } else {
-            (String::new(), String::new())
-        };
-        let need_transfer = model_sync::should_send_model(
-            local_ver,
-            peer_entry.version,
-            &local_w_md5,
-            &peer_entry.weights_md5,
-            &local_device_id,
-            &peer.device_id,
-        );
-        if need_transfer {
-            match model_sync::read_model(&app, &peer_entry.space_id, local_ver)? {
+        let peer_versions: std::collections::HashSet<u32> =
+            peer_entry.versions.iter().copied().collect();
+        let local_versions =
+            model_sync::local_versions_with_files(&db, &app, &peer_entry.space_id).await;
+        for v in local_versions {
+            if peer_versions.contains(&v) {
+                continue;
+            }
+            match model_sync::read_model(&app, &peer_entry.space_id, v)? {
                 Some(data) => {
                     write_frame(&mut wr, &Frame::ModelData(data)).await?;
                 }
                 None => {
                     eprintln!(
-                        "session: model v{local_ver} for space {} missing on disk, skipping",
+                        "session: model v{v} for space {} missing on disk, skipping",
                         peer_entry.space_id
                     );
                 }
@@ -501,6 +513,10 @@ where
         crate::sync::snapshot::SnapshotFrame::SpaceSettings(chunk)
     })
     .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.model_versions, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::ModelVersions(chunk)
+    })
+    .await?;
 
     let _ = device_id; // included in identity above
     Ok(())
@@ -594,6 +610,7 @@ where
                         transactions: vec![],
                         account_summaries: vec![],
                         space_settings: vec![],
+                        model_versions: vec![],
                         host_device_id: identity.device_id.clone(),
                         host_device_name: display_name,
                         host_cert_pem: identity.cert_pem.clone(),
@@ -633,27 +650,13 @@ where
                         "session: ModelData arrived before ModelVersionSummary".into(),
                     ));
                 }
-                if peer.shared_space_ids.contains(&data.space_id) {
-                    let local_ver = model_sync::local_version(&db, &app, &data.space_id).await;
-                    let local_w_md5 = if local_ver > 0 {
-                        let (w, _c) =
-                            model_sync::local_md5s(&db, &app, &data.space_id, local_ver).await;
-                        w
-                    } else {
-                        String::new()
-                    };
-                    let need_apply = model_sync::should_apply_model(
-                        data.version,
-                        local_ver,
-                        &data.weights_md5,
-                        &local_w_md5,
+                if peer.shared_space_ids.contains(&data.space_id)
+                    && let Err(e) = model_sync::apply_model(&app, &db, &data).await
+                {
+                    eprintln!(
+                        "session: apply model v{} for space {}: {e}",
+                        data.version, data.space_id
                     );
-                    if need_apply && let Err(e) = model_sync::apply_model(&app, &db, &data).await {
-                        eprintln!(
-                            "session: apply model v{} for space {}: {e}",
-                            data.version, data.space_id
-                        );
-                    }
                 }
             }
             Frame::Bye(_) => break,

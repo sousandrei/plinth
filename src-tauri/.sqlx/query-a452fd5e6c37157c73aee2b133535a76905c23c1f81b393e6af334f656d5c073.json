@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "-- List every `(weights_md5, card_md5)` row for one space as a single\n-- query, used by `model_sync::local_summary` and the model-sync phase\n-- file GC. Returns the canonical registry of what versions exist in\n-- the mesh for this space; the on-disk bytes are checked separately.\nSELECT version, weights_md5, card_md5\nFROM model_versions\nWHERE space_id = ?1\nORDER BY version ASC;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "version",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "name": "weights_md5",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "weights_md5"
+          }
+        }
+      },
+      {
+        "name": "card_md5",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "card_md5"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a452fd5e6c37157c73aee2b133535a76905c23c1f81b393e6af334f656d5c073"
+}

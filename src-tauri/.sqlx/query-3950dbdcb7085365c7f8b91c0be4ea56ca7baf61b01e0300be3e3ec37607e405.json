@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Lookup one row from `model_versions` by composite `(space_id, version)`.\n-- Used by the model-sync phase to verify that an incoming `ModelData`\n-- frame's claimed MD5 matches the canonical mesh-wide MD5 (the LWW\n-- resolution against any concurrent local INSERT/UPDATE). Returns\n-- `NULL` when no row exists yet — the caller treats this as\n-- \"unauthorised; ignore the model files\" (e.g., we received the\n-- binary out of order, before the change_log INSERT arrived).\nSELECT weights_md5, card_md5\nFROM model_versions\nWHERE space_id = ?1 AND version = ?2;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "weights_md5",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "weights_md5"
+          }
+        }
+      },
+      {
+        "name": "card_md5",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "card_md5"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3950dbdcb7085365c7f8b91c0be4ea56ca7baf61b01e0300be3e3ec37607e405"
+}

@@ -4,8 +4,9 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::sync::conflict_detector::{self, HotFieldConflict, LocalSnapshot};
 use crate::sync::payloads::{
-    AccountPayload, AccountSummaryPayload, CategoryPayload, SpaceMemberPayload, SpacePayload,
-    SpaceSettingPayload, TablePayload, TransactionPayload, TrustedDevicePayload, UserSnapshot,
+    AccountPayload, AccountSummaryPayload, CategoryPayload, ModelVersionPayload,
+    SpaceMemberPayload, SpacePayload, SpaceSettingPayload, TablePayload, TransactionPayload,
+    TrustedDevicePayload, UserSnapshot,
 };
 use crate::sync::wire::ChangeRow;
 
@@ -63,6 +64,7 @@ async fn apply_upsert(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
         TablePayload::AccountSummary(p) => upsert_account_summary(tx, p).await,
         TablePayload::SpaceSetting(p) => upsert_space_setting(tx, p).await,
         TablePayload::TrustedDevice(p) => upsert_trusted_device(tx, p).await,
+        TablePayload::ModelVersion(p) => upsert_model_version(tx, p).await,
     }
 }
 
@@ -135,6 +137,22 @@ async fn apply_delete(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| AppError::Db(format!("delete_trusted_device: {e}")))?;
+        }
+        "model_versions" => {
+            // Trigger emits row_id as `space_id:version` (see
+            // `change_log_model_versions_ad` in `0003_model_versions.sql`).
+            // Files for that version are intentionally NOT deleted here —
+            // the model-sync phase GC handles filesystem cleanup so the
+            // apply path stays free of `AppHandle`.
+            let (space_id, version) = split_composite(&row.row_id, "model_versions")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_model_version.sql",
+                space_id,
+                version
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("delete_model_version: {e}")))?;
         }
         other => {
             return Err(AppError::InvalidInput(format!(
@@ -331,6 +349,24 @@ async fn upsert_trusted_device(
     Ok(())
 }
 
+async fn upsert_model_version(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: &ModelVersionPayload,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_model_version.sql",
+        p.space_id,
+        p.version,
+        p.weights_md5,
+        p.card_md5,
+        p.trained_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_model_version: {e}")))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Conflict detection plumbing — fetches the two local inputs the pure
 // detector needs and forwards to it. Recording happens here too so the
@@ -419,9 +455,10 @@ async fn record_conflict(
 
 // ---------------------------------------------------------------------------
 // Composite-key splitter. The change_log triggers for `space_members`,
-// `account_summaries`, and `space_settings` emit `row_id` as the two
-// key parts joined by '|'. We only need to parse it on the delete
-// path; upserts get their keys from the payload struct directly.
+// `account_summaries`, `space_settings`, and `model_versions` emit
+// `row_id` as the two key parts joined by ':'. We only need to parse
+// it on the delete path; upserts get their keys from the payload
+// struct directly.
 // ---------------------------------------------------------------------------
 
 fn split_composite<'a>(row_id: &'a str, table: &str) -> Result<(&'a str, &'a str), AppError> {

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Delete a single `(space_id, version)` row from `model_versions`.\n-- The change_log trigger emits `row_id` as `\"space_id:version\"` (see\n-- `change_log_model_versions_ad` in `0003_model_versions.sql`), so we\n-- split the composite here. Files matching that version are NOT deleted\n-- here — the model-sync phase GC handles file cleanup so the apply path\n-- doesn't need an `AppHandle`.\nDELETE FROM model_versions\nWHERE space_id = ?1 AND version = CAST(?2 AS INTEGER);\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6e082b19fdd0c4bf7921c41341634504b80a8f9a4577406d63de2b6757f121b9"
+}
