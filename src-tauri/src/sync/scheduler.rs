@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -18,6 +18,7 @@ use crate::sync::identity::DeviceIdentity;
 const DIAL_INTERVAL: Duration = Duration::from_secs(30);
 const PING_INTERVAL: Duration = Duration::from_secs(2);
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
+const PING_STALE_AFTER_SECS: u64 = 60;
 
 /// Shared set of device_ids currently being dialled. Used by both the
 /// scheduler and `force_sync_now` to avoid launching two parallel
@@ -53,16 +54,22 @@ async fn ping_loop(peers: PeerRegistry, db: SqlitePool, identity: Arc<DeviceIden
     }
 }
 
-/// Heartbeat ping every trusted peer. Independent from the full sync
-/// loop: no `in_flight` coordination (TCP+TLS overhead per ping is
-/// negligible and a ping alongside a sync keeps `last_seen` fresh during
-/// long batch transfers).
+/// Heartbeat ping every trusted peer currently visible via mDNS.
+/// liveness is owned by `PeerRegistry`: when a peer goes offline
+/// `discovery` removes it and the next tick skips it. We additionally
+/// filter by `last_seen`: mDNS may take its time emitting
+/// `ServiceRemoved` after a peer closes, so `last_seen` is the
+/// freshness signal we trust here. `last_seen` is updated on every
+/// successful ping (via `peers.touch`) and on every successful dial,
+/// so an alive peer stays fresh and a dead peer's clock goes stale.
 async fn ping_all_peers(peers: &PeerRegistry, db: &SqlitePool, identity: &Arc<DeviceIdentity>) {
     let trusted = trusted_device_ids(db).await;
 
+    let now = now_unix_secs();
     let peer_map: HashMap<_, _> = peers
         .snapshot()
         .into_iter()
+        .filter(|p| now.saturating_sub(p.last_seen) <= PING_STALE_AFTER_SECS)
         .map(|p| (p.device_id.clone(), p))
         .collect();
 
@@ -78,16 +85,11 @@ async fn ping_all_peers(peers: &PeerRegistry, db: &SqlitePool, identity: &Arc<De
         let device_id = device_id.clone();
 
         tokio::spawn(async move {
-            match tokio::time::timeout(PING_TIMEOUT, client::ping(&peer, &db, &identity)).await {
-                Ok(Ok(())) => {
-                    peers.touch(&device_id);
-                }
-                Ok(Err(e)) => {
-                    eprintln!("scheduler: ping {device_id}: {e}");
-                }
-                Err(_) => {
-                    eprintln!("scheduler: ping {device_id}: timeout");
-                }
+            if tokio::time::timeout(PING_TIMEOUT, client::ping(&peer, &db, &identity))
+                .await
+                .is_ok_and(|r| r.is_ok())
+            {
+                peers.touch(&device_id);
             }
         });
     }
@@ -111,6 +113,13 @@ async fn run(
         // Drop handles — tasks run detached, fire-and-forget.
         drop(handles);
     }
+}
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 async fn trusted_device_ids(db: &SqlitePool) -> HashSet<String> {
