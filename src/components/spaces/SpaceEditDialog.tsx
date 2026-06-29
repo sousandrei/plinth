@@ -143,18 +143,34 @@ export const SpaceEditDialog = ({
 
   const syncNowMutation = useMutation({
     mutationFn: forceSyncNow,
-    onSuccess: (peerCount) => {
-      if (peerCount > 0) {
-        toast.info(
-          'Sync started',
-          `Dialing ${peerCount} peer${peerCount === 1 ? '' : 's'} on the network.`,
-        );
-      } else {
+    onSuccess: (summary) => {
+      const { dialed, ok, failed } = summary;
+      if (dialed === 0) {
         toast.warning(
-          'No peers visible',
+          'No peers dialled',
           'No trusted devices are on the network right now.',
         );
+        return;
       }
+      if (failed.length === 0) {
+        toast.success(
+          'Sync complete',
+          `Synced with ${ok} ${ok === 1 ? 'peer' : 'peers'}.`,
+        );
+        return;
+      }
+      if (ok === 0) {
+        toast.error(
+          'Sync failed',
+          `${failed.map((f) => `${f.name}: ${f.error}`).join('; ')}`,
+        );
+        return;
+      }
+      const failedNames = failed.map((f) => f.name).join(', ');
+      toast.warning(
+        'Sync partial',
+        `Synced with ${ok} of ${dialed}; ${failedNames} failed.`,
+      );
     },
     onError: (e) => toast.error('Sync failed', String(e)),
   });

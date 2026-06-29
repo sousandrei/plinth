@@ -2,14 +2,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tauri::AppHandle;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
+use crate::error::AppError;
 use crate::sync::client;
 use crate::sync::debounce::DebounceTrigger;
-use crate::sync::discovery::PeerRegistry;
+use crate::sync::discovery::{PeerInfo, PeerRegistry};
 use crate::sync::gc;
 use crate::sync::identity::DeviceIdentity;
 
@@ -105,7 +107,9 @@ async fn run(
             _ = debounce.wait_for_fire() => {},
         }
 
-        dial_all_peers(&peers, &db, &identity, &app, &in_flight).await;
+        let (handles, _) = dial_all_peers(&peers, &db, &identity, &app, &in_flight).await;
+        // Drop handles — tasks run detached, fire-and-forget.
+        drop(handles);
     }
 }
 
@@ -131,7 +135,7 @@ pub async fn dial_all_peers(
     identity: &Arc<DeviceIdentity>,
     app: &AppHandle,
     in_flight: &DialInFlight,
-) {
+) -> (Vec<JoinHandle<Result<(), AppError>>>, Vec<PeerInfo>) {
     // Only dial peers we have a trusted_devices row for — this prevents
     // handshake failures against unknown LAN peers and stops the noise
     // from devices we haven't paired with (or where pairing was cancelled).
@@ -143,6 +147,9 @@ pub async fn dial_all_peers(
         .into_iter()
         .map(|p| (p.device_id.clone(), p))
         .collect();
+
+    let mut handles = Vec::new();
+    let mut dialled = Vec::new();
 
     for device_id in &trusted {
         let Some(peer) = peer_map.get(device_id) else {
@@ -164,7 +171,8 @@ pub async fn dial_all_peers(
             guard.insert(device_id.clone());
         }
 
-        let peer = peer.clone();
+        let peer_for_task = peer.clone();
+        let peer_for_list = peer.clone();
         let peers = peers.clone();
         let db = db.clone();
         let identity = identity.clone();
@@ -172,17 +180,15 @@ pub async fn dial_all_peers(
         let in_flight = in_flight.clone();
         let device_id = device_id.clone();
 
-        tokio::spawn(async move {
-            match client::dial(&peer, &db, &identity, app).await {
-                Ok(()) => {
-                    peers.touch(&device_id);
-                    if let Err(e) = gc::run(&db).await {
-                        eprintln!("scheduler: gc after dial {device_id}: {e}");
-                    }
+        let handle = tokio::spawn(async move {
+            let result = client::dial(&peer_for_task, &db, &identity, app).await;
+            if result.is_ok() {
+                peers.touch(&device_id);
+                if let Err(e) = gc::run(&db).await {
+                    eprintln!("scheduler: gc after dial {device_id}: {e}");
                 }
-                Err(e) => {
-                    eprintln!("scheduler: dial {device_id} failed: {e}");
-                }
+            } else if let Err(ref e) = result {
+                eprintln!("scheduler: dial {device_id} failed: {e}");
             }
             match in_flight.0.lock() {
                 Ok(mut guard) => {
@@ -192,6 +198,58 @@ pub async fn dial_all_peers(
                     eprintln!("scheduler: in_flight mutex poisoned on cleanup: {e}");
                 }
             }
+            result
         });
+
+        dialled.push(peer_for_list);
+        handles.push(handle);
     }
+
+    (handles, dialled)
+}
+
+/// Await a batch of dial tasks and fold their outcomes into a single
+/// `SyncSummary`. Peers that didn't get a connection attempt (off-LAN or
+/// skipped due to `in_flight`) are absent from the input and therefore
+/// absent from `dialed` — callers that need to surface those separately
+/// should layer their own messaging.
+pub async fn await_dials(
+    handles: Vec<JoinHandle<Result<(), AppError>>>,
+    peers: Vec<PeerInfo>,
+) -> SyncSummary {
+    let dialed = handles.len() as u64;
+    let mut ok = 0;
+    let mut failed = Vec::new();
+
+    for (handle, peer) in handles.into_iter().zip(peers) {
+        match handle.await {
+            Ok(Ok(())) => ok += 1,
+            Ok(Err(e)) => failed.push(SyncFailure {
+                device_id: peer.device_id,
+                name: peer.name,
+                error: e.to_string(),
+            }),
+            Err(join_err) => failed.push(SyncFailure {
+                device_id: peer.device_id,
+                name: peer.name,
+                error: format!("sync task panicked: {join_err}"),
+            }),
+        }
+    }
+
+    SyncSummary { dialed, ok, failed }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncSummary {
+    pub dialed: u64,
+    pub ok: u64,
+    pub failed: Vec<SyncFailure>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncFailure {
+    pub device_id: String,
+    pub name: String,
+    pub error: String,
 }

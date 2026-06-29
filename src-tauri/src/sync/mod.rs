@@ -23,3 +23,4 @@ pub mod wire;
 
 pub use discovery::{PeerInfo, PeerRegistry};
 pub use pairing::PairingState;
+pub use scheduler::SyncSummary;

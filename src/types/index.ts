@@ -166,6 +166,18 @@ export interface JoinResult {
   space_name: string;
 }
 
+export interface SyncSummary {
+  dialed: number;
+  ok: number;
+  failed: SyncFailure[];
+}
+
+export interface SyncFailure {
+  device_id: string;
+  name: string;
+  error: string;
+}
+
 // ---------------------------------------------------------------------------
 // Space export / import
 // ---------------------------------------------------------------------------

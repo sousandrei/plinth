@@ -1,11 +1,17 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { JoinResult, PairToken, PeerInfo, TrustedDevice } from '@/types';
+import type {
+  JoinResult,
+  PairToken,
+  PeerInfo,
+  SyncSummary,
+  TrustedDevice,
+} from '@/types';
 
 export const listPeers = (): Promise<PeerInfo[]> =>
   invoke<PeerInfo[]>('list_peers');
 
-export const forceSyncNow = (): Promise<number> =>
-  invoke<number>('force_sync_now');
+export const forceSyncNow = (): Promise<SyncSummary> =>
+  invoke<SyncSummary>('force_sync_now');
 
 export const getDeviceName = (): Promise<string> =>
   invoke<string>('get_device_name');

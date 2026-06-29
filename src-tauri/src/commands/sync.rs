@@ -8,7 +8,7 @@ use crate::{
     db::DbPool,
     error::AppError,
     sync::{
-        PeerInfo, PeerRegistry,
+        PeerInfo, PeerRegistry, SyncSummary,
         debounce::DebounceSender,
         pairing::{
             self, PAIRING_PORT, PairToken, PairingState, WireAccount, WireAccountSummary,
@@ -43,22 +43,24 @@ pub async fn list_peers(registry: State<'_, PeerRegistry>) -> Result<Vec<PeerInf
 }
 
 /// Trigger an immediate sync with every visible trusted peer, bypassing
-/// the scheduler's 30s polling interval. The existing snapshot fallback
-/// in the session protocol handles the case where the peer's cursor is
-/// behind `change_log.min_seq`, so this also works as a "full pull"
-/// when the user has missed batches that have since been GC'd.
+/// the scheduler's 30s polling interval. Awaits each peer's dial so the
+/// caller knows whether the sync actually completed when the invocation
+/// returns. The existing snapshot fallback in the session protocol
+/// handles the case where the peer's cursor is behind `change_log.min_seq`,
+/// so this also works as a "full pull" when the user has missed batches
+/// that have since been GC'd.
 #[tauri::command]
 pub async fn force_sync_now(
     peers: State<'_, PeerRegistry>,
     db: State<'_, DbPool>,
     in_flight: State<'_, crate::sync::scheduler::DialInFlight>,
     app: AppHandle,
-) -> Result<u64, AppError> {
+) -> Result<SyncSummary, AppError> {
     let identity = crate::sync::identity::ensure_identity(&db).await?;
     let identity = Arc::new(identity);
-    let peer_count = peers.snapshot().len() as u64;
-    crate::sync::scheduler::dial_all_peers(&peers, &db, &identity, &app, &in_flight).await;
-    Ok(peer_count)
+    let (handles, dialled) =
+        crate::sync::scheduler::dial_all_peers(&peers, &db, &identity, &app, &in_flight).await;
+    Ok(crate::sync::scheduler::await_dials(handles, dialled).await)
 }
 
 // ---------------------------------------------------------------------------
