@@ -37,7 +37,7 @@ function deriveData(
     aggregations,
     months,
   );
-  const cashFlowSeries = deriveCashFlow(aggregations, months);
+  const cashFlowSeries = deriveCashFlow(netWorthSeries);
   const accountSeries = deriveAccounts(aggregations, months, accounts);
   const { series: spendingSeries, categories } = deriveSpending(
     aggregations,

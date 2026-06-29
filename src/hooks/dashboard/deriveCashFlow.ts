@@ -1,19 +1,18 @@
-import type { Aggregations } from '@/types';
-import { type CashFlowPoint, toMajor } from './types';
+import type { CashFlowPoint, NetWorthPoint } from './types';
 
-// Sum of all category amounts per month.
-// Positive amounts are income, negative are expenses; net is their sum.
-// Only the most recent 12 months are returned.
+// Cash flow per month = month-over-month change in total balance across
+// all accounts. Internal transfers (between own accounts) cancel out
+// automatically because total balance is unchanged; no transfer marker
+// needed. The net worth series already carries forward each account's
+// last-known balance, so we just diff it. The first month in the series
+// has no prior value and is reported as 0. Only the most recent 12
+// months are returned.
 export function deriveCashFlow(
-  aggregations: Aggregations,
-  months: string[],
+  netWorthSeries: NetWorthPoint[],
 ): CashFlowPoint[] {
-  const window = months.slice(-12);
-  return window.map((month) => {
-    const net = Object.values(aggregations[month].by_category).reduce(
-      (sum, v) => sum + v,
-      0,
-    );
-    return { month, net: toMajor(net) };
-  });
+  const deltas: CashFlowPoint[] = netWorthSeries.map((point, i) => ({
+    month: point.month,
+    net: i === 0 ? 0 : point.value - netWorthSeries[i - 1].value,
+  }));
+  return deltas.slice(-12);
 }

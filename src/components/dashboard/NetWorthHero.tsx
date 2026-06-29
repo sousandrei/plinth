@@ -32,8 +32,9 @@ export const NetWorthHero = ({
   latestNetWorth,
   currency = 'SEK',
 }: Props): React.JSX.Element => {
-  const first = series[0]?.value ?? 0;
-  const delta = latestNetWorth - first;
+  const hasPair = series.length >= 2;
+  const prev = hasPair ? series[series.length - 2].value : latestNetWorth;
+  const delta = latestNetWorth - prev;
   const positive = delta >= 0;
 
   return (
@@ -60,7 +61,7 @@ export const NetWorthHero = ({
                 className={`text-xs font-mono ${positive ? 'text-growth' : 'text-expense'}`}
               >
                 {positive ? '+' : ''}
-                {fmt(delta, currency)} all time
+                {fmt(delta, currency)} last month
               </span>
             </div>
           )}
