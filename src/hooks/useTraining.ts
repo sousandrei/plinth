@@ -98,7 +98,10 @@ export function useTraining(
     });
 
     listen<void>('training://progress', () => {
-      if (!cancelled) queryClient.invalidateQueries({ queryKey: PROGRESS_KEY });
+      if (cancelled) return;
+      queryClient.invalidateQueries({ queryKey: PROGRESS_KEY });
+      setEmbedProgress(null);
+      queryClient.setQueryData(EMBED_PROGRESS_KEY, null);
     }).then((fn) => {
       if (cancelled) fn();
       else unlisteners.push(fn);
