@@ -7,9 +7,10 @@ use tokio::sync::oneshot;
 use crate::error::AppError;
 use crate::sync::apply_guard::{GuardedFuture, run_as_device};
 use crate::sync::cert_match::PeerIdentity;
+use crate::sync::frame;
 use crate::sync::wire::{
     Bye, ChangeBatch, ChangeRow, CursorEntry, Cursors, Frame, Hello, ModelVersionSummary,
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION, Pong,
 };
 use crate::sync::{apply, changelog, cursors, model_sync};
 
@@ -30,6 +31,11 @@ pub struct SyncAppliedPayload {
 /// Handle a freshly-accepted inbound mTLS session. The caller has already
 /// resolved `peer` from `trusted_devices`, so at least one shared space
 /// exists and the cert is trusted.
+///
+/// Dispatches on the first frame. `Ping` is a presence-only heartbeat
+/// answered with `Pong`+`Bye`. `Hello` kicks off the full sync flow —
+/// the Hello exchange is done inline here, so `run_session` starts at
+/// the cursor exchange with no special-cased flags.
 pub async fn handle_inbound<S>(
     stream: tokio_rustls::server::TlsStream<S>,
     peer: PeerIdentity,
@@ -40,11 +46,39 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let local_device_id = read_device_id(&db).await?;
-    let (rd, wr) = tokio::io::split(stream);
-    run_session(rd, wr, db, app, local_device_id, peer).await
+    let (mut rd, mut wr) = tokio::io::split(stream);
+
+    match frame::read_frame(&mut rd).await? {
+        Frame::Ping(_) => {
+            frame::write_frame(&mut wr, &Frame::Pong(Pong {})).await?;
+            frame::write_frame(&mut wr, &Frame::Bye(Bye {})).await?;
+            wr.flush()
+                .await
+                .map_err(|e| AppError::Io(format!("session: ping flush: {e}")))?;
+            Ok(())
+        }
+        Frame::Hello(peer_hello) => {
+            verify_hello(&peer_hello, &peer.device_id)?;
+            frame::write_frame(
+                &mut wr,
+                &Frame::Hello(Hello {
+                    protocol_version: PROTOCOL_VERSION,
+                    device_id: local_device_id.clone(),
+                }),
+            )
+            .await?;
+            run_session(rd, wr, db, app, local_device_id, peer).await
+        }
+        other => Err(AppError::Internal(format!(
+            "session: expected Hello or Ping, got {:?}",
+            std::mem::discriminant(&other)
+        ))),
+    }
 }
 
 /// Handle an outbound mTLS session (called by the dialer in `sync/client.rs`).
+/// Writes our Hello, reads the server's Hello, verifies, then runs the
+/// session starting from the cursor exchange.
 pub async fn handle_outbound<S>(
     stream: tokio_rustls::client::TlsStream<S>,
     peer: PeerIdentity,
@@ -55,8 +89,43 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let local_device_id = read_device_id(&db).await?;
-    let (rd, wr) = tokio::io::split(stream);
+    let (mut rd, mut wr) = tokio::io::split(stream);
+
+    frame::write_frame(
+        &mut wr,
+        &Frame::Hello(Hello {
+            protocol_version: PROTOCOL_VERSION,
+            device_id: local_device_id.clone(),
+        }),
+    )
+    .await?;
+    match frame::read_frame(&mut rd).await? {
+        Frame::Hello(peer_hello) => verify_hello(&peer_hello, &peer.device_id)?,
+        other => {
+            return Err(AppError::Internal(format!(
+                "session: expected Hello, got {:?}",
+                std::mem::discriminant(&other)
+            )));
+        }
+    }
+
     run_session(rd, wr, db, app, local_device_id, peer).await
+}
+
+fn verify_hello(hello: &Hello, expected_device_id: &str) -> Result<(), AppError> {
+    if hello.protocol_version != PROTOCOL_VERSION {
+        return Err(AppError::Internal(format!(
+            "session: protocol version mismatch: ours={PROTOCOL_VERSION} peer={}",
+            hello.protocol_version
+        )));
+    }
+    if hello.device_id != expected_device_id {
+        return Err(AppError::Internal(format!(
+            "session: Hello device_id {} doesn't match expected {}",
+            hello.device_id, expected_device_id
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -64,9 +133,9 @@ where
 // ---------------------------------------------------------------------------
 
 /// Run the full delta-exchange + model-sync protocol over a split async
-/// stream. Send and receive halves run concurrently. Protocol order:
+/// stream. The Hello exchange is assumed complete by the caller.
+/// Send and receive halves run concurrently. Protocol order:
 ///
-///   Hello ↔ Hello
 ///   Cursors ↔ Cursors
 ///   ChangeBatch* (from us to peer, per peer's cursors)
 ///   ↕ simultaneous with peer shipping their batches to us
@@ -85,7 +154,6 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (hello_tx, hello_rx) = oneshot::channel::<Hello>();
     let (cursors_tx, cursors_rx) = oneshot::channel::<Cursors>();
     let (model_versions_tx, model_versions_rx) = oneshot::channel::<ModelVersionSummary>();
 
@@ -99,7 +167,6 @@ where
         app.clone(),
         local_device_id.clone(),
         peer.clone(),
-        hello_rx,
         cursors_rx,
         model_versions_rx,
     );
@@ -109,7 +176,6 @@ where
         app_recv,
         local_device_id,
         peer_recv,
-        hello_tx,
         cursors_tx,
         model_versions_tx,
     );
@@ -150,39 +216,12 @@ async fn send_half<W>(
     app: AppHandle,
     local_device_id: String,
     peer: PeerIdentity,
-    hello_rx: oneshot::Receiver<Hello>,
     cursors_rx: oneshot::Receiver<Cursors>,
     model_versions_rx: oneshot::Receiver<ModelVersionSummary>,
 ) -> Result<(), AppError>
 where
     W: AsyncWrite + Unpin,
 {
-    // --- Hello handshake ---
-    write_frame(
-        &mut wr,
-        &Frame::Hello(Hello {
-            protocol_version: PROTOCOL_VERSION,
-            device_id: local_device_id.clone(),
-        }),
-    )
-    .await?;
-
-    let peer_hello = hello_rx.await.map_err(|_| {
-        AppError::Internal("session: recv half dropped before sending Hello".into())
-    })?;
-    if peer_hello.protocol_version != PROTOCOL_VERSION {
-        return Err(AppError::Internal(format!(
-            "session: protocol version mismatch: ours={PROTOCOL_VERSION} peer={}",
-            peer_hello.protocol_version
-        )));
-    }
-    if peer_hello.device_id != peer.device_id {
-        return Err(AppError::Internal(format!(
-            "session: Hello device_id {} doesn't match cert-resolved {}",
-            peer_hello.device_id, peer.device_id
-        )));
-    }
-
     // --- Cursor exchange ---
     let mut cursor_entries = Vec::new();
     for space_id in &peer.shared_space_ids {
@@ -487,19 +526,12 @@ async fn recv_half<R>(
     app: AppHandle,
     local_device_id: String,
     peer: PeerIdentity,
-    hello_tx: oneshot::Sender<Hello>,
     cursors_tx: oneshot::Sender<Cursors>,
     model_versions_tx: oneshot::Sender<ModelVersionSummary>,
 ) -> Result<(), AppError>
 where
     R: AsyncRead + Unpin,
 {
-    // Hello
-    let hello = expect_hello(&mut rd).await?;
-    hello_tx.send(hello).map_err(|_| {
-        AppError::Internal("session: send half dropped before receiving Hello".into())
-    })?;
-
     // Cursors
     let peer_cursors = expect_cursors(&mut rd).await?;
     cursors_tx.send(peer_cursors).map_err(|_| {
@@ -777,19 +809,6 @@ where
     W: AsyncWrite + Unpin,
 {
     crate::sync::frame::write_frame(wr, frame).await
-}
-
-async fn expect_hello<R>(rd: &mut R) -> Result<Hello, AppError>
-where
-    R: AsyncRead + Unpin,
-{
-    match crate::sync::frame::read_frame(rd).await? {
-        Frame::Hello(h) => Ok(h),
-        other => Err(AppError::Internal(format!(
-            "session: expected Hello, got {:?}",
-            std::mem::discriminant(&other)
-        ))),
-    }
 }
 
 async fn expect_cursors<R>(rd: &mut R) -> Result<Cursors, AppError>

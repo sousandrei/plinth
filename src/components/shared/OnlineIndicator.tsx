@@ -7,8 +7,8 @@ interface OnlineIndicatorProps {
   className?: string;
 }
 
-const ACTIVE_THRESHOLD_SECS = 60;
-const TICK_INTERVAL_MS = 5000;
+const ACTIVE_THRESHOLD_SECS = 4;
+const TICK_INTERVAL_MS = 1000;
 
 type PeerStatus = 'active' | 'inactive';
 
@@ -21,7 +21,7 @@ export const OnlineIndicator = ({
   const { data: peers = [] } = useQuery({
     queryKey: ['peers'],
     queryFn: listPeers,
-    refetchInterval: 3000,
+    refetchInterval: 1000,
   });
 
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
@@ -67,7 +67,7 @@ export const OnlineIndicator = ({
           title={
             hasActive
               ? 'Another Plinth device is online on your local network'
-              : 'No Plinth device seen recently — last activity over 60s ago'
+              : 'No Plinth device seen recently — last activity over 4s ago'
           }
           className={cn(
             'inline-block w-2 h-2 rounded-full ring-2 ring-canvas-raised shadow-sm',

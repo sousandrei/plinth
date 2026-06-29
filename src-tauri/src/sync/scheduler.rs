@@ -14,6 +14,8 @@ use crate::sync::gc;
 use crate::sync::identity::DeviceIdentity;
 
 const DIAL_INTERVAL: Duration = Duration::from_secs(30);
+const PING_INTERVAL: Duration = Duration::from_secs(2);
+const PING_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Shared set of device_ids currently being dialled. Used by both the
 /// scheduler and `force_sync_now` to avoid launching two parallel
@@ -35,7 +37,58 @@ pub fn spawn(
     debounce: DebounceTrigger,
     in_flight: DialInFlight,
 ) -> JoinHandle<()> {
+    let ping_peers = peers.clone();
+    let ping_db = db.clone();
+    let ping_identity = identity.clone();
+    tokio::spawn(ping_loop(ping_peers, ping_db, ping_identity));
     tokio::spawn(run(peers, db, identity, app, debounce, in_flight))
+}
+
+async fn ping_loop(peers: PeerRegistry, db: SqlitePool, identity: Arc<DeviceIdentity>) {
+    loop {
+        sleep(PING_INTERVAL).await;
+        ping_all_peers(&peers, &db, &identity).await;
+    }
+}
+
+/// Heartbeat ping every trusted peer. Independent from the full sync
+/// loop: no `in_flight` coordination (TCP+TLS overhead per ping is
+/// negligible and a ping alongside a sync keeps `last_seen` fresh during
+/// long batch transfers).
+async fn ping_all_peers(peers: &PeerRegistry, db: &SqlitePool, identity: &Arc<DeviceIdentity>) {
+    let trusted = trusted_device_ids(db).await;
+
+    let peer_map: HashMap<_, _> = peers
+        .snapshot()
+        .into_iter()
+        .map(|p| (p.device_id.clone(), p))
+        .collect();
+
+    for device_id in &trusted {
+        let Some(peer) = peer_map.get(device_id) else {
+            continue;
+        };
+
+        let peer = peer.clone();
+        let peers = peers.clone();
+        let db = db.clone();
+        let identity = identity.clone();
+        let device_id = device_id.clone();
+
+        tokio::spawn(async move {
+            match tokio::time::timeout(PING_TIMEOUT, client::ping(&peer, &db, &identity)).await {
+                Ok(Ok(())) => {
+                    peers.touch(&device_id);
+                }
+                Ok(Err(e)) => {
+                    eprintln!("scheduler: ping {device_id}: {e}");
+                }
+                Err(_) => {
+                    eprintln!("scheduler: ping {device_id}: timeout");
+                }
+            }
+        });
+    }
 }
 
 async fn run(

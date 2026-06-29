@@ -74,6 +74,17 @@ pub struct ChangeBatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bye {}
 
+/// Heartbeat request sent by the dialer instead of `Hello`/`Cursors` when
+/// the only goal is presence detection. The peer replies with `Pong` and
+/// closes; no cursor exchange, no batch shipping, no model exchange.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ping {}
+
+/// Heartbeat reply. The recipient does no work — `PeerRegistry::touch`
+/// fires when the connection closes cleanly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pong {}
+
 /// One entry in a `ModelVersionSummary` — the sender's active trained
 /// model version for one shared space. Version 0 means no finetuned
 /// model exists (only the shipped base model).
@@ -125,6 +136,11 @@ pub enum Frame {
     ModelVersionSummary(ModelVersionSummary),
     ModelData(ModelData),
     Bye(Bye),
+    /// Heartbeat sent as the first frame (instead of `Hello`) when the
+    /// dialer only wants to confirm the peer is alive. The recipient
+    /// responds with `Pong` and closes the session.
+    Ping(Ping),
+    Pong(Pong),
 }
 
 /// One chunk of a space snapshot. The host breaks each table's rows

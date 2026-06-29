@@ -58,7 +58,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::wire::{Bye, Hello, PROTOCOL_VERSION};
+    use crate::sync::wire::{Bye, Hello, PROTOCOL_VERSION, Ping, Pong};
     use tokio::io::duplex;
 
     #[tokio::test]
@@ -109,5 +109,17 @@ mod tests {
 
         assert!(matches!(read_frame(&mut b).await.unwrap(), Frame::Hello(_)));
         assert!(matches!(read_frame(&mut b).await.unwrap(), Frame::Bye(_)));
+    }
+
+    #[tokio::test]
+    async fn roundtrips_a_ping_pong() {
+        let (mut a, mut b) = duplex(4096);
+        write_frame(&mut a, &Frame::Ping(Ping {})).await.unwrap();
+        write_frame(&mut a, &Frame::Pong(Pong {})).await.unwrap();
+        a.flush().await.unwrap();
+        drop(a);
+
+        assert!(matches!(read_frame(&mut b).await.unwrap(), Frame::Ping(_)));
+        assert!(matches!(read_frame(&mut b).await.unwrap(), Frame::Pong(_)));
     }
 }
