@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/sousandrei/plinth/compare/plinth-v1.4.0...plinth-v1.4.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* do not ping stale peers ([8a0a39b](https://github.com/sousandrei/plinth/commit/8a0a39bfb0ea47da7f3ba10e5d4113fec4e98fd4))
+
 ## [1.4.0](https://github.com/sousandrei/plinth/compare/plinth-v1.3.0...plinth-v1.4.0) (2026-06-29)
 
 
