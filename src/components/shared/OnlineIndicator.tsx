@@ -8,6 +8,7 @@ interface OnlineIndicatorProps {
 }
 
 const ACTIVE_THRESHOLD_SECS = 4;
+const HIDE_AFTER_SECS = 15;
 const TICK_INTERVAL_MS = 1000;
 
 type PeerStatus = 'active' | 'inactive';
@@ -34,12 +35,16 @@ export const OnlineIndicator = ({
     return () => clearInterval(id);
   }, []);
 
-  if (peers.length === 0) return null;
+  const visiblePeers = peers.filter(
+    (p) => now - p.last_seen <= HIDE_AFTER_SECS,
+  );
 
-  const activeCount = peers.filter(
+  if (visiblePeers.length === 0) return null;
+
+  const activeCount = visiblePeers.filter(
     (p) => peerStatus(p.last_seen, now) === 'active',
   ).length;
-  const totalCount = peers.length;
+  const totalCount = visiblePeers.length;
   const hasActive = activeCount > 0;
 
   const dotClass = hasActive ? 'bg-emerald-500' : 'bg-amber-500';
@@ -83,7 +88,7 @@ export const OnlineIndicator = ({
           </p>
         </div>
         <ul className="max-h-64 overflow-y-auto">
-          {peers.map((peer) => {
+          {visiblePeers.map((peer) => {
             const status = peerStatus(peer.last_seen, now);
             const secondsAgo = now - peer.last_seen;
             return (
@@ -104,10 +109,7 @@ export const OnlineIndicator = ({
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-0.5 truncate pl-3.5">
                   {peer.host}:{peer.port}
-                  {' · '}
-                  {status === 'active'
-                    ? `${secondsAgo}s ago`
-                    : `inactive ${secondsAgo}s`}
+                  {status === 'inactive' ? ` · inactive ${secondsAgo}s` : null}
                 </p>
               </li>
             );
