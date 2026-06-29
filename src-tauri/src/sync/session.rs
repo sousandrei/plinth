@@ -140,7 +140,8 @@ fn verify_hello(hello: &Hello, expected_device_id: &str) -> Result<(), AppError>
 ///   ChangeBatch* (from us to peer, per peer's cursors)
 ///   ↕ simultaneous with peer shipping their batches to us
 ///   ModelVersionSummary ↔ ModelVersionSummary
-///   ModelData* (from us if our version > peer's, received if peer's > ours)
+///   ModelData* (when local_ver > peer_ver, OR same ver with
+///               divergent MD5 — see `model_sync::should_send_model`)
 ///   Bye ↔ Bye
 async fn run_session<R, W>(
     read_half: R,
@@ -290,20 +291,37 @@ where
     }
 
     // --- Model version exchange ---
-    let local_summary = model_sync::local_summary(&db, &peer.shared_space_ids).await;
+    let local_summary = model_sync::local_summary(&db, &app, &peer.shared_space_ids).await;
     write_frame(&mut wr, &Frame::ModelVersionSummary(local_summary)).await?;
 
     let peer_summary = model_versions_rx.await.map_err(|_| {
         AppError::Internal("session: recv half dropped before sending ModelVersionSummary".into())
     })?;
 
-    // Push our model to the peer for any space where our version is higher.
+    // Push our model to the peer. Transfer if we have a higher version,
+    // or the same version with divergent MD5 (torn writes, independent
+    // training producing the same version number, etc.). The tiebreak
+    // ensures only one side sends on divergence, so convergence is
+    // deterministic rather than racing to a last-writer-wins state.
     for peer_entry in &peer_summary.entries {
         if !peer.shared_space_ids.contains(&peer_entry.space_id) {
             continue;
         }
-        let local_ver = model_sync::local_version(&db, &peer_entry.space_id).await;
-        if local_ver > peer_entry.version {
+        let local_ver = model_sync::local_version(&db, &app, &peer_entry.space_id).await;
+        let (local_w_md5, _local_c_md5) = if local_ver > 0 {
+            model_sync::local_md5s(&db, &app, &peer_entry.space_id, local_ver).await
+        } else {
+            (String::new(), String::new())
+        };
+        let need_transfer = model_sync::should_send_model(
+            local_ver,
+            peer_entry.version,
+            &local_w_md5,
+            &peer_entry.weights_md5,
+            &local_device_id,
+            &peer.device_id,
+        );
+        if need_transfer {
             match model_sync::read_model(&app, &peer_entry.space_id, local_ver)? {
                 Some(data) => {
                     write_frame(&mut wr, &Frame::ModelData(data)).await?;
@@ -616,10 +634,21 @@ where
                     ));
                 }
                 if peer.shared_space_ids.contains(&data.space_id) {
-                    let local_ver = model_sync::local_version(&db, &data.space_id).await;
-                    if data.version > local_ver
-                        && let Err(e) = model_sync::apply_model(&app, &db, &data).await
-                    {
+                    let local_ver = model_sync::local_version(&db, &app, &data.space_id).await;
+                    let local_w_md5 = if local_ver > 0 {
+                        let (w, _c) =
+                            model_sync::local_md5s(&db, &app, &data.space_id, local_ver).await;
+                        w
+                    } else {
+                        String::new()
+                    };
+                    let need_apply = model_sync::should_apply_model(
+                        data.version,
+                        local_ver,
+                        &data.weights_md5,
+                        &local_w_md5,
+                    );
+                    if need_apply && let Err(e) = model_sync::apply_model(&app, &db, &data).await {
                         eprintln!(
                             "session: apply model v{} for space {}: {e}",
                             data.version, data.space_id

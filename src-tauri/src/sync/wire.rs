@@ -87,11 +87,17 @@ pub struct Pong {}
 
 /// One entry in a `ModelVersionSummary` — the sender's active trained
 /// model version for one shared space. Version 0 means no finetuned
-/// model exists (only the shipped base model).
+/// model exists (only the shipped base model). The two MD5 fields let
+/// peers detect divergence: same version but different content
+/// (corruption, partial transfer, or two devices training the same
+/// version number independently). Empty string means "unknown" — the
+/// sender chose not to include the hash for this entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelVersionEntry {
     pub space_id: String,
     pub version: u32,
+    pub weights_md5: String,
+    pub card_md5: String,
 }
 
 /// Sent by each side after all `Batch` frames are exhausted. Lets both
@@ -105,7 +111,8 @@ pub struct ModelVersionSummary {
 /// Carries the binary weights and JSON card for one model version.
 /// Transferred by the peer with the higher version immediately after
 /// both `ModelVersionSummary` frames have been exchanged. The receiver
-/// writes the files atomically (temp-file + rename) and updates its
+/// writes the files atomically (temp-file + rename), verifies the
+/// MD5s in this frame against the received bytes, and updates its
 /// `space_settings` active model version. See data/PLAN.md §8.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelData {
@@ -115,6 +122,10 @@ pub struct ModelData {
     pub weights: Vec<u8>,
     /// Raw bytes of `model_v{version}.json` (the `ModelCard`).
     pub card: Vec<u8>,
+    /// MD5 of the `weights` bytes in this frame (hex).
+    pub weights_md5: String,
+    /// MD5 of the `card` bytes in this frame (hex).
+    pub card_md5: String,
 }
 
 /// Tagged envelope so a single byte stream can carry any frame type.

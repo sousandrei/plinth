@@ -19,6 +19,7 @@ use crate::{
     },
     db::DbPool,
     error::AppError,
+    sync::{debounce::DebounceSender, model_sync},
 };
 
 // ---------------------------------------------------------------------------
@@ -224,6 +225,7 @@ async fn set_active_version(pool: &DbPool, space_id: &str, version: u32) -> Resu
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn fine_tune(
     config: FinetuneConfig,
     app: AppHandle,
@@ -232,6 +234,7 @@ pub async fn fine_tune(
     history: State<'_, TrainingHistory>,
     cancel: State<'_, CancelToken>,
     session: State<'_, Session>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<FinetuneResult, AppError> {
     let active_session = session.require()?;
     let space_id = active_session.space_id.clone();
@@ -477,8 +480,9 @@ pub async fn fine_tune(
     }
 
     set_active_version(&db, &space_id, version).await?;
+    model_sync::cache_md5s_for_version(&db, &app, &space_id, version).await?;
+    debounce.notify_mutation();
 
-    // Notify the UI that the model list has changed.
     let _ = app.emit("training://done", ());
 
     Ok(result)
@@ -537,6 +541,7 @@ pub async fn set_active_model(
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
     session: State<'_, Session>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let active_session = session.require()?;
     let dir = models_dir(&app, &active_session.space_id)?;
@@ -548,6 +553,12 @@ pub async fn set_active_model(
     let weights = p;
 
     set_active_version(&db, &active_session.space_id, version).await?;
+    if let Err(e) =
+        model_sync::cache_md5s_for_version(&db, &app, &active_session.space_id, version).await
+    {
+        eprintln!("set_active_model: cache_md5s_for_version v{version}: {e}");
+    }
+    debounce.notify_mutation();
     let mut guard = classifier
         .lock()
         .map_err(|e| AppError::Internal(format!("lock: {e}")))?;
