@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.4.0](https://github.com/sousandrei/plinth/compare/plinth-v1.3.0...plinth-v1.4.0) (2026-06-29)
+
+
+### Features
+
+* better presence indication with Ping/Pong heartbeats ([3f1f25e](https://github.com/sousandrei/plinth/commit/3f1f25e51b40dc14548ffa65bfcf4d7264311601))
+* more complete model_versions and sync ([36eb972](https://github.com/sousandrei/plinth/commit/36eb972e31a21dabc01211fe51cd586f8daa24cb))
+
+
+### Bug Fixes
+
+* better cash flow calculation and net worth delta display ([6f5108b](https://github.com/sousandrei/plinth/commit/6f5108b986352a40fc28e6c070a0728542b4ae32))
+* better force sync ui flow ([04a0956](https://github.com/sousandrei/plinth/commit/04a095644c3a0745dfe77752e284bceb5c595f5a))
+* online presence and debounce trigger ([de3293a](https://github.com/sousandrei/plinth/commit/de3293ad544641cc696e1fbea4d1855db1165620))
+* sync model weights and card MD5s for divergence detection ([ce7a889](https://github.com/sousandrei/plinth/commit/ce7a889d9b870a5073418ec1da778d16c87c0ca8))
+* training progress updates ([e0ebb8a](https://github.com/sousandrei/plinth/commit/e0ebb8a47d8386f1b2438fdfaaa70947624e3fdf))
+
 ## [1.3.0](https://github.com/sousandrei/plinth/compare/plinth-v1.2.1...plinth-v1.3.0) (2026-06-22)
 
 
