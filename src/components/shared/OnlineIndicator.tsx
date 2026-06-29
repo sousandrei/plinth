@@ -7,7 +7,7 @@ interface OnlineIndicatorProps {
   className?: string;
 }
 
-const ACTIVE_THRESHOLD_SECS = 30;
+const ACTIVE_THRESHOLD_SECS = 60;
 const TICK_INTERVAL_MS = 5000;
 
 type PeerStatus = 'active' | 'inactive';
@@ -67,7 +67,7 @@ export const OnlineIndicator = ({
           title={
             hasActive
               ? 'Another Plinth device is online on your local network'
-              : 'No Plinth device seen recently — last activity over 30s ago'
+              : 'No Plinth device seen recently — last activity over 60s ago'
           }
           className={cn(
             'inline-block w-2 h-2 rounded-full ring-2 ring-canvas-raised shadow-sm',

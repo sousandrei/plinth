@@ -9,6 +9,7 @@ use crate::{
     error::AppError,
     sync::{
         PeerInfo, PeerRegistry,
+        debounce::DebounceSender,
         pairing::{
             self, PAIRING_PORT, PairToken, PairingState, WireAccount, WireAccountSummary,
             WireCategory, WireMember, WireSpace, WireSpaceSetting, WireTransaction, WireUser,
@@ -101,6 +102,7 @@ pub async fn remove_trusted_device(
     id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let active = session.require()?;
 
@@ -151,6 +153,7 @@ pub async fn remove_trusted_device(
     .await
     .map_err(|e| AppError::Db(format!("remove_trusted_device delete: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::{Session, db::DbPool, error::AppError};
+use crate::{Session, db::DbPool, error::AppError, sync::debounce::DebounceSender};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Category {
@@ -36,6 +36,7 @@ pub async fn create_category(
     color: String,
     db: State<'_, DbPool>,
     session: State<'_, Session>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<Category, AppError> {
     let active = session.require()?;
 
@@ -60,6 +61,7 @@ pub async fn create_category(
     .await
     .map_err(|e| AppError::Db(format!("create_category: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(Category { id, name, color })
 }
 
@@ -68,6 +70,7 @@ pub async fn delete_category(
     id: String,
     db: State<'_, DbPool>,
     session: State<'_, Session>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let active = session.require()?;
 
@@ -99,6 +102,7 @@ pub async fn delete_category(
     .await
     .map_err(|e| AppError::Db(format!("delete_category: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -109,6 +113,7 @@ pub async fn update_category(
     color: String,
     db: State<'_, DbPool>,
     session: State<'_, Session>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<Category, AppError> {
     let active = session.require()?;
 
@@ -154,6 +159,7 @@ pub async fn update_category(
     .await
     .map_err(|e| AppError::Db(format!("update_category: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(Category {
         id,
         name: new_name,

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::{Session, db::DbPool, error::AppError};
+use crate::{Session, db::DbPool, error::AppError, sync::debounce::DebounceSender};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AccountSummaryRow {
@@ -57,6 +57,7 @@ pub async fn upsert_account_summary(
     balance: i64,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
@@ -83,6 +84,7 @@ pub async fn upsert_account_summary(
     .await
     .map_err(|e| AppError::Db(format!("upsert_account_summary: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -92,6 +94,7 @@ pub async fn delete_account_summary(
     account_id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
@@ -117,5 +120,6 @@ pub async fn delete_account_summary(
     .await
     .map_err(|e| AppError::Db(format!("delete_account_summary: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }

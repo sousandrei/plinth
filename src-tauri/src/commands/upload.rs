@@ -9,6 +9,7 @@ use crate::import::{
     extract::extract,
     registry::{ParserUnit, find, scan},
 };
+use crate::sync::debounce::DebounceSender;
 use crate::{AppError, Session};
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -88,6 +89,7 @@ pub async fn upload_file(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     classifier: State<'_, crate::ClassifierState>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<UploadResult, AppError> {
     let space_id = session.require()?.space_id;
     let path = PathBuf::from(&file_path);
@@ -222,6 +224,7 @@ pub async fn upload_file(
         .await
         .map_err(|e| AppError::Db(format!("upload commit: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(UploadResult {
         inserted,
         skipped,

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::{Session, db::DbPool, error::AppError, sync::gc};
+use crate::{Session, db::DbPool, error::AppError, sync::debounce::DebounceSender, sync::gc};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct UserRecord {
@@ -181,6 +181,7 @@ pub async fn create_space(
     name: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<Space, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("space name cannot be empty".into()));
@@ -206,6 +207,7 @@ pub async fn create_space(
         })
         .ok_or_else(|| AppError::Internal("create_space: not found after insert".into()))?;
 
+    debounce.notify_mutation();
     Ok(space)
 }
 
@@ -291,6 +293,7 @@ pub async fn add_space_member(
     user_id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -308,6 +311,7 @@ pub async fn add_space_member(
     .await
     .map_err(|e| AppError::Db(format!("add_space_member: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -316,6 +320,7 @@ pub async fn remove_space_member(
     user_id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -335,6 +340,7 @@ pub async fn remove_space_member(
     .await
     .map_err(|e| AppError::Db(format!("remove_space_member: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -342,6 +348,7 @@ pub async fn remove_space_member(
 pub async fn leave_space(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
@@ -366,6 +373,7 @@ pub async fn leave_space(
     .await
     .map_err(|e| AppError::Db(format!("leave_space: {e}")))?;
 
+    debounce.notify_mutation();
     session.clear_space()?;
     Ok(())
 }
@@ -374,6 +382,7 @@ pub async fn leave_space(
 pub async fn delete_space(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -459,6 +468,7 @@ pub async fn delete_space(
         .map_err(|e| AppError::Db(format!("delete_space gc: {e}")))?;
 
     session.clear_space()?;
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -467,6 +477,7 @@ pub async fn evict_space(
     space_id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     sqlx::query_file!("queries/spaces/delete_space.sql", space_id)
         .execute(db.inner())
@@ -487,6 +498,7 @@ pub async fn evict_space(
         session.clear_space()?;
     }
 
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -495,6 +507,7 @@ pub async fn rename_space(
     name: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -509,6 +522,7 @@ pub async fn rename_space(
         .await
         .map_err(|e| AppError::Db(format!("rename_space: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -518,6 +532,7 @@ pub async fn update_member_role(
     role: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -538,6 +553,7 @@ pub async fn update_member_role(
     .await
     .map_err(|e| AppError::Db(format!("update_member_role: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -627,6 +643,7 @@ pub async fn import_space_data(
     path: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<ImportResult, AppError> {
     let data = session.require_user()?;
     require_member(&space_id, &data.user_id, db.inner()).await?;
@@ -723,6 +740,7 @@ pub async fn import_space_data(
         .await
         .map_err(|e| AppError::Db(format!("import_space_data commit: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(ImportResult {
         categories: payload.categories.len(),
         accounts: payload.accounts.len(),

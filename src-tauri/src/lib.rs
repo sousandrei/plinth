@@ -173,6 +173,7 @@ pub fn run() {
             })?;
             app.manage(runtime.peers.clone());
             app.manage(runtime.pairing.clone());
+            app.manage(runtime.debounce.clone());
             app.manage(runtime.in_flight.clone());
 
             Ok(())

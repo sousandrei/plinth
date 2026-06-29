@@ -7,6 +7,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::error::AppError;
 use crate::sync::cert_match::{PeerIdentity, resolve_peer};
+use crate::sync::discovery::PeerRegistry;
 use crate::sync::identity::DeviceIdentity;
 use crate::sync::session;
 use crate::sync::tls;
@@ -20,6 +21,7 @@ pub async fn spawn(
     db: SqlitePool,
     identity: Arc<DeviceIdentity>,
     app: AppHandle,
+    peers: PeerRegistry,
 ) -> Result<ServerHandle, AppError> {
     let listener = TcpListener::bind("0.0.0.0:0")
         .await
@@ -28,7 +30,7 @@ pub async fn spawn(
         .local_addr()
         .map_err(|e| AppError::Io(format!("sync addr: {e}")))?;
 
-    tokio::spawn(accept_loop(listener, db, identity, app));
+    tokio::spawn(accept_loop(listener, db, identity, app, peers));
 
     Ok(ServerHandle { local_addr })
 }
@@ -38,6 +40,7 @@ async fn accept_loop(
     db: SqlitePool,
     identity: Arc<DeviceIdentity>,
     app: AppHandle,
+    peers: PeerRegistry,
 ) {
     loop {
         let (stream, peer_addr) = match listener.accept().await {
@@ -50,8 +53,9 @@ async fn accept_loop(
         let db = db.clone();
         let identity = identity.clone();
         let app = app.clone();
+        let peers = peers.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, db, identity, app).await {
+            if let Err(e) = handle_connection(stream, db, identity, app, peers).await {
                 eprintln!("sync conn from {peer_addr}: {e}");
             }
         });
@@ -63,6 +67,7 @@ async fn handle_connection(
     db: SqlitePool,
     identity: Arc<DeviceIdentity>,
     app: AppHandle,
+    peers: PeerRegistry,
 ) -> Result<(), AppError> {
     let acceptor = tls::server_acceptor(&db, &identity).await?;
     let tls = acceptor
@@ -71,7 +76,11 @@ async fn handle_connection(
         .map_err(|e| AppError::Io(format!("tls accept: {e}")))?;
 
     let peer = extract_peer(&tls, &db).await?;
-    session::handle_inbound(tls, peer, db, app).await
+    let result = session::handle_inbound(tls, peer.clone(), db, app).await;
+    if result.is_ok() {
+        peers.touch(&peer.device_id);
+    }
+    result
 }
 
 async fn extract_peer<S>(

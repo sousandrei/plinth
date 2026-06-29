@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::QueryBuilder;
 use tauri::State;
 
-use crate::{Session, db::DbPool, error::AppError};
+use crate::{Session, db::DbPool, error::AppError, sync::debounce::DebounceSender};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Transaction {
@@ -151,6 +151,7 @@ pub async fn update_transaction(
     category: Option<String>,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
@@ -171,6 +172,7 @@ pub async fn update_transaction(
         return Err(AppError::NotFound(format!("transaction {id}")));
     }
 
+    debounce.notify_mutation();
     Ok(())
 }
 
@@ -180,6 +182,7 @@ pub async fn bulk_approve_transactions(
     approved: bool,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<u64, AppError> {
     let data = session.require()?;
     let ids_json = serde_json::to_string(&ids)
@@ -196,6 +199,7 @@ pub async fn bulk_approve_transactions(
     .map_err(|e| AppError::Db(format!("bulk_approve_transactions: {e}")))?
     .rows_affected();
 
+    debounce.notify_mutation();
     Ok(rows)
 }
 
@@ -205,6 +209,7 @@ pub async fn bulk_categorize_transactions(
     category: Option<String>,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<u64, AppError> {
     let data = session.require()?;
     let ids_json = serde_json::to_string(&ids)
@@ -221,5 +226,6 @@ pub async fn bulk_categorize_transactions(
     .map_err(|e| AppError::Db(format!("bulk_categorize_transactions: {e}")))?
     .rows_affected();
 
+    debounce.notify_mutation();
     Ok(rows)
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::{Session, db::DbPool, error::AppError};
+use crate::{Session, db::DbPool, error::AppError, sync::debounce::DebounceSender};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Account {
@@ -37,6 +37,7 @@ pub async fn update_account(
     color: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<Account, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
@@ -70,6 +71,7 @@ pub async fn update_account(
         .await
         .map_err(|e| AppError::Db(format!("update_account fetch: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(account)
 }
 
@@ -78,6 +80,7 @@ pub async fn delete_account(
     id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
@@ -122,5 +125,6 @@ pub async fn delete_account(
         .await
         .map_err(|e| AppError::Db(format!("delete_account commit: {e}")))?;
 
+    debounce.notify_mutation();
     Ok(())
 }

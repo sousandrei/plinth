@@ -45,6 +45,23 @@ impl PeerRegistry {
         guard.insert(peer.device_id.clone(), peer);
     }
 
+    pub fn touch(&self, device_id: &str) -> bool {
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("sync::discovery: peer registry poisoned on touch: {e}");
+                return false;
+            }
+        };
+        match guard.get_mut(device_id) {
+            Some(entry) => {
+                entry.last_seen = now_unix();
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn remove(&self, device_id: &str) {
         let mut guard = match self.inner.lock() {
             Ok(g) => g,

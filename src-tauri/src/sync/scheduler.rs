@@ -112,6 +112,7 @@ pub async fn dial_all_peers(
         }
 
         let peer = peer.clone();
+        let peers = peers.clone();
         let db = db.clone();
         let identity = identity.clone();
         let app = app.clone();
@@ -121,6 +122,7 @@ pub async fn dial_all_peers(
         tokio::spawn(async move {
             match client::dial(&peer, &db, &identity, app).await {
                 Ok(()) => {
+                    peers.touch(&device_id);
                     if let Err(e) = gc::run(&db).await {
                         eprintln!("scheduler: gc after dial {device_id}: {e}");
                     }
