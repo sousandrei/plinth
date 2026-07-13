@@ -7,11 +7,22 @@ import type { PairToken } from '@/types';
 
 interface PairModalProps {
   onClose: () => void;
+  initialToken?: PairToken | null;
 }
 
-export const PairModal = ({ onClose }: PairModalProps): React.JSX.Element => {
-  const [token, setToken] = useState<PairToken | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(0);
+export const PairModal = ({
+  onClose,
+  initialToken = null,
+}: PairModalProps): React.JSX.Element => {
+  const [token, setToken] = useState<PairToken | null>(initialToken);
+  const [secondsLeft, setSecondsLeft] = useState(() =>
+    initialToken
+      ? Math.max(
+          0,
+          initialToken.expires_at_unix - Math.floor(Date.now() / 1000),
+        )
+      : 0,
+  );
 
   const { data: deviceName = 'This device' } = useQuery({
     queryKey: ['device-name'],

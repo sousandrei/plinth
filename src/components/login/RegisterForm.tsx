@@ -9,17 +9,19 @@ import { PinInput } from './PinInput';
 interface RegisterFormProps {
   onCreated: (user: User) => void;
   onBack?: () => void;
+  initialStep?: 'name' | 'pin' | 'confirm' | 'space';
 }
 
 export const RegisterForm = ({
   onCreated,
   onBack,
+  initialStep = 'name',
 }: RegisterFormProps): React.JSX.Element => {
   const [name, setName] = useState('');
   const [pin, setPin_] = useState('');
   const [spaceName, setSpaceName] = useState('');
   const [step, setStep] = useState<'name' | 'pin' | 'confirm' | 'space'>(
-    'name',
+    initialStep,
   );
   const [nameError, setNameError] = useState('');
   const [pinError, setPinError] = useState('');
