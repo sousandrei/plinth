@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query';
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
 import { factoryReset, updateUserName } from '@/api/users';
 import { DangerZoneCard } from '@/components/settings/DangerZoneCard';
 import { ProfileSettingsCard } from '@/components/settings/ProfileSettingsCard';
@@ -53,12 +53,6 @@ function Settings(): React.JSX.Element {
             Manage your account and app data
           </p>
         </div>
-        <Link
-          to="/design"
-          className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors duration-150 border border-border-subtle px-3 py-1.5 mt-1"
-        >
-          Design system
-        </Link>
       </div>
 
       <div className="flex flex-col gap-8 animate-fade-in">
