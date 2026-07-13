@@ -1,5 +1,4 @@
 import type { Meta } from 'storybook-react-rsbuild';
-import { Badge } from './Badge';
 import { Card, CardBody, CardHeader } from './Card';
 
 const meta = {
@@ -29,22 +28,6 @@ export const WithHeader = {
       <CardBody>
         <p className="text-sm text-muted-foreground">
           Card with a labelled header and meta value.
-        </p>
-      </CardBody>
-    </Card>
-  ),
-};
-
-export const WithAction = {
-  render: () => (
-    <Card className="w-80">
-      <CardHeader
-        label="Account"
-        action={<Badge variant="accent">live</Badge>}
-      />
-      <CardBody>
-        <p className="text-sm text-muted-foreground">
-          Card header with an action slot.
         </p>
       </CardBody>
     </Card>

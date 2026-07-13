@@ -33,7 +33,7 @@ export const Tabs = {
   }): React.JSX.Element => (
     <BaseTabs.List
       className={cn(
-        'flex border-b border-border-muted bg-canvas w-full rounded-none',
+        'flex items-center gap-1 border-b border-border-muted bg-canvas px-2 py-1',
         className,
       )}
     >
@@ -52,11 +52,12 @@ export const Tabs = {
     <BaseTabs.Tab
       value={value}
       className={cn(
-        'px-5 py-2.5 text-[10px] font-mono uppercase tracking-[0.15em] transition-colors duration-100 font-bold',
-        'border-r border-border-muted select-none cursor-pointer rounded-none outline-none',
-        'text-muted-foreground hover:text-foreground hover:bg-canvas-raised',
-        'data-[selected]:text-foreground data-[selected]:bg-canvas',
-        'data-[selected]:border-b-2 data-[selected]:border-b-accent-primary',
+        'px-4 py-2 text-sm font-medium transition-colors duration-150',
+        'rounded-md select-none cursor-pointer outline-none',
+        'text-muted-foreground hover:text-foreground hover:bg-muted',
+        'data-[selected]:text-foreground data-[selected]:bg-muted',
+        'data-[selected]:shadow-[inset_0_2px_0_0_var(--color-accent)]',
+        'focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
         className,
       )}
     >

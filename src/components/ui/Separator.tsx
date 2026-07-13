@@ -13,10 +13,8 @@ export const Separator = ({
   if (orientation === 'vertical') {
     return (
       <div
-        className={cn(
-          'w-px self-stretch bg-[linear-gradient(to_bottom,transparent,var(--color-border-muted)_20%,var(--color-border-muted)_80%,transparent)]',
-          className,
-        )}
+        aria-hidden="true"
+        className={cn('w-px self-stretch bg-border-muted', className)}
         {...(props as HTMLAttributes<HTMLDivElement>)}
       />
     );
@@ -24,10 +22,7 @@ export const Separator = ({
 
   return (
     <hr
-      className={cn(
-        'border-0 h-px w-full bg-[linear-gradient(to_right,transparent,var(--color-border-muted)_20%,var(--color-border-muted)_80%,transparent)]',
-        className,
-      )}
+      className={cn('border-0 h-px w-full bg-border-muted', className)}
       {...(props as HTMLAttributes<HTMLHRElement>)}
     />
   );

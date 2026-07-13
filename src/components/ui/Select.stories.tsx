@@ -3,10 +3,10 @@ import type { Meta, StoryObj } from 'storybook-react-rsbuild';
 import { Select } from './Select';
 
 const options = [
-  { value: 'sek', label: 'SEK — Swedish Krona' },
-  { value: 'eur', label: 'EUR — Euro' },
-  { value: 'usd', label: 'USD — US Dollar' },
-  { value: 'gbp', label: 'GBP — British Pound' },
+  { value: 'sek', label: 'SEK - Swedish Krona' },
+  { value: 'eur', label: 'EUR - Euro' },
+  { value: 'usd', label: 'USD - US Dollar' },
+  { value: 'gbp', label: 'GBP - British Pound' },
 ];
 
 const meta = {

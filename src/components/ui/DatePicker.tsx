@@ -231,7 +231,7 @@ export function DatePicker({
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger
         className={cn(
-          'group relative flex items-center gap-2 h-8 px-3',
+          'group inline-flex items-center gap-2 h-8 px-3 w-fit',
           'bg-canvas border border-border-muted text-xs font-mono',
           'focus-within:border-accent focus-within:shadow-[0_0_0_2px_var(--color-accent-muted)]',
           'transition-all duration-150',

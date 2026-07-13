@@ -6,18 +6,31 @@ interface TooltipProps {
   content: ReactNode;
   children: ReactNode;
   delay?: number;
+  side?: 'top' | 'bottom' | 'left' | 'right' | 'inline-start' | 'inline-end';
+  align?: 'start' | 'center' | 'end';
+  sideOffset?: number;
+  alignOffset?: number;
 }
 
 export const Tooltip = ({
   content,
   children,
   delay = 300,
+  side = 'top',
+  align = 'center',
+  sideOffset = 8,
+  alignOffset = 0,
 }: TooltipProps): React.JSX.Element => (
   <BaseTooltip.Provider delay={delay}>
     <BaseTooltip.Root>
       <BaseTooltip.Trigger render={<span />}>{children}</BaseTooltip.Trigger>
       <BaseTooltip.Portal>
-        <BaseTooltip.Positioner>
+        <BaseTooltip.Positioner
+          side={side}
+          align={align}
+          sideOffset={sideOffset}
+          alignOffset={alignOffset}
+        >
           <BaseTooltip.Popup
             className={cn(
               'bg-foreground text-canvas px-2.5 py-1.5',
