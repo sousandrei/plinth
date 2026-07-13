@@ -9,19 +9,34 @@ interface DownloadProgress {
   total: number;
 }
 
-export function MiniLmSetupBanner(): React.JSX.Element | null {
-  const [needed, setNeeded] = useState<boolean | null>(null);
+interface MiniLmSetupBannerProps {
+  initialNeeded?: boolean | null;
+  initialStatus?: 'idle' | 'downloading' | 'done' | 'error';
+  initialProgress?: DownloadProgress | null;
+  initialError?: string | null;
+}
+
+export function MiniLmSetupBanner({
+  initialNeeded = null,
+  initialStatus = 'idle',
+  initialProgress = null,
+  initialError = null,
+}: MiniLmSetupBannerProps = {}): React.JSX.Element | null {
+  const [needed, setNeeded] = useState<boolean | null>(initialNeeded);
   const [status, setStatus] = useState<
     'idle' | 'downloading' | 'done' | 'error'
-  >('idle');
-  const [progress, setProgress] = useState<DownloadProgress | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  >(initialStatus);
+  const [progress, setProgress] = useState<DownloadProgress | null>(
+    initialProgress,
+  );
+  const [error, setError] = useState<string | null>(initialError);
 
   useEffect(() => {
+    if (initialNeeded !== null) return;
     minilmStatus()
       .then((ready) => setNeeded(!ready))
       .catch(() => setNeeded(false));
-  }, []);
+  }, [initialNeeded]);
 
   useEffect(() => {
     if (status !== 'downloading') return;

@@ -14,12 +14,24 @@ import {
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 
-export function UploadDialog(): React.JSX.Element {
+interface UploadDialogProps {
+  initialFilePaths?: string[];
+  initialParserKey?: string;
+  initialResults?: UploadResult[];
+  initialErrorMsg?: string;
+}
+
+export function UploadDialog({
+  initialFilePaths = [],
+  initialParserKey = '',
+  initialResults = [],
+  initialErrorMsg = '',
+}: UploadDialogProps = {}): React.JSX.Element {
   const queryClient = useQueryClient();
-  const [filePaths, setFilePaths] = useState<string[]>([]);
-  const [parserKey, setParserKey] = useState('');
-  const [results, setResults] = useState<UploadResult[]>([]);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [filePaths, setFilePaths] = useState<string[]>(initialFilePaths);
+  const [parserKey, setParserKey] = useState(initialParserKey);
+  const [results, setResults] = useState<UploadResult[]>(initialResults);
+  const [errorMsg, setErrorMsg] = useState(initialErrorMsg);
   const [isOpen, setIsOpen] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
 

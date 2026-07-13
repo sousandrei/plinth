@@ -20,6 +20,22 @@ const config: StorybookConfig = {
       __dirname_local,
       '../src/lib/tauri-mock.ts',
     );
+    alias['@tauri-apps/api/app'] = path.resolve(
+      __dirname_local,
+      '../src/lib/tauri-plugin-mocks.ts',
+    );
+    alias['@tauri-apps/api/event'] = path.resolve(
+      __dirname_local,
+      '../src/lib/tauri-plugin-mocks.ts',
+    );
+    alias['@tauri-apps/plugin-dialog'] = path.resolve(
+      __dirname_local,
+      '../src/lib/tauri-plugin-mocks.ts',
+    );
+    alias['@tauri-apps/plugin-updater'] = path.resolve(
+      __dirname_local,
+      '../src/lib/tauri-plugin-mocks.ts',
+    );
     return rsbuildConfig;
   },
 };

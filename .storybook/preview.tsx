@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { Preview } from 'storybook-react-rsbuild';
 import { clearMocks } from '@/lib/tauri-mock';
+import { resetPluginMocks } from '@/lib/tauri-plugin-mocks';
 import '../src/styles/index.css';
 
 const preview: Preview = {
@@ -20,7 +21,12 @@ const preview: Preview = {
       ],
     },
   },
-  beforeEach: [() => clearMocks()],
+  beforeEach: [
+    () => {
+      clearMocks();
+      resetPluginMocks();
+    },
+  ],
   decorators: [
     (Story) => {
       const [queryClient] = useState(

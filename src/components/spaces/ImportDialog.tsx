@@ -11,18 +11,24 @@ import type { ImportResult, Space } from '@/types';
 interface ImportDialogProps {
   spaces: Space[];
   onClose: () => void;
+  initialFilePath?: string;
+  initialResult?: ImportResult | null;
+  initialMode?: 'new' | 'existing';
 }
 
 export const ImportDialog = ({
   spaces,
   onClose,
+  initialFilePath = '',
+  initialResult = null,
+  initialMode = 'new',
 }: ImportDialogProps): React.JSX.Element => {
   const queryClient = useQueryClient();
-  const [filePath, setFilePath] = useState('');
-  const [mode, setMode] = useState<'new' | 'existing'>('new');
+  const [filePath, setFilePath] = useState(initialFilePath);
+  const [mode, setMode] = useState<'new' | 'existing'>(initialMode);
   const [newSpaceName, setNewSpaceName] = useState('');
   const [existingSpaceId, setExistingSpaceId] = useState<string | null>(null);
-  const [result, setResult] = useState<ImportResult | null>(null);
+  const [result, setResult] = useState<ImportResult | null>(initialResult);
   const [errorMsg, setErrorMsg] = useState('');
 
   const pickFile = async () => {

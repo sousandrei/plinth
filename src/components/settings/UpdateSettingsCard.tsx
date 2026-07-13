@@ -14,12 +14,28 @@ type UpdateStatus =
   | 'downloading'
   | 'installed';
 
-export function UpdateSettingsCard(): React.JSX.Element {
+interface UpdateSettingsCardProps {
+  initialStatus?: UpdateStatus;
+  initialUpdateInfo?: Update | null;
+  initialDownloadedBytes?: number;
+  initialTotalBytes?: number;
+}
+
+export function UpdateSettingsCard({
+  initialStatus = 'idle',
+  initialUpdateInfo = null,
+  initialDownloadedBytes = 0,
+  initialTotalBytes = 0,
+}: UpdateSettingsCardProps = {}): React.JSX.Element {
   const [currentVersion, setCurrentVersion] = useState<string>('');
-  const [status, setStatus] = useState<UpdateStatus>('idle');
-  const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
-  const [downloadedBytes, setDownloadedBytes] = useState<number>(0);
-  const [totalBytes, setTotalBytes] = useState<number>(0);
+  const [status, setStatus] = useState<UpdateStatus>(initialStatus);
+  const [updateInfo, setUpdateInfo] = useState<Update | null>(
+    initialUpdateInfo,
+  );
+  const [downloadedBytes, setDownloadedBytes] = useState<number>(
+    initialDownloadedBytes,
+  );
+  const [totalBytes, setTotalBytes] = useState<number>(initialTotalBytes);
 
   useEffect(() => {
     getVersion()
