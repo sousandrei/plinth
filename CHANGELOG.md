@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.5.0](https://github.com/sousandrei/plinth/compare/plinth-v1.4.0...plinth-v1.5.0) (2026-07-13)
+
+
+### Features
+
+* add first storybook integration ([a8e5a3b](https://github.com/sousandrei/plinth/commit/a8e5a3b4c459c721f34fd9a033ef1ab4711eec4f))
+* add more stories for pages and subcomponents ([3a60b72](https://github.com/sousandrei/plinth/commit/3a60b721875f7af367cefa2e64ed356ec14dbbf2))
+* add visual tests ([14e44a3](https://github.com/sousandrei/plinth/commit/14e44a35d522007f4930fcb30aca3162b802ad17))
+* more stories ([4ba5a3b](https://github.com/sousandrei/plinth/commit/4ba5a3b44f5ee88685603700aace08edb3841e8a))
+* polish dashboard components ([6e67445](https://github.com/sousandrei/plinth/commit/6e67445ba4b9d1e1db534d0ca366aa271d2d0804))
+
+
+### Bug Fixes
+
+* do not ping stale peers ([8a0a39b](https://github.com/sousandrei/plinth/commit/8a0a39bfb0ea47da7f3ba10e5d4113fec4e98fd4))
+* remove base model concept and update classifier loading logic ([7d63eec](https://github.com/sousandrei/plinth/commit/7d63eecc59ef757a6f33a474a03cf93901ea34bf))
+
 ## [1.4.0](https://github.com/sousandrei/plinth/compare/plinth-v1.3.0...plinth-v1.4.0) (2026-06-29)
 
 
