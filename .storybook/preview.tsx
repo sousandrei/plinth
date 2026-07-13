@@ -20,6 +20,9 @@ const preview: Preview = {
         { name: 'canvas-raised', value: 'oklch(99.5% 0.002 80)' },
       ],
     },
+    a11y: {
+      test: 'todo',
+    },
   },
   beforeEach: [
     () => {

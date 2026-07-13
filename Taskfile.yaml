@@ -95,7 +95,12 @@ tasks:
     cmds:
       - bun run build-storybook
 
+  storybook:serve:
+    desc: Serve the static Storybook build on port 6006
+    cmds:
+      - bun run serve-storybook
+
   storybook:test:
-    desc: Run Storybook test-runner (requires storybook to be running)
+    desc: Run Storybook test-runner against static build (run storybook:build + storybook:serve first)
     cmds:
       - bun run test-storybook

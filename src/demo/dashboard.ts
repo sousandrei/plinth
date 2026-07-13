@@ -123,11 +123,11 @@ export const demoSpendingCategories: CategoryMeta[] = [
   { name: 'Shopping', color: 'oklch(55% 0.18 310)' },
 ];
 
-export const demoSpendingSeries: SpendingPoint[] = MONTHS.map((month) => ({
+export const demoSpendingSeries: SpendingPoint[] = MONTHS.map((month, i) => ({
   month,
-  Groceries: 3200 + Math.trunc(Math.random() * 800),
+  Groceries: 3200 + ((i * 137) % 800),
   Transport: 990,
-  Dining: 1200 + Math.trunc(Math.random() * 600),
+  Dining: 1200 + ((i * 89) % 600),
   Subscriptions: 400,
-  Shopping: 800 + Math.trunc(Math.random() * 1200),
+  Shopping: 800 + ((i * 211) % 1200),
 }));

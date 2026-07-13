@@ -17,7 +17,8 @@
 		"tauri:build:cuda": "tauri build -- --features cuda",
 		"storybook": "storybook dev -p 6006",
 		"build-storybook": "storybook build",
-		"test-storybook": "test-storybook"
+		"serve-storybook": "bunx http-server storybook-static -p 6006 -s",
+		"test-storybook": "test-storybook --testTimeout 30000"
 	},
 	"dependencies": {
 		"@base-ui/react": "^1.5.0",
@@ -43,18 +44,24 @@
 		"@biomejs/biome": "^2.4.10",
 		"@rsbuild/core": "^2.0.7",
 		"@rsbuild/plugin-react": "^2.0.0",
+		"@storybook/addon-a11y": "^10.5.0",
+		"@storybook/addon-docs": "^10.5.0",
+		"@storybook/addon-onboarding": "^10.5.0",
+		"@storybook/test-runner": "^0.24.4",
 		"@tailwindcss/postcss": "^4.3.0",
 		"@tanstack/router-plugin": "^1.168.11",
 		"@tauri-apps/cli": "^2",
+		"@types/jest": "^30.0.0",
 		"@types/node": "^26",
 		"@types/react": "^19.1.8",
 		"@types/react-dom": "^19.1.6",
-		"tailwindcss": "^4.3.0",
-		"typescript": "~7.0.2",
+		"concurrently": "^10.0.3",
+		"jest-image-snapshot": "^6.5.2",
+		"playwright": "^1.61.1",
 		"storybook": "^10.5.0",
 		"storybook-react-rsbuild": "^3.3.4",
-		"@storybook/addon-a11y": "^10.5.0",
-		"@storybook/addon-docs": "^10.5.0",
-		"@storybook/addon-onboarding": "^10.5.0"
+		"tailwindcss": "^4.3.0",
+		"typescript": "~7.0.2",
+		"wait-on": "^9.0.10"
 	}
 }
