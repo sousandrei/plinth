@@ -14,7 +14,10 @@
 		"tauri:dev": "tauri dev",
 		"tauri:dev:cuda": "tauri dev -- --features cuda",
 		"tauri:build": "tauri build",
-		"tauri:build:cuda": "tauri build -- --features cuda"
+		"tauri:build:cuda": "tauri build -- --features cuda",
+		"storybook": "storybook dev -p 6006",
+		"build-storybook": "storybook build",
+		"test-storybook": "test-storybook"
 	},
 	"dependencies": {
 		"@base-ui/react": "^1.5.0",
@@ -47,6 +50,11 @@
 		"@types/react": "^19.1.8",
 		"@types/react-dom": "^19.1.6",
 		"tailwindcss": "^4.3.0",
-		"typescript": "~6.0.3"
+		"typescript": "~6.0.3",
+		"storybook": "^10.5.0",
+		"storybook-react-rsbuild": "^3.3.4",
+		"@storybook/addon-a11y": "^10.5.0",
+		"@storybook/addon-docs": "^10.5.0",
+		"@storybook/addon-onboarding": "^10.5.0"
 	}
 }

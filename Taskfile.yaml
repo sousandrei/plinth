@@ -84,3 +84,18 @@ tasks:
     desc: Build and package the production desktop application with CUDA enabled
     cmds:
       - bun run tauri:build:cuda
+
+  storybook:
+    desc: Run Storybook dev server
+    cmds:
+      - bun run storybook
+
+  storybook:build:
+    desc: Build Storybook as a static web app
+    cmds:
+      - bun run build-storybook
+
+  storybook:test:
+    desc: Run Storybook test-runner (requires storybook to be running)
+    cmds:
+      - bun run test-storybook

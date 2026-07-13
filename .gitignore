@@ -13,3 +13,6 @@ src/routeTree.gen.ts
 *.db-wal
 *.db-shm
 
+
+*storybook.log
+storybook-static
