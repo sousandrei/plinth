@@ -1,11 +1,10 @@
 use crate::AppError;
-use hf_hub::api::tokio::ApiBuilder;
+use hf_hub::{HFClient, split_id};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
 
 const MODEL_ID: &str = "sentence-transformers/all-MiniLM-L6-v2";
 
-// Files we need from the HF repo.
 const FILES: &[&str] = &["config.json", "tokenizer.json", "model.safetensors"];
 
 fn minilm_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
@@ -40,10 +39,9 @@ pub async fn ensure_minilm(app: AppHandle) -> Result<(), AppError> {
     let dir = minilm_dir(&app)?;
     let total = FILES.len() as u8;
 
-    let api = ApiBuilder::new()
-        .build()
-        .map_err(|e| AppError::Internal(format!("hf-hub build: {e}")))?;
-    let repo = api.model(MODEL_ID.to_string());
+    let client = HFClient::new().map_err(|e| AppError::Internal(format!("hf-hub client: {e}")))?;
+    let (owner, name) = split_id(MODEL_ID);
+    let repo = client.model(owner, name);
 
     for (i, filename) in FILES.iter().enumerate() {
         let dest = dir.join(filename);
@@ -59,14 +57,13 @@ pub async fn ensure_minilm(app: AppHandle) -> Result<(), AppError> {
             continue;
         }
 
-        // `get` checks the hf-hub cache first, then downloads.
         let cached = repo
-            .get(filename)
+            .download_file()
+            .filename(filename.to_string())
+            .send()
             .await
             .map_err(|e| AppError::Internal(format!("download {filename}: {e}")))?;
 
-        // Copy from the hf-hub cache into our own minilm dir so the path is
-        // stable and independent of the hf-hub cache layout.
         std::fs::copy(&cached, &dest).map_err(|e| AppError::Io(format!("copy {filename}: {e}")))?;
 
         let _ = app.emit(
@@ -79,8 +76,6 @@ pub async fn ensure_minilm(app: AppHandle) -> Result<(), AppError> {
         );
     }
 
-    // Signal the frontend that MiniLM is now available so it can reload the
-    // classifier (which failed to load at startup when the files were missing).
     let _ = app.emit("minilm://ready", ());
 
     Ok(())

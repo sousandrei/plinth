@@ -45,51 +45,51 @@ rust-argon2 = "3.0.0"
 getrandom = "0.4.3"
 
 # UUIDs for generated IDs
-uuid = { version = "1.23.3", features = ["v4"] }
+uuid = { version = "1.23", features = ["v4"] }
 
 # P2P sync — local network discovery
 gethostname = "1"
-mdns-sd = "0.20.0"
+mdns-sd = "0.20"
 
 # Date/time formatting
 chrono = { version = "0.4.45", features = ["serde"] }
 
 # Import pipeline
 boa_engine = "0.21"
-calamine = { version = "0.35", features = ["dates"] }
+calamine = { version = "0.36.0", features = ["dates"] }
 csv = "1"
 md-5 = "0.11.0"
-pdf-extract = "0.10"
+pdf-extract = "0.12.0"
 tauri-plugin-dialog = "2"
 
 # Model inference
 # metal is compiled on macOS; on other platforms we compile without metal to avoid objc2 compilation errors on Linux/Windows.
 # cuda is opt-in: pass --features cuda at build time on Linux/Windows CUDA hosts.
-hf-hub = { version = "0.5.0", features = ["tokio"] }
+hf-hub = { version = "1.0.0" }
 safetensors = "0.8.0"
 tokenizers = "0.23.1"
 
 # For the passsword-authenticated key exchange (PAKE) protocol used in the P2P sync.
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 postcard = { version = "1", features = ["alloc"] }
 rcgen = "0.14.8"
 rustls-pemfile = "2"
 spake2 = "0.4"
+tauri-plugin-updater = "2.10.1"
 tokio-rustls = { version = "0.26", default-features = false, features = [
     "ring",
     "tls12",
 ] }
-tauri-plugin-updater = "2.10.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.10.2", features = ["metal"] }
-candle-nn = { version = "0.10.2", features = ["metal"] }
-candle-transformers = { version = "0.10.2", features = ["metal"] }
+candle-core = { version = "0.11", features = ["metal"] }
+candle-nn = { version = "0.11", features = ["metal"] }
+candle-transformers = { version = "0.11", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-candle-core = { version = "0.10.2" }
-candle-nn = { version = "0.10.2" }
-candle-transformers = { version = "0.10.2" }
+candle-core = { version = "0.11" }
+candle-nn = { version = "0.11" }
+candle-transformers = { version = "0.11" }
 
 [features]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]

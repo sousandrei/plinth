@@ -642,7 +642,7 @@ async fn write_encrypted<T: Serialize>(
         postcard::to_allocvec(msg).map_err(|e| AppError::Internal(format!("pair encode: {e}")))?;
     let mut nonce_bytes = [0u8; 12];
     fill(&mut nonce_bytes).map_err(|e| AppError::Internal(format!("nonce rng: {e}")))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce: &Nonce = (&nonce_bytes).into();
     let ct = cipher
         .encrypt(nonce, plain.as_slice())
         .map_err(|e| AppError::Internal(format!("pair encrypt: {e}")))?;
@@ -661,7 +661,8 @@ async fn read_encrypted<T: for<'de> Deserialize<'de>>(
         return Err(AppError::Internal("pair frame: too short".into()));
     }
     let (nonce_bytes, ct) = buf.split_at(12);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = <&Nonce>::try_from(nonce_bytes)
+        .map_err(|e| AppError::Internal(format!("pair nonce: {e}")))?;
     let plain = cipher
         .decrypt(nonce, ct)
         .map_err(|e| AppError::Internal(format!("pair decrypt: {e}")))?;
