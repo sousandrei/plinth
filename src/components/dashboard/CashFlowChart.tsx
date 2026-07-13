@@ -6,7 +6,7 @@ import type {
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import { Card, CardBody } from '@/components/ui/Card';
 import type { CashFlowPoint } from '@/hooks/dashboard/types';
-import { fmtMajor, fmtMonth } from '@/lib/format';
+import { fmtMajor, fmtMajorOrDash, fmtMonth } from '@/lib/format';
 
 interface Props {
   series: CashFlowPoint[];
@@ -69,7 +69,7 @@ export const CashFlowChart = ({
 
           <div className="mt-2">
             <span className="text-[2.25rem] font-semibold tracking-tight text-foreground leading-none tabular-nums">
-              {latest ? fmtMajor(latest.net, currency) : '—'}
+              {latest ? fmtMajorOrDash(latest.net, currency) : '—'}
             </span>
           </div>
 

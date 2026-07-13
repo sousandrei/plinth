@@ -6,7 +6,7 @@ import type {
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import { Card, CardBody } from '@/components/ui/Card';
 import type { NetWorthPoint } from '@/hooks/dashboard/types';
-import { fmtMajor, fmtMonth } from '@/lib/format';
+import { fmtMajor, fmtMajorOrDash, fmtMonth } from '@/lib/format';
 
 interface Props {
   series: NetWorthPoint[];
@@ -66,7 +66,7 @@ export const NetWorthHero = ({
 
           <div className="mt-2 flex items-baseline gap-3">
             <span className="text-[2.25rem] font-semibold tracking-tight text-foreground leading-none tabular-nums">
-              {fmtMajor(latestNetWorth, currency)}
+              {fmtMajorOrDash(latestNetWorth, currency)}
             </span>
           </div>
 
@@ -79,60 +79,68 @@ export const NetWorthHero = ({
                 className={`text-xs font-mono ${positive ? 'text-growth' : 'text-expense'}`}
               >
                 {positive ? '+' : ''}
-                {fmtMajor(delta, currency)} last month
+                {fmtMajorOrDash(delta, currency)} last month
               </span>
             </div>
           )}
         </div>
 
         {/* Chart — bleeds to card edges, bottom-flush */}
-        <div className="flex-1 min-h-[100px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart
-              data={series}
-              margin={{ top: 8, right: 0, bottom: 0, left: 0 }}
-            >
-              <defs>
-                <linearGradient id="nw-fill" x1="0" y1="0" x2="0" y2="1">
-                  <stop
-                    offset="0%"
-                    stopColor="oklch(48% 0.19 145)"
-                    stopOpacity={0.12}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor="oklch(48% 0.19 145)"
-                    stopOpacity={0}
-                  />
-                </linearGradient>
-              </defs>
-              <Tooltip
-                content={(props) => (
-                  <NetWorthTooltip {...props} currency={currency} />
-                )}
-                cursor={{
-                  stroke: 'oklch(84% 0.005 240)',
-                  strokeWidth: 1,
-                  strokeDasharray: '3 3',
-                }}
-                wrapperStyle={{ zIndex: 10 }}
-              />
-              <Area
-                type="monotone"
-                dataKey="value"
-                stroke="oklch(48% 0.19 145)"
-                strokeWidth={1.5}
-                fill="url(#nw-fill)"
-                dot={false}
-                activeDot={{
-                  r: 3,
-                  fill: 'oklch(48% 0.19 145)',
-                  strokeWidth: 0,
-                }}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
+        {series.length >= 2 ? (
+          <div className="flex-1 min-h-[100px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart
+                data={series}
+                margin={{ top: 8, right: 0, bottom: 0, left: 0 }}
+              >
+                <defs>
+                  <linearGradient id="nw-fill" x1="0" y1="0" x2="0" y2="1">
+                    <stop
+                      offset="0%"
+                      stopColor="oklch(48% 0.19 145)"
+                      stopOpacity={0.12}
+                    />
+                    <stop
+                      offset="100%"
+                      stopColor="oklch(48% 0.19 145)"
+                      stopOpacity={0}
+                    />
+                  </linearGradient>
+                </defs>
+                <Tooltip
+                  content={(props) => (
+                    <NetWorthTooltip {...props} currency={currency} />
+                  )}
+                  cursor={{
+                    stroke: 'oklch(84% 0.005 240)',
+                    strokeWidth: 1,
+                    strokeDasharray: '3 3',
+                  }}
+                  wrapperStyle={{ zIndex: 10 }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="value"
+                  stroke="oklch(48% 0.19 145)"
+                  strokeWidth={1.5}
+                  fill="url(#nw-fill)"
+                  dot={false}
+                  activeDot={{
+                    r: 3,
+                    fill: 'oklch(48% 0.19 145)',
+                    strokeWidth: 0,
+                  }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="flex-1 min-h-[100px] flex items-center justify-center">
+            <span className="text-xs font-mono text-muted-foreground/60">
+              {series.length === 1 ? 'Not enough data for a chart' : 'No data'}
+            </span>
+          </div>
+        )}
       </CardBody>
     </Card>
   );

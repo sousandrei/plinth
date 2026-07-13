@@ -5,6 +5,9 @@ export const fmtMajor = (value: number, currency: string): string =>
     maximumFractionDigits: 0,
   }).format(value);
 
+export const fmtMajorOrDash = (value: number, currency: string): string =>
+  value === 0 ? '—' : fmtMajor(value, currency);
+
 export const fmtMinor = (minor: number, currency: string): string =>
   fmtMajor(minor / 100, currency);
 

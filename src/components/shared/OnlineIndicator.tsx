@@ -81,7 +81,7 @@ export const OnlineIndicator = ({
         />
       </button>
 
-      <div className="absolute top-full right-0 w-64 bg-canvas-raised border border-border-muted shadow-lg z-50 hidden group-hover:flex group-focus-within:flex flex-col py-1 animate-in fade-in slide-in-from-top-1 duration-150">
+      <div className="absolute top-full left-0 w-64 bg-canvas-raised border border-border-muted shadow-lg z-50 hidden group-hover:flex group-focus-within:flex flex-col py-1 animate-in fade-in slide-in-from-top-1 duration-150">
         <div className="px-4 py-2.5 border-b border-border-subtle">
           <p className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground font-semibold">
             {headerLabel}

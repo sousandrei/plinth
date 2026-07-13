@@ -6,7 +6,7 @@ import type {
 import type { TooltipContentProps } from 'recharts/types/component/Tooltip';
 import { Card, CardBody } from '@/components/ui/Card';
 import type { AccountSeries } from '@/hooks/dashboard/types';
-import { fmtMajor, fmtMonth } from '@/lib/format';
+import { fmtMajor, fmtMajorOrDash, fmtMonth } from '@/lib/format';
 
 interface Props {
   accountSeries: AccountSeries[];
@@ -123,7 +123,7 @@ export const AccountsTable = ({
             {/* Balance — fixed width, right-aligned */}
             <div className="w-32 shrink-0 text-right">
               <p className="text-sm font-mono font-semibold tabular-nums text-foreground">
-                {fmtMajor(latestBalance, currency)}
+                {fmtMajorOrDash(latestBalance, currency)}
               </p>
             </div>
           </div>

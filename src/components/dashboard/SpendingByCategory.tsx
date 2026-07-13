@@ -74,68 +74,75 @@ export const SpendingByCategory = ({
         </span>
       </div>
 
-      {/* Chart */}
-      <div className="flex-1 min-h-[200px]">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart
-            data={series}
-            margin={{ top: 4, right: 24, bottom: 8, left: 24 }}
-            barCategoryGap="25%"
-          >
-            <XAxis
-              dataKey="month"
-              tickFormatter={fmtMonth}
-              tick={{
-                fontSize: 10,
-                fontFamily: 'var(--font-mono)',
-                fill: 'oklch(44% 0.006 264)',
-              }}
-              axisLine={false}
-              tickLine={false}
-            />
-            <Tooltip
-              content={(props) => (
-                <SpendingTooltip
-                  {...props}
-                  categories={categories}
-                  currency={currency}
-                />
-              )}
-              cursor={false}
-              wrapperStyle={{ zIndex: 10 }}
-            />
-            <Legend
-              iconType="circle"
-              iconSize={6}
-              wrapperStyle={{
-                fontSize: 10,
-                fontFamily: 'var(--font-mono)',
-                paddingTop: 8,
-                paddingBottom: 8,
-              }}
-            />
-            {categories.map((cat) => (
-              <Bar
-                key={cat.name}
-                dataKey={cat.name}
-                stackId="spend"
-                fill={cat.color}
-                fillOpacity={0.85}
-                activeBar={{
-                  fillOpacity: 1,
-                  stroke: cat.color,
-                  strokeWidth: 1,
+      {series.length === 0 || categories.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center min-h-[200px]">
+          <span className="text-xs font-mono text-muted-foreground/60">
+            No spending data
+          </span>
+        </div>
+      ) : (
+        <div className="flex-1 min-h-[200px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              data={series}
+              margin={{ top: 4, right: 24, bottom: 8, left: 24 }}
+              barCategoryGap="25%"
+            >
+              <XAxis
+                dataKey="month"
+                tickFormatter={fmtMonth}
+                tick={{
+                  fontSize: 10,
+                  fontFamily: 'var(--font-mono)',
+                  fill: 'oklch(44% 0.006 264)',
                 }}
-                radius={
-                  cat.name === categories[categories.length - 1].name
-                    ? [2, 2, 0, 0]
-                    : [0, 0, 0, 0]
-                }
+                axisLine={false}
+                tickLine={false}
               />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+              <Tooltip
+                content={(props) => (
+                  <SpendingTooltip
+                    {...props}
+                    categories={categories}
+                    currency={currency}
+                  />
+                )}
+                cursor={false}
+                wrapperStyle={{ zIndex: 10 }}
+              />
+              <Legend
+                iconType="circle"
+                iconSize={6}
+                wrapperStyle={{
+                  fontSize: 10,
+                  fontFamily: 'var(--font-mono)',
+                  paddingTop: 8,
+                  paddingBottom: 8,
+                }}
+              />
+              {categories.map((cat) => (
+                <Bar
+                  key={cat.name}
+                  dataKey={cat.name}
+                  stackId="spend"
+                  fill={cat.color}
+                  fillOpacity={0.85}
+                  activeBar={{
+                    fillOpacity: 1,
+                    stroke: cat.color,
+                    strokeWidth: 1,
+                  }}
+                  radius={
+                    cat.name === categories[categories.length - 1].name
+                      ? [2, 2, 0, 0]
+                      : [0, 0, 0, 0]
+                  }
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </CardBody>
   </Card>
 );

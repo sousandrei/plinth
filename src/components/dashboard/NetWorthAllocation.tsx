@@ -1,4 +1,4 @@
-import { Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { Card, CardBody } from '@/components/ui/Card';
 import type { AllocationPoint } from '@/hooks/dashboard/types';
 import { fmtMajor } from '@/lib/format';
@@ -16,6 +16,23 @@ const fmtPct = (value: number): string =>
     maximumFractionDigits: 1,
   }).format(value);
 
+const fmtCompact = (value: number, currency: string): string => {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000)
+    return new Intl.NumberFormat('sv-SE', {
+      style: 'currency',
+      currency,
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(value);
+  return new Intl.NumberFormat('sv-SE', {
+    style: 'currency',
+    currency,
+    notation: 'compact',
+    maximumFractionDigits: 0,
+  }).format(value);
+};
+
 export const NetWorthAllocation = ({
   series,
   accounts,
@@ -28,8 +45,6 @@ export const NetWorthAllocation = ({
       account,
       value: Number(latest?.[account.id] ?? 0),
       color: account.color,
-      fill: account.color,
-      fillOpacity: 0.9,
     }))
     .filter((s) => s.value > 0);
 
@@ -45,71 +60,94 @@ export const NetWorthAllocation = ({
           </span>
         </div>
 
-        {/* Pie + legend side by side */}
-        <div className="flex flex-1 min-h-0 items-center gap-3 px-4 pb-4">
-          {/* Pie */}
-          <div className="shrink-0 w-[120px] h-[120px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Tooltip
-                  formatter={(v, name) => {
-                    const slice = slices.find((s) => s.account.id === name);
-                    return [
-                      fmtMajor(Number(v), currency),
-                      slice?.account.name ?? String(name),
-                    ];
-                  }}
-                  contentStyle={{
-                    background: 'oklch(99.5% 0.002 80)',
-                    border: '1px solid oklch(84% 0.005 240)',
-                    borderRadius: 0,
-                    fontSize: 11,
-                    fontFamily: 'var(--font-mono)',
-                  }}
-                  itemStyle={{ color: 'oklch(8% 0.005 264)' }}
-                />
-                <Pie
-                  data={slices}
-                  dataKey="value"
-                  nameKey={(s) => (s as (typeof slices)[0]).account.id}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={32}
-                  outerRadius={54}
-                  strokeWidth={2}
-                  stroke="oklch(99.5% 0.002 80)"
-                  paddingAngle={2}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+        {slices.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center pb-5">
+            <span className="text-xs font-mono text-muted-foreground/60">
+              No data
+            </span>
           </div>
-
-          {/* Legend */}
-          <div className="flex flex-col gap-2 flex-1 min-w-0">
-            {slices.map((slice) => (
-              <div
-                key={slice.account.id}
-                className="flex items-center gap-1.5 min-w-0"
-              >
-                <span
-                  className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                  style={{ background: slice.color }}
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-medium text-foreground truncate leading-none">
-                    {slice.account.name}
-                  </p>
-                  <p className="text-[10px] font-mono text-muted-foreground mt-0.5">
-                    {fmtMajor(slice.value, currency)}
-                    <span className="ml-1 text-muted-foreground/60">
-                      {fmtPct(slice.value / total)}
-                    </span>
-                  </p>
-                </div>
+        ) : (
+          <div className="flex flex-1 min-h-0 items-center justify-center gap-4 px-5 pb-5">
+            {/* Pie with total in donut hole */}
+            <div className="relative shrink-0 w-[110px] h-[110px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Tooltip
+                    formatter={(v, name) => {
+                      const slice = slices.find((s) => s.account.id === name);
+                      return [
+                        fmtMajor(Number(v), currency),
+                        slice?.account.name ?? String(name),
+                      ];
+                    }}
+                    contentStyle={{
+                      background: 'oklch(99.5% 0.002 80)',
+                      border: '1px solid oklch(84% 0.005 240)',
+                      borderRadius: 0,
+                      fontSize: 11,
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                    itemStyle={{ color: 'oklch(8% 0.005 264)' }}
+                  />
+                  <Pie
+                    data={slices}
+                    dataKey="value"
+                    nameKey={(s) => (s as (typeof slices)[0]).account.id}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={30}
+                    outerRadius={50}
+                    strokeWidth={2}
+                    stroke="oklch(99.5% 0.002 80)"
+                    paddingAngle={2}
+                  >
+                    {slices.map((slice) => (
+                      <Cell
+                        key={slice.account.id}
+                        fill={slice.color}
+                        fillOpacity={0.9}
+                      />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground leading-none">
+                  Total
+                </span>
+                <span className="text-[11px] font-mono font-semibold text-foreground tabular-nums leading-tight mt-0.5">
+                  {fmtCompact(total, currency)}
+                </span>
               </div>
-            ))}
+            </div>
+
+            {/* Legend */}
+            <div className="flex flex-col gap-2 shrink-0">
+              {slices.map((slice) => (
+                <div
+                  key={slice.account.id}
+                  className="flex items-center gap-2 min-w-0"
+                >
+                  <span
+                    className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ background: slice.color }}
+                  />
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium text-foreground truncate leading-none">
+                      {slice.account.name}
+                    </p>
+                    <p className="text-[10px] font-mono text-muted-foreground mt-0.5">
+                      {fmtMajor(slice.value, currency)}
+                      <span className="ml-1 text-muted-foreground/60">
+                        {fmtPct(slice.value / total)}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </CardBody>
     </Card>
   );
