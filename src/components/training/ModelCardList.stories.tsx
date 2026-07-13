@@ -2,24 +2,9 @@ import type { Meta } from 'storybook-react-rsbuild';
 import type { ModelCard } from '@/types';
 import { ModelCardList } from './ModelCardList';
 
-const baseModel: ModelCard = {
-  version: 0,
-  is_base: true,
-  is_active: true,
-  trained_at: 'shipped',
-  samples_used: 0,
-  epochs: 0,
-  train_loss: null,
-  train_accuracy: 0.81,
-  val_loss: null,
-  val_accuracy: 0.81,
-  epoch_history: [],
-};
-
 const trainedModels: ModelCard[] = [
   {
     version: 1,
-    is_base: false,
     is_active: false,
     trained_at: '2025-01-10T14:30:00Z',
     samples_used: 1240,
@@ -32,7 +17,6 @@ const trainedModels: ModelCard[] = [
   },
   {
     version: 2,
-    is_base: false,
     is_active: true,
     trained_at: '2025-02-18T09:15:00Z',
     samples_used: 2100,
@@ -45,7 +29,6 @@ const trainedModels: ModelCard[] = [
   },
   {
     version: 3,
-    is_base: false,
     is_active: false,
     trained_at: '2025-03-22T16:45:00Z',
     samples_used: 3450,
@@ -57,8 +40,6 @@ const trainedModels: ModelCard[] = [
     epoch_history: [],
   },
 ];
-
-const allModels = [baseModel, ...trainedModels];
 
 const noop = () => {};
 
@@ -74,7 +55,7 @@ export const Default = {
   render: () => (
     <div className="w-md">
       <ModelCardList
-        models={allModels}
+        models={trainedModels}
         isLoading={false}
         selectedVersion={2}
         onSelect={noop}
@@ -115,26 +96,11 @@ export const Empty = {
   ),
 };
 
-export const BaseOnly = {
-  render: () => (
-    <div className="w-md">
-      <ModelCardList
-        models={[baseModel]}
-        isLoading={false}
-        selectedVersion={0}
-        onSelect={noop}
-        onActivate={noop}
-        onDelete={noop}
-      />
-    </div>
-  ),
-};
-
 export const NoneSelected = {
   render: () => (
     <div className="w-md">
       <ModelCardList
-        models={allModels}
+        models={trainedModels}
         isLoading={false}
         selectedVersion={null}
         onSelect={noop}

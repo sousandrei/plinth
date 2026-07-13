@@ -93,7 +93,7 @@ pub struct Pong {}
 /// what to push.
 ///
 /// `active_version` is the version currently selected as the
-/// prediction source (0 = shipped base model, no finetune).
+/// prediction source (0 = no active model, classifier is unloaded).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelVersionEntry {
     pub space_id: String,

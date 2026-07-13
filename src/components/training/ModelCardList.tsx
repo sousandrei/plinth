@@ -15,7 +15,6 @@ interface ModelCardListProps {
 }
 
 function fmtDate(raw: string): string {
-  if (raw === 'shipped') return 'shipped';
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return raw;
   return d.toLocaleString(undefined, {
@@ -83,51 +82,44 @@ export function ModelCardList({
                   >
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-mono font-semibold text-foreground">
-                        {m.is_base ? 'Base' : `v${m.version}`}
+                        {`v${m.version}`}
                       </span>
                       {m.is_active && <Badge variant="growth">Active</Badge>}
-                      {m.is_base && <Badge variant="muted">Shipped</Badge>}
                       <span className="text-[10px] font-mono text-muted-foreground">
                         {fmtDate(m.trained_at)}
                       </span>
                     </div>
 
-                    {!m.is_base && (
-                      <div className="flex flex-wrap gap-4">
-                        <StatPill
-                          label="Samples"
-                          value={String(m.samples_used)}
-                        />
-                        <StatPill label="Epochs" value={String(m.epochs)} />
-                        <StatPill
-                          label="Val Acc"
-                          value={`${(m.val_accuracy * 100).toFixed(1)}%`}
-                        />
-                      </div>
-                    )}
+                    <div className="flex flex-wrap gap-4">
+                      <StatPill
+                        label="Samples"
+                        value={String(m.samples_used)}
+                      />
+                      <StatPill label="Epochs" value={String(m.epochs)} />
+                      <StatPill
+                        label="Val Acc"
+                        value={`${(m.val_accuracy * 100).toFixed(1)}%`}
+                      />
+                    </div>
                   </button>
 
                   {/* Action buttons — not part of the selection target */}
-                  {(!m.is_active || !m.is_base) && (
+                  {!m.is_active && (
                     <div className="flex flex-col justify-center gap-1 pr-3 py-3 shrink-0">
-                      {!m.is_active && (
-                        <Button
-                          variant="secondary"
-                          onClick={() => onActivate(m.version)}
-                          className="text-[10px] px-2 h-7 rounded-none"
-                        >
-                          Activate
-                        </Button>
-                      )}
-                      {!m.is_base && (
-                        <Button
-                          variant="ghost"
-                          onClick={() => onDelete(m.version)}
-                          className="text-[10px] px-2 h-7 rounded-none text-expense hover:text-expense hover:border-expense/40"
-                        >
-                          Delete
-                        </Button>
-                      )}
+                      <Button
+                        variant="secondary"
+                        onClick={() => onActivate(m.version)}
+                        className="text-[10px] px-2 h-7 rounded-none"
+                      >
+                        Activate
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        onClick={() => onDelete(m.version)}
+                        className="text-[10px] px-2 h-7 rounded-none text-expense hover:text-expense hover:border-expense/40"
+                      >
+                        Delete
+                      </Button>
                     </div>
                   )}
                 </li>

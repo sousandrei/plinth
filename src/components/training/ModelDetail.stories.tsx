@@ -47,7 +47,6 @@ const epochHistory: FinetuneProgress[] = [
 
 const model: ModelCard = {
   version: 2,
-  is_base: false,
   is_active: true,
   trained_at: '2025-02-18T09:15:00Z',
   samples_used: 2100,

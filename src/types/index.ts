@@ -119,7 +119,6 @@ export interface ModelCard {
   train_accuracy: number;
   val_loss: number | null;
   val_accuracy: number;
-  is_base: boolean;
   is_active: boolean;
   epoch_history: FinetuneProgress[];
 }

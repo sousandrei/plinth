@@ -44,16 +44,6 @@ fn load_tokenizer(minilm_dir: &Path) -> Result<Tokenizer, AppError> {
         .map_err(|e| AppError::Internal(format!("load tokenizer: {e}")))
 }
 
-pub fn load_head_weights(resource_dir: &Path) -> Result<PathBuf, AppError> {
-    let path = resource_dir.join("model.safetensors");
-    if !path.exists() {
-        return Err(AppError::NotFound(
-            "no head weights found — run a from-scratch training run first".into(),
-        ));
-    }
-    Ok(path)
-}
-
 fn load_encoder(app_data_dir: &Path, device: &Device) -> Result<MiniLmEncoder, AppError> {
     let dir = minilm_dir(app_data_dir);
     if !dir.join("model.safetensors").exists() {
@@ -94,15 +84,15 @@ pub struct Classifier {
 
 impl Classifier {
     pub fn load(
-        resource_dir: &Path,
         app_data_dir: &Path,
+        head_weights: &Path,
         classes: Vec<String>,
     ) -> Result<Self, AppError> {
         let device = best_device();
         let encoder = load_encoder(app_data_dir, &device)?;
         let tokenizer = load_tokenizer(&minilm_dir(app_data_dir))?;
         let num_classes = classes.len();
-        let head = load_head(&load_head_weights(resource_dir)?, num_classes, &device)?;
+        let head = load_head(head_weights, num_classes, &device)?;
 
         Ok(Self {
             encoder,
@@ -196,7 +186,6 @@ pub struct TrainableClassifier {
 
 impl TrainableClassifier {
     pub fn load(
-        resource_dir: &Path,
         app_data_dir: &Path,
         weights_path: &Path,
         classes: Vec<String>,
@@ -205,16 +194,9 @@ impl TrainableClassifier {
         let encoder = load_encoder(app_data_dir, &device)?;
         let num_classes = classes.len();
 
-        // Use the given weights if they exist, otherwise fall back to the base weights.
-        let resolved = if weights_path.exists() {
-            weights_path.to_path_buf()
-        } else {
-            load_head_weights(resource_dir)?
-        };
-
         let mut var_map = VarMap::new();
         var_map
-            .load(&resolved)
+            .load(weights_path)
             .map_err(|e| AppError::Internal(format!("seed varmap: {e}")))?;
         let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
         let head = ClassificationHead::new(num_classes, vb)

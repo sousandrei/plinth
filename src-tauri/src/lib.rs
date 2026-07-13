@@ -7,7 +7,7 @@ mod sync;
 
 pub use error::AppError;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 pub type ClassifierState = Arc<Mutex<Option<classifier::Classifier>>>;
 
@@ -114,53 +114,10 @@ pub fn run() {
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
 
             let handle = app.handle().clone();
-            let handle2 = handle.clone();
             tauri::async_runtime::block_on(async move { db::setup(&handle).await })?;
 
             let classifier_state: ClassifierState = Arc::new(Mutex::new(None));
-            app.manage(classifier_state.clone());
-
-            tauri::async_runtime::spawn(async move {
-                let resource_dir = match handle2.path().resource_dir() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let _ = handle2.emit("classifier://error", e.to_string());
-                        return;
-                    }
-                };
-                let app_data_dir = match handle2.path().app_data_dir() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let _ = handle2.emit("classifier://error", e.to_string());
-                        return;
-                    }
-                };
-
-                let db = handle2.state::<db::DbPool>();
-                let classes = match sqlx::query_file!("queries/categories/list_all_categories.sql")
-                    .fetch_all(&*db)
-                    .await
-                {
-                    Ok(rows) => rows.into_iter().map(|r| r.name).collect::<Vec<String>>(),
-                    Err(e) => {
-                        let _ =
-                            handle2.emit("classifier://error", format!("fetch categories: {e}"));
-                        return;
-                    }
-                };
-
-                match classifier::Classifier::load(&resource_dir, &app_data_dir, classes) {
-                    Ok(cl) => {
-                        if let Ok(mut guard) = classifier_state.lock() {
-                            *guard = Some(cl);
-                        }
-                        let _ = handle2.emit("classifier://ready", ());
-                    }
-                    Err(e) => {
-                        let _ = handle2.emit("classifier://error", e.to_string());
-                    }
-                }
-            });
+            app.manage(classifier_state);
 
             app.manage(commands::training::TrainingHistory::default());
             app.manage(commands::training::CancelToken::default());

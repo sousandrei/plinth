@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { listMySpaces } from '@/api/spaces';
+import { listMySpaces, setActiveSpace } from '@/api/spaces';
 import { getDeviceName, getLocalAddress } from '@/api/sync';
 import { listUsers } from '@/api/users';
 import logoClean from '@/assets/logo-clean.svg';
@@ -87,6 +87,7 @@ export const LoginPage = (): React.JSX.Element => {
     try {
       const spaces = await listMySpaces();
       if (spaces.length === 1) {
+        await setActiveSpace(spaces[0].id);
         setUser(user);
         setSpaceId(spaces[0].id);
       } else {

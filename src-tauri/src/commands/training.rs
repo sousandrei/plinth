@@ -100,7 +100,6 @@ pub struct FinetuneResult {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModelCard {
-    /// 0 means the shipped base model.
     pub version: u32,
     pub trained_at: String,
     pub epochs: u32,
@@ -109,7 +108,6 @@ pub struct ModelCard {
     pub train_accuracy: f32,
     pub val_loss: Option<f32>,
     pub val_accuracy: f32,
-    pub is_base: bool,
     pub is_active: bool,
     #[serde(default)]
     pub epoch_history: Vec<FinetuneProgress>,
@@ -146,12 +144,6 @@ fn weights_path(dir: &Path, version: u32) -> PathBuf {
 
 fn card_path(dir: &Path, version: u32) -> PathBuf {
     dir.join(format!("model_v{version}.json"))
-}
-
-fn resource_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
-    app.path()
-        .resource_dir()
-        .map_err(|e| AppError::Internal(format!("resource_dir: {e}")))
 }
 
 fn next_version(dir: &PathBuf) -> u32 {
@@ -238,27 +230,25 @@ pub async fn fine_tune(
 ) -> Result<FinetuneResult, AppError> {
     let active_session = session.require()?;
     let space_id = active_session.space_id.clone();
-
-    let resource = resource_dir(&app)?;
-    let resource2 = resource.clone();
     let app_data = app
         .path()
         .app_data_dir()
         .map_err(|e| AppError::Internal(format!("app_data_dir: {e}")))?;
     let app_data2 = app_data.clone();
     let dir = models_dir(&app, &space_id)?;
+
     let version = next_version(&dir);
 
-    // Resolve starting weights: active finetuned version, or base.
+    // Resolve starting weights: active finetuned version, or none (train fresh).
     let active = get_active_version(&db, &space_id).await;
     let start_weights = if active > 0 {
-        weights_path(&dir, active)
+        Some(weights_path(&dir, active))
     } else {
-        resource.join("model.safetensors")
+        None
     };
 
     // Extract tokenizer and classes. If the classifier is already loaded use
-    // it directly; otherwise load them from the MiniLM cache and resource dir.
+    // it directly; otherwise load them from the MiniLM cache.
     // This allows from-scratch training even before any head weights exist.
     let existing_tokenizer_classes = {
         let guard = classifier
@@ -322,8 +312,10 @@ pub async fn fine_tune(
     let train_handle = tokio::task::spawn_blocking(move || -> Result<FinetuneResult, AppError> {
         let trainable = if from_scratch {
             TrainableClassifier::load_fresh(&app_data, classes_clone)?
+        } else if let Some(w) = start_weights.as_ref() {
+            TrainableClassifier::load(&app_data, w, classes_clone)?
         } else {
-            TrainableClassifier::load(&resource, &app_data, &start_weights, classes_clone)?
+            TrainableClassifier::load_fresh(&app_data, classes_clone)?
         };
 
         let split = split_indices(samples.len(), 0.8);
@@ -441,7 +433,6 @@ pub async fn fine_tune(
         train_accuracy: result.final_train_accuracy,
         val_loss: Some(result.final_val_loss),
         val_accuracy: result.final_val_accuracy,
-        is_base: false,
         is_active: false,
         epoch_history: result.epoch_history.clone(),
     };
@@ -458,10 +449,6 @@ pub async fn fine_tune(
 
     if needs_loading {
         let saved_weights = weights_path(&dir, version);
-        // Copy the new weights to the resource dir as the new base so
-        // subsequent loads and reverts work correctly.
-        let base_dest = resource2.join("model.safetensors");
-        let _ = std::fs::copy(&saved_weights, &base_dest);
 
         let classes = sqlx::query_file!("queries/categories/list_all_categories.sql")
             .fetch_all(db.inner())
@@ -471,7 +458,7 @@ pub async fn fine_tune(
             .map(|r| r.name)
             .collect::<Vec<String>>();
 
-        if let Ok(cl) = crate::classifier::Classifier::load(&resource2, &app_data2, classes)
+        if let Ok(cl) = crate::classifier::Classifier::load(&app_data2, &saved_weights, classes)
             && let Ok(mut guard) = classifier.lock()
         {
             *guard = Some(cl);
@@ -677,12 +664,6 @@ pub async fn delete_model(
     session: State<'_, Session>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    if version == 0 {
-        return Err(AppError::InvalidInput(
-            "cannot delete the base model".to_string(),
-        ));
-    }
-
     let active_session = session.require()?;
     let space_id = active_session.space_id.clone();
     let dir = models_dir(&app, &space_id)?;
@@ -704,8 +685,8 @@ pub async fn delete_model(
 
     model_sync::delete_local_files(&app, &space_id, version)?;
 
-    // If the deleted version was active, unload the classifier — no base model exists.
-    // The user must train a new version to restore predictions.
+    // If the deleted version was active, unload the classifier — no model
+    // is active until the user trains or activates another one.
     if active == version {
         sqlx::query_file!(
             "queries/training/delete_setting.sql",
@@ -750,38 +731,75 @@ pub fn get_training_device() -> String {
     }
 }
 
-/// Reload the classifier from disk. Used after MiniLM download so the
-/// classifier (which failed to load at startup when the files were missing)
-/// can be loaded now that the weights are available.
-#[tauri::command]
-pub async fn reload_classifier(
-    app: AppHandle,
-    db: State<'_, DbPool>,
-    classifier: State<'_, ClassifierState>,
+/// Loads the classifier for the active model version of the given space.
+/// If no active model exists or its files are missing, unloads the
+/// classifier (sets to `None`). Called by `set_active_space` after
+/// switching spaces, and by `reload_classifier` after MiniLM download.
+pub(crate) async fn load_active_classifier(
+    app: &AppHandle,
+    db: &DbPool,
+    classifier: &ClassifierState,
+    space_id: &str,
 ) -> Result<(), AppError> {
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| AppError::Internal(format!("resource_dir: {e}")))?;
+    let active = get_active_version(db, space_id).await;
+
+    if active == 0 {
+        if let Ok(mut guard) = classifier.lock() {
+            *guard = None;
+        }
+        return Ok(());
+    }
+
+    let dir = models_dir(app, space_id)?;
+    let weights = weights_path(&dir, active);
+
+    if !weights.exists() {
+        if let Ok(mut guard) = classifier.lock() {
+            *guard = None;
+        }
+        return Ok(());
+    }
+
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| AppError::Internal(format!("app_data_dir: {e}")))?;
 
     let classes = sqlx::query_file!("queries/categories/list_all_categories.sql")
-        .fetch_all(&*db)
+        .fetch_all(db)
         .await
-        .map_err(|e| AppError::Db(format!("fetch categories: {e}")))?
+        .map_err(|e| AppError::Db(format!("load_active_classifier categories: {e}")))?
         .into_iter()
         .map(|r| r.name)
         .collect::<Vec<String>>();
 
-    let cl = Classifier::load(&resource_dir, &app_data_dir, classes)
-        .map_err(|e| AppError::Internal(format!("reload classifier: {e}")))?;
+    let cl = Classifier::load(&app_data_dir, &weights, classes)
+        .map_err(|e| AppError::Internal(format!("load_active_classifier: {e}")))?;
 
     if let Ok(mut guard) = classifier.lock() {
         *guard = Some(cl);
     }
 
+    let _ = app.emit("classifier://ready", ());
+
     Ok(())
+}
+
+/// Reload the classifier from disk. Used after MiniLM download so the
+/// classifier (which failed to load at startup when the files were missing)
+/// can be loaded now that the weights are available. Only loads if there
+/// is an active space with a trained model.
+#[tauri::command]
+pub async fn reload_classifier(
+    app: AppHandle,
+    db: State<'_, DbPool>,
+    classifier: State<'_, ClassifierState>,
+    session: State<'_, Session>,
+) -> Result<(), AppError> {
+    let space_id = match session.require() {
+        Ok(s) => s.space_id,
+        Err(_) => return Ok(()),
+    };
+
+    load_active_classifier(&app, db.inner(), &classifier, &space_id).await
 }

@@ -44,7 +44,7 @@ pub fn md5_hex(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 /// Returns the active finetuned model version for `space_id`, or 0 if
-/// none exists (base model only). Reads from `space_settings` and
+/// none exists (no active model). Reads from `space_settings` and
 /// verifies the corresponding weights + card files actually exist on
 /// disk — `space_settings` can be updated by change_log sync or a
 /// snapshot before the model files land, so trusting the DB value

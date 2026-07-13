@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 
-use crate::{Session, db::DbPool, error::AppError, sync::debounce::DebounceSender, sync::gc};
+use crate::{
+    ClassifierState, Session, commands::training::load_active_classifier, db::DbPool,
+    error::AppError, sync::debounce::DebounceSender, sync::gc,
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct UserRecord {
@@ -214,8 +217,10 @@ pub async fn create_space(
 #[tauri::command]
 pub async fn set_active_space(
     space_id: String,
+    app: AppHandle,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    classifier: State<'_, ClassifierState>,
 ) -> Result<(), AppError> {
     let data = session.require_user()?;
 
@@ -229,7 +234,9 @@ pub async fn set_active_space(
         return Err(AppError::Forbidden);
     }
 
-    session.set_space(space_id)?;
+    session.set_space(space_id.clone())?;
+    load_active_classifier(&app, db.inner(), &classifier, &space_id).await?;
+
     Ok(())
 }
 
