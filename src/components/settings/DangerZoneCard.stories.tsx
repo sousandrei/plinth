@@ -13,16 +13,16 @@ export default meta;
 
 export const Default = {
   render: () => (
-    <div className="w-md">
-      <DangerZoneCard onReset={noop} isPending={false} />
+    <div className="w-lg">
+      <DangerZoneCard onReset={noop} isResetPending={false} />
     </div>
   ),
 };
 
 export const Resetting = {
   render: () => (
-    <div className="w-md">
-      <DangerZoneCard onReset={noop} isPending />
+    <div className="w-lg">
+      <DangerZoneCard onReset={noop} isResetPending />
     </div>
   ),
 };

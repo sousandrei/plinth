@@ -1,4 +1,4 @@
-import { ArrowClockwise } from '@phosphor-icons/react';
+import { ArrowClockwiseIcon } from '@phosphor-icons/react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { updateTransaction } from '@/api/transactions';
@@ -126,7 +126,7 @@ export const TransactionRow = ({
       )}
     >
       {/* Select */}
-      <td className="px-6 py-3 w-[40px] min-w-[40px] text-center">
+      <td className="px-6 py-4 w-[40px] min-w-[40px] text-center">
         <Checkbox
           checked={selected}
           onCheckedChange={() => onToggleSelect(t.id)}
@@ -134,7 +134,7 @@ export const TransactionRow = ({
         />
       </td>
       {/* Approve */}
-      <td className="px-6 py-3 w-[90px] min-w-[90px] text-center">
+      <td className="px-6 py-4 w-[90px] min-w-[90px] text-center">
         <Switch
           checked={t.approved}
           onCheckedChange={() => approveMutation.mutate()}
@@ -144,14 +144,14 @@ export const TransactionRow = ({
       </td>
 
       {/* Date */}
-      <td className="px-6 py-3 whitespace-nowrap w-[15%] min-w-[120px]">
+      <td className="px-6 py-4 whitespace-nowrap w-[15%] min-w-[120px]">
         <span className="text-xs font-mono text-muted-foreground">
           {t.value_date}
         </span>
       </td>
 
       {/* Description */}
-      <td className="px-6 py-3 max-w-[320px] w-[40%] min-w-[240px]">
+      <td className="px-6 py-4 max-w-[320px] w-[40%] min-w-[240px]">
         <p className="text-sm truncate">{t.text}</p>
         {t.note && (
           <p className="text-xs font-mono text-muted-foreground truncate mt-0.5">
@@ -193,7 +193,7 @@ export const TransactionRow = ({
               'shrink-0 w-7 h-7 flex items-center justify-center text-muted-foreground hover:text-foreground border border-border-subtle hover:bg-muted/60 transition-colors duration-100 disabled:opacity-40 disabled:cursor-not-allowed',
             )}
           >
-            <ArrowClockwise
+            <ArrowClockwiseIcon
               size={11}
               weight="bold"
               aria-hidden="true"
@@ -204,7 +204,7 @@ export const TransactionRow = ({
       </td>
 
       {/* Amount */}
-      <td className="px-6 py-3 whitespace-nowrap text-right w-[16%] min-w-[130px]">
+      <td className="px-6 py-4 whitespace-nowrap text-right w-[16%] min-w-[130px]">
         <span
           className={cn(
             'text-sm font-mono font-medium tabular-nums',

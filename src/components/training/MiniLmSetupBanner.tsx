@@ -87,8 +87,8 @@ export function MiniLmSetupBanner({
   };
 
   return (
-    <div className="border border-border-subtle bg-canvas-raised px-6 py-5 flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-4">
+    <div className="border border-border-subtle bg-canvas-raised px-6 py-5 flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-4">
         <div className="flex flex-col gap-1">
           <span className="text-sm font-mono font-semibold text-foreground">
             MiniLM weights required
@@ -98,17 +98,13 @@ export function MiniLmSetupBanner({
             model (~90 MB). Downloaded once and cached locally.
           </span>
         </div>
-        {status === 'done' ? (
-          <span className="shrink-0 text-xs font-mono text-growth">Done</span>
-        ) : (
-          <Button
-            variant="secondary"
-            onClick={start}
-            disabled={status !== 'idle'}
-            className="shrink-0 text-xs h-8 px-4"
-          >
-            {status === 'downloading' ? 'Downloading…' : 'Download model'}
+        {status === 'idle' && (
+          <Button variant="secondary" onClick={start} className="shrink-0">
+            Download model
           </Button>
+        )}
+        {status === 'done' && (
+          <span className="shrink-0 text-xs font-mono text-growth">Done</span>
         )}
       </div>
 

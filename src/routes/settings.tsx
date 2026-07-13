@@ -93,7 +93,7 @@ function Settings(): React.JSX.Element {
 
         <DangerZoneCard
           onReset={() => resetMutation.mutate()}
-          isPending={resetMutation.isPending}
+          isResetPending={resetMutation.isPending}
         />
       </div>
     </div>

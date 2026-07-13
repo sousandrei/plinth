@@ -75,22 +75,22 @@ export const TransactionTable = ({
           Array.from({ length: 8 }).map((_, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: skeleton placeholder
             <tr key={i} className="border-b border-border-subtle">
-              <td className="px-6 py-3 w-[40px] min-w-[40px] text-center">
+              <td className="px-6 py-4 w-[40px] min-w-[40px] text-center">
                 <div className="h-4 w-4 bg-muted animate-pulse mx-auto" />
               </td>
-              <td className="px-6 py-3 w-[90px] min-w-[90px] text-center">
+              <td className="px-6 py-4 w-[90px] min-w-[90px] text-center">
                 <div className="h-5 w-9 bg-muted animate-pulse mx-auto rounded" />
               </td>
-              <td className="px-6 py-3 w-[15%] min-w-[120px]">
+              <td className="px-6 py-4 w-[15%] min-w-[120px]">
                 <div className="h-3 w-20 bg-muted animate-pulse" />
               </td>
-              <td className="px-6 py-3 w-[40%] min-w-[240px]">
+              <td className="px-6 py-4 w-[40%] min-w-[240px]">
                 <div className="h-3 w-56 bg-muted animate-pulse" />
               </td>
-              <td className="px-6 py-3 w-[24%] min-w-[160px]">
+              <td className="px-6 py-4 w-[24%] min-w-[160px]">
                 <div className="h-3 w-16 bg-muted animate-pulse" />
               </td>
-              <td className="px-6 py-3 text-right w-[16%] min-w-[130px]">
+              <td className="px-6 py-4 text-right w-[16%] min-w-[130px]">
                 <div className="h-3 w-20 bg-muted animate-pulse ml-auto" />
               </td>
             </tr>

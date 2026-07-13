@@ -1,6 +1,7 @@
-import { ArrowClockwise } from '@phosphor-icons/react';
+import { ArrowClockwiseIcon } from '@phosphor-icons/react';
 
 import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Spinner } from '@/components/ui/Spinner';
 import type { TrainingSample } from '@/types';
@@ -88,32 +89,29 @@ export function SamplePredictions({
 
   return (
     <Card>
-      <CardHeader
-        label="Sample Predictions"
-        meta={
-          isClassifierReady && !isLoading
-            ? `${correct.length} / ${samples.length} correct`
-            : ''
-        }
-      />
+      <CardHeader label="Sample Predictions" />
       <CardBody className="p-0">
         {isClassifierReady && (
-          <div className="flex justify-end px-6 pt-4">
-            <button
-              type="button"
+          <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+              {isLoading
+                ? 'Running…'
+                : `${correct.length} / ${samples.length} correct`}
+            </span>
+            <Button
+              variant="ghost"
               onClick={onRefresh}
               disabled={isLoading}
-              className="flex items-center gap-1.5 text-[10px] font-mono text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Refresh predictions"
+              className="h-auto py-1 px-3 text-[10px] font-mono gap-2"
             >
-              <ArrowClockwise
+              <ArrowClockwiseIcon
                 size={11}
                 weight="bold"
                 aria-hidden="true"
                 className={isLoading ? 'animate-spin' : ''}
               />
               Refresh
-            </button>
+            </Button>
           </div>
         )}
         {renderBody()}

@@ -16,23 +16,6 @@ const fmtPct = (value: number): string =>
     maximumFractionDigits: 1,
   }).format(value);
 
-const fmtCompact = (value: number, currency: string): string => {
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000)
-    return new Intl.NumberFormat('sv-SE', {
-      style: 'currency',
-      currency,
-      notation: 'compact',
-      maximumFractionDigits: 1,
-    }).format(value);
-  return new Intl.NumberFormat('sv-SE', {
-    style: 'currency',
-    currency,
-    notation: 'compact',
-    maximumFractionDigits: 0,
-  }).format(value);
-};
-
 export const NetWorthAllocation = ({
   series,
   accounts,
@@ -111,14 +94,6 @@ export const NetWorthAllocation = ({
                   </Pie>
                 </PieChart>
               </ResponsiveContainer>
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground leading-none">
-                  Total
-                </span>
-                <span className="text-[11px] font-mono font-semibold text-foreground tabular-nums leading-tight mt-0.5">
-                  {fmtCompact(total, currency)}
-                </span>
-              </div>
             </div>
 
             {/* Legend */}
