@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/util';
 
 interface ToggleOption<T extends string> {
@@ -6,7 +7,7 @@ interface ToggleOption<T extends string> {
 }
 
 interface ToggleProps<T extends string> {
-  options: [ToggleOption<T>, ToggleOption<T>];
+  options: ToggleOption<T>[];
   value: T;
   onValueChange: (value: T) => void;
   disabled?: boolean;
@@ -20,6 +21,19 @@ export function Toggle<T extends string>({
   disabled = false,
   className,
 }: ToggleProps<T>): React.JSX.Element {
+  const activeIndex = Math.max(
+    0,
+    options.findIndex((opt) => opt.value === value),
+  );
+
+  const btnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [indicator, setIndicator] = useState({ x: 0, w: 0 });
+
+  useLayoutEffect(() => {
+    const btn = btnRefs.current[activeIndex];
+    if (btn) setIndicator({ x: btn.offsetLeft, w: btn.offsetWidth });
+  }, [activeIndex]);
+
   return (
     <fieldset
       className={cn(
@@ -29,23 +43,26 @@ export function Toggle<T extends string>({
       )}
     >
       <span
-        className="absolute top-0 bottom-0 w-1/2 bg-foreground transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+        className="absolute top-0 bottom-0 bg-foreground transition-[transform,width] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
         style={{
-          transform:
-            value === options[0].value ? 'translateX(0)' : 'translateX(100%)',
+          width: indicator.w,
+          transform: `translateX(${indicator.x}px)`,
         }}
         aria-hidden="true"
       />
-      {options.map((opt) => {
+      {options.map((opt, i) => {
         const active = opt.value === value;
         return (
           <button
             key={opt.value}
+            ref={(el) => {
+              btnRefs.current[i] = el;
+            }}
             type="button"
             onClick={() => onValueChange(opt.value)}
             disabled={disabled}
             className={cn(
-              'relative z-10 px-4 py-1.5 text-[10px] font-mono uppercase tracking-widest font-bold transition-colors duration-200 outline-none cursor-pointer select-none',
+              'relative z-10 h-10 px-4 text-xs font-mono uppercase tracking-widest font-bold transition-colors duration-200 outline-none cursor-pointer select-none',
               active ? 'text-canvas' : 'text-foreground hover:bg-muted/50',
             )}
           >

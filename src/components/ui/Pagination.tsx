@@ -29,7 +29,7 @@ export function Pagination({
         onClick={() => onPageChange(Math.max(0, page - 1))}
         disabled={page === 0}
         className={cn(
-          'h-8 px-4 text-xs font-mono uppercase tracking-wider border border-border-muted',
+          'h-10 px-4 text-xs font-mono uppercase tracking-wider border border-border-muted',
           'transition-all duration-150',
           'hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer',
         )}
@@ -44,7 +44,7 @@ export function Pagination({
         onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}
         disabled={page >= pageCount - 1}
         className={cn(
-          'h-8 px-4 text-xs font-mono uppercase tracking-wider border border-border-muted',
+          'h-10 px-4 text-xs font-mono uppercase tracking-wider border border-border-muted',
           'transition-all duration-150',
           'hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer',
         )}

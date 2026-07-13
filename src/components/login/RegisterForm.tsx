@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { renameSpace } from '@/api/spaces';
 import { createUser, setPin } from '@/api/users';
+import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/util';
 import type { User } from '@/types';
 import { PinInput } from './PinInput';
@@ -122,24 +123,11 @@ export const RegisterForm = ({
           {nameError && (
             <p className="text-xs font-mono text-expense">{nameError}</p>
           )}
-          <button
-            type="submit"
-            className={cn(
-              'w-full px-4 py-2.5 text-xs font-mono uppercase tracking-widest',
-              'bg-foreground text-canvas',
-              'transition-all duration-150 active:scale-[0.98] hover:opacity-90',
-            )}
-          >
-            Continue
-          </button>
+          <Button type="submit">Continue</Button>
           {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-150 underline underline-offset-4 mt-2"
-            >
+            <Button variant="ghost" onClick={onBack} className="mt-2">
               Back
-            </button>
+            </Button>
           )}
         </form>
       )}
@@ -151,16 +139,15 @@ export const RegisterForm = ({
             error={pinError || undefined}
             key="set-pin"
           />
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={() => {
               setPinError('');
               setStep('name');
             }}
-            className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-150 underline underline-offset-4"
           >
             Back to Name
-          </button>
+          </Button>
         </div>
       )}
 
@@ -172,17 +159,16 @@ export const RegisterForm = ({
             disabled={false}
             key="confirm-pin"
           />
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={() => {
               setPin_('');
               setPinError('');
               setStep('pin');
             }}
-            className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-150 underline underline-offset-4"
           >
             Back to Choose PIN
-          </button>
+          </Button>
         </div>
       )}
 
@@ -213,18 +199,9 @@ export const RegisterForm = ({
               {String(createMutation.error)}
             </p>
           )}
-          <button
-            type="submit"
-            disabled={createMutation.isPending}
-            className={cn(
-              'w-full px-4 py-2.5 text-xs font-mono uppercase tracking-widest',
-              'bg-foreground text-canvas',
-              'transition-all duration-150 active:scale-[0.98] hover:opacity-90',
-              'disabled:opacity-50 disabled:pointer-events-none',
-            )}
-          >
+          <Button type="submit" disabled={createMutation.isPending}>
             {createMutation.isPending ? 'Setting up…' : 'Get started'}
-          </button>
+          </Button>
         </form>
       )}
     </div>

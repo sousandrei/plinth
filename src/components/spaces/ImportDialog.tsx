@@ -5,7 +5,7 @@ import { createSpace, importSpaceData } from '@/api/spaces';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
-import { cn } from '@/lib/util';
+import { Toggle } from '@/components/ui/Toggle';
 import type { ImportResult, Space } from '@/types';
 
 interface ImportDialogProps {
@@ -144,32 +144,14 @@ export const ImportDialog = ({
             >
               Target
             </label>
-            <div className="flex gap-1">
-              <button
-                type="button"
-                onClick={() => setMode('new')}
-                className={cn(
-                  'px-3 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors duration-150',
-                  mode === 'new'
-                    ? 'bg-foreground text-canvas border-foreground'
-                    : 'bg-transparent text-muted-foreground border-border-subtle hover:border-foreground',
-                )}
-              >
-                New Space
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode('existing')}
-                className={cn(
-                  'px-3 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors duration-150',
-                  mode === 'existing'
-                    ? 'bg-foreground text-canvas border-foreground'
-                    : 'bg-transparent text-muted-foreground border-border-subtle hover:border-foreground',
-                )}
-              >
-                Existing Space
-              </button>
-            </div>
+            <Toggle
+              options={[
+                { value: 'new', label: 'New Space' },
+                { value: 'existing', label: 'Existing Space' },
+              ]}
+              value={mode}
+              onValueChange={(v) => setMode(v)}
+            />
             {mode === 'new' ? (
               <Input
                 value={newSpaceName}

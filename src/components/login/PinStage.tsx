@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { setPin, verifyPin } from '@/api/users';
+import { Button } from '@/components/ui/Button';
 import type { User } from '@/types';
 import { PinInput } from './PinInput';
 
@@ -101,41 +102,35 @@ export const PinStage = ({
       />
 
       {isSetFlow && step === 'set' && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
           onClick={() => {
             setPin_('');
             setPinError('');
             setStep('enter');
           }}
-          className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-150 underline underline-offset-4"
         >
           Back
-        </button>
+        </Button>
       )}
 
       {isSetFlow && step === 'confirm' && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
           onClick={() => {
             setPin_('');
             setPinError('');
             setStep('set');
           }}
-          className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-150 underline underline-offset-4"
         >
           Back
-        </button>
+        </Button>
       )}
 
       {onBack && !isSetFlow && (
-        <button
-          type="button"
-          onClick={onBack}
-          className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-150 underline underline-offset-4"
-        >
+        <Button variant="ghost" onClick={onBack}>
           Back
-        </button>
+        </Button>
       )}
     </div>
   );

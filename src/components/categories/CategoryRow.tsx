@@ -1,6 +1,7 @@
 import { Check, Palette, PencilSimple, Trash, X } from '@phosphor-icons/react';
 import type React from 'react';
 import { useState } from 'react';
+import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Spinner } from '@/components/ui/Spinner';
@@ -118,26 +119,22 @@ export const CategoryRow = ({
       ) : (
         <>
           <div className="flex items-center gap-3">
-            <span
-              className="px-2 py-0.5 text-xs font-medium border rounded-sm tracking-wide"
-              style={categoryChipStyle(cat.name)}
-            >
-              {cat.name}
-            </span>
+            <Badge style={categoryChipStyle(cat.name)}>{cat.name}</Badge>
           </div>
 
           <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              onClick={startEdit}
-              disabled={isDeletePending || isUpdatePending}
-              className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted/30 active:scale-[0.95]"
-              title="Edit Category"
-            >
-              <PencilSimple size={16} />
-            </Button>
+            {cat.name !== 'Other' && (
+              <Button
+                variant="ghost"
+                onClick={startEdit}
+                disabled={isDeletePending || isUpdatePending}
+                className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted/30 active:scale-[0.95]"
+                title="Edit Category"
+              >
+                <PencilSimple size={16} />
+              </Button>
+            )}
 
-            {/* We prevent deleting the default catch-all "Other" category to keep training loops fully stable */}
             {cat.name !== 'Other' ? (
               <Button
                 variant="ghost"

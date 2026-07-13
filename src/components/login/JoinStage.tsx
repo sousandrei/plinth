@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { setActiveSpace } from '@/api/spaces';
 import { getDeviceName, joinSpace, listPeers } from '@/api/sync';
 import { createUserInSpace, setPin, verifyPin } from '@/api/users';
+import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/util';
 import type { PeerInfo, User } from '@/types';
 import { PinInput } from './PinInput';
@@ -138,13 +139,9 @@ export const JoinStage = ({
               <span className="text-xs font-mono text-muted-foreground">
                 No devices found.
               </span>
-              <button
-                type="button"
-                onClick={() => refetch()}
-                className="text-xs font-mono text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors duration-150"
-              >
+              <Button variant="ghost" onClick={() => refetch()}>
                 Retry
-              </button>
+              </Button>
             </div>
           ) : (
             <div className="flex flex-col gap-2 w-64">
@@ -173,13 +170,9 @@ export const JoinStage = ({
               ))}
             </div>
           )}
-          <button
-            type="button"
-            onClick={onBack}
-            className="text-xs font-mono text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors duration-150"
-          >
+          <Button variant="ghost" onClick={onBack}>
             Back
-          </button>
+          </Button>
         </>
       )}
 
@@ -233,29 +226,23 @@ export const JoinStage = ({
             {tokenError && (
               <p className="text-xs font-mono text-expense">{tokenError}</p>
             )}
-            <button
+            <Button
               type="submit"
               disabled={token.length < 6 || joinMutation.isPending}
-              className={cn(
-                'w-full px-4 py-2.5 text-xs font-mono uppercase tracking-widest',
-                'bg-foreground text-canvas transition-all duration-150 active:scale-[0.98] hover:opacity-90',
-                'disabled:opacity-50 disabled:pointer-events-none',
-              )}
             >
               {joinMutation.isPending ? 'Joining…' : 'Join Space'}
-            </button>
+            </Button>
           </form>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={() => {
               setTokenError('');
               setToken('');
               setStep('peer');
             }}
-            className="text-xs font-mono text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors duration-150"
           >
             Back
-          </button>
+          </Button>
         </>
       )}
 
@@ -348,23 +335,17 @@ export const JoinStage = ({
             {nameError && (
               <p className="text-xs font-mono text-expense">{nameError}</p>
             )}
-            <button
-              type="submit"
-              className="w-full px-4 py-2.5 text-xs font-mono uppercase tracking-widest bg-foreground text-canvas transition-all duration-150 active:scale-[0.98] hover:opacity-90"
-            >
-              Continue
-            </button>
+            <Button type="submit">Continue</Button>
           </form>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={() => {
               setNameError('');
               setStep('pick');
             }}
-            className="text-xs font-mono text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors duration-150"
           >
             Back
-          </button>
+          </Button>
         </>
       )}
 
@@ -384,16 +365,15 @@ export const JoinStage = ({
             error={pinError || undefined}
             key="join-pin"
           />
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={() => {
               setPinError('');
               setStep(pickedUser ? 'pick' : 'name');
             }}
-            className="text-xs font-mono text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors duration-150"
           >
             Back
-          </button>
+          </Button>
         </>
       )}
 
@@ -414,17 +394,16 @@ export const JoinStage = ({
             key="join-confirm"
             disabled={finishMutation.isPending}
           />
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={() => {
               setPin_('');
               setPinError('');
               setStep('pin');
             }}
-            className="text-xs font-mono text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors duration-150"
           >
             Back
-          </button>
+          </Button>
         </>
       )}
     </div>

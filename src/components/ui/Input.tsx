@@ -9,7 +9,7 @@ export const Input = ({
 }: InputProps): React.JSX.Element => (
   <input
     className={cn(
-      'w-full px-4 py-3 text-sm font-sans',
+      'w-full h-10 px-4 text-sm font-sans',
       'bg-canvas-raised text-foreground',
       'border border-border-subtle',
       'shadow-[0_1px_2px_0_oklch(0%_0_0_/_0.04)]',

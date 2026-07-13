@@ -21,7 +21,7 @@ import {
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { toast } from '@/components/ui/Toast';
-import { cn } from '@/lib/util';
+import { Toggle } from '@/components/ui/Toggle';
 import type { Space, SpaceMember } from '@/types';
 import { DevicesSection } from './DevicesSection';
 
@@ -287,32 +287,14 @@ export const SpaceEditDialog = ({
           >
             Add Member
           </label>
-          <div className="flex gap-1">
-            <button
-              type="button"
-              onClick={() => setAddMode('existing')}
-              className={cn(
-                'px-3 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors duration-150',
-                addMode === 'existing'
-                  ? 'bg-foreground text-canvas border-foreground'
-                  : 'bg-transparent text-muted-foreground border-border-subtle hover:border-foreground',
-              )}
-            >
-              Existing User
-            </button>
-            <button
-              type="button"
-              onClick={() => setAddMode('create')}
-              className={cn(
-                'px-3 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors duration-150',
-                addMode === 'create'
-                  ? 'bg-foreground text-canvas border-foreground'
-                  : 'bg-transparent text-muted-foreground border-border-subtle hover:border-foreground',
-              )}
-            >
-              Create New User
-            </button>
-          </div>
+          <Toggle
+            options={[
+              { value: 'existing', label: 'Existing User' },
+              { value: 'create', label: 'Create New User' },
+            ]}
+            value={addMode}
+            onValueChange={(v) => setAddMode(v)}
+          />
           {addMode === 'existing' && addableUsers.length > 0 && (
             <div className="flex gap-2">
               <Select

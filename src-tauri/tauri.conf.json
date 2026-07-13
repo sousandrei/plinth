@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "Plinth",
-        "width": 1080,
-        "height": 768,
-        "minWidth": 1080,
-        "minHeight": 768
+        "width": 1200,
+        "height": 900,
+        "minWidth": 1200,
+        "minHeight": 900
       }
     ],
     "security": {

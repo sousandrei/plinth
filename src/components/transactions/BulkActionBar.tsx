@@ -253,13 +253,9 @@ export const BulkActionBar = ({
 
           <div className="h-5 w-px bg-border-muted" />
 
-          <button
-            type="button"
-            onClick={onClear}
-            className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-100 underline underline-offset-4 whitespace-nowrap"
-          >
+          <Button variant="ghost" onClick={onClear}>
             Clear
-          </button>
+          </Button>
         </div>
       </div>
     </div>,

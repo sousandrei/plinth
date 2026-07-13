@@ -14,7 +14,7 @@ export const Button = ({
   <button
     type="button"
     className={cn(
-      'inline-flex items-center justify-center px-5 py-2.5 text-sm font-medium',
+      'inline-flex h-10 items-center justify-center px-4 text-sm font-medium',
       'transition-all duration-150 cursor-pointer',
       'active:scale-[0.97]',
       'disabled:pointer-events-none disabled:opacity-50',

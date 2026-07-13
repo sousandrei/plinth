@@ -42,3 +42,20 @@ export const Disabled = {
     );
   },
 };
+
+export const ThreeOptions = {
+  render: () => {
+    const [value, setValue] = useState('all');
+    return (
+      <Toggle
+        value={value}
+        onValueChange={setValue}
+        options={[
+          { value: 'all', label: 'All' },
+          { value: 'approved', label: 'Approved' },
+          { value: 'unapproved', label: 'Unapproved' },
+        ]}
+      />
+    );
+  },
+};

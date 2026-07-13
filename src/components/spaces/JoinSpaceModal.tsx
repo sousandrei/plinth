@@ -80,13 +80,9 @@ export const JoinSpaceModal = ({
               <span className="text-xs font-mono text-muted-foreground">
                 No devices found on this network.
               </span>
-              <button
-                type="button"
-                onClick={() => refetch()}
-                className="self-start text-xs font-mono text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors duration-150"
-              >
+              <Button variant="ghost" onClick={() => refetch()}>
                 Retry
-              </button>
+              </Button>
             </div>
           ) : (
             <div className="flex flex-col divide-y divide-border-subtle border border-border-muted">

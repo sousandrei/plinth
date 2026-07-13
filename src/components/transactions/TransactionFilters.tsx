@@ -1,5 +1,7 @@
+import { Button } from '@/components/ui/Button';
 import { DatePicker } from '@/components/ui/DatePicker';
 import { Select } from '@/components/ui/Select';
+import { Toggle } from '@/components/ui/Toggle';
 import { cn } from '@/lib/util';
 
 export interface FilterState {
@@ -17,7 +19,7 @@ interface TransactionFiltersProps {
 }
 
 const inputBase = cn(
-  'h-8 px-3 text-xs font-mono bg-canvas border border-border-muted',
+  'h-10 px-3 text-xs font-mono bg-canvas border border-border-muted',
   'placeholder:text-muted-foreground',
   'focus:outline-none focus:border-accent focus:shadow-[0_0_0_2px_var(--color-accent-muted)]',
   'transition-all duration-150',
@@ -46,23 +48,15 @@ export const TransactionFilters = ({
       />
 
       {/* Approved toggle */}
-      <div className="flex border border-border-muted">
-        {(['all', 'approved', 'unapproved'] as const).map((val) => (
-          <button
-            key={val}
-            type="button"
-            onClick={() => set({ approved: val })}
-            className={cn(
-              'h-8 px-3 text-xs font-mono uppercase tracking-wider transition-colors duration-100',
-              filters.approved === val
-                ? 'bg-foreground text-canvas'
-                : 'bg-canvas text-muted-foreground hover:bg-muted',
-            )}
-          >
-            {val}
-          </button>
-        ))}
-      </div>
+      <Toggle
+        options={[
+          { value: 'all', label: 'All' },
+          { value: 'approved', label: 'Approved' },
+          { value: 'unapproved', label: 'Unapproved' },
+        ]}
+        value={filters.approved}
+        onValueChange={(val) => set({ approved: val })}
+      />
 
       {/* Category filter */}
       <Select
@@ -75,7 +69,7 @@ export const TransactionFilters = ({
             label: cat.toUpperCase(),
           })),
         ]}
-        className="h-8 py-0 px-3 text-xs font-mono uppercase tracking-wider w-52 bg-canvas border border-border-muted"
+        className="h-10 px-3 text-xs font-mono uppercase tracking-wider w-52 bg-canvas border border-border-muted"
       />
 
       {/* Date range */}
@@ -97,8 +91,8 @@ export const TransactionFilters = ({
         filters.category !== 'all' ||
         filters.dateFrom ||
         filters.dateTo) && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
           onClick={() =>
             onChange({
               search: '',
@@ -108,10 +102,9 @@ export const TransactionFilters = ({
               dateTo: '',
             })
           }
-          className="h-8 px-3 text-xs font-mono text-muted-foreground hover:text-foreground transition-colors duration-100 underline underline-offset-4"
         >
           Clear
-        </button>
+        </Button>
       )}
     </div>
   );
