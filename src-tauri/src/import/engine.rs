@@ -25,15 +25,11 @@ pub struct ParsedTransaction {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ParseResult {
-    Checking {
+    Transactions {
         account_id: String,
         transactions: Vec<ParsedTransaction>,
     },
-    Savings {
-        account_id: String,
-        transactions: Vec<ParsedTransaction>,
-    },
-    Investment {
+    MonthlyBalance {
         account_id: String,
         month: String,
         balance: i64,

@@ -1,13 +1,24 @@
 import { formatAmount } from '@/components/transactions/TransactionRow';
 
+const TYPE_LABELS: Record<string, string> = {
+  checking: 'Checking',
+  savings: 'Savings',
+  investment: 'Investment',
+  credit: 'Credit',
+  loan: 'Loan',
+  other: 'Other',
+};
+
 interface AccountSummaryCardProps {
   accountId: string;
+  accountType?: string;
   month?: string;
   balance?: number;
 }
 
 export function AccountSummaryCard({
   accountId,
+  accountType,
   month,
   balance,
 }: AccountSummaryCardProps): React.JSX.Element {
@@ -20,6 +31,14 @@ export function AccountSummaryCard({
         <p>
           Account ID: <span className="text-foreground">{accountId}</span>
         </p>
+        {accountType && (
+          <p>
+            Type:{' '}
+            <span className="text-foreground">
+              {TYPE_LABELS[accountType] ?? accountType}
+            </span>
+          </p>
+        )}
         {month && (
           <p>
             Month: <span className="text-foreground">{month}</span>

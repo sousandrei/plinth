@@ -65,14 +65,18 @@ export const Default = {
       loadingFiles={false}
       selectedFile={files[0]}
       onSelectedFileChange={noop}
+      units={files[0].units}
       targetUnit="checking"
       onTargetUnitChange={noop}
       targetFile="/path/to/statement.csv"
       onBrowseFile={noop}
       onRunTest={noop}
       onSaveScript={noop}
+      onNewScript={noop}
+      onDeleteScript={noop}
       testPending={false}
       savePending={false}
+      deletePending={false}
     />
   ),
 };
@@ -84,14 +88,18 @@ export const NoFileSelected = {
       loadingFiles={false}
       selectedFile={null}
       onSelectedFileChange={noop}
+      units={[]}
       targetUnit=""
       onTargetUnitChange={noop}
       targetFile=""
       onBrowseFile={noop}
       onRunTest={noop}
       onSaveScript={noop}
+      onNewScript={noop}
+      onDeleteScript={noop}
       testPending={false}
       savePending={false}
+      deletePending={false}
     />
   ),
 };
@@ -103,14 +111,18 @@ export const LoadingFiles = {
       loadingFiles
       selectedFile={null}
       onSelectedFileChange={noop}
+      units={[]}
       targetUnit=""
       onTargetUnitChange={noop}
       targetFile=""
       onBrowseFile={noop}
       onRunTest={noop}
       onSaveScript={noop}
+      onNewScript={noop}
+      onDeleteScript={noop}
       testPending={false}
       savePending={false}
+      deletePending={false}
     />
   ),
 };
@@ -122,14 +134,18 @@ export const TestPending = {
       loadingFiles={false}
       selectedFile={files[0]}
       onSelectedFileChange={noop}
+      units={files[0].units}
       targetUnit="checking"
       onTargetUnitChange={noop}
       targetFile="/path/to/statement.csv"
       onBrowseFile={noop}
       onRunTest={noop}
       onSaveScript={noop}
+      onNewScript={noop}
+      onDeleteScript={noop}
       testPending
       savePending={false}
+      deletePending={false}
     />
   ),
 };
@@ -141,14 +157,18 @@ export const SavePending = {
       loadingFiles={false}
       selectedFile={files[0]}
       onSelectedFileChange={noop}
+      units={files[0].units}
       targetUnit="checking"
       onTargetUnitChange={noop}
       targetFile="/path/to/statement.csv"
       onBrowseFile={noop}
       onRunTest={noop}
       onSaveScript={noop}
+      onNewScript={noop}
+      onDeleteScript={noop}
       testPending={false}
       savePending
+      deletePending={false}
     />
   ),
 };

@@ -32,6 +32,7 @@ interface ResultPreviewProps {
   errorMsg: string;
   testPending: boolean;
   draggingPanel: 'horizontal' | 'logs' | null;
+  accountType?: string;
 }
 
 export function ResultPreview({
@@ -42,6 +43,7 @@ export function ResultPreview({
   errorMsg,
   testPending,
   draggingPanel,
+  accountType,
 }: ResultPreviewProps): React.JSX.Element {
   return (
     <div className="flex-1 border-b border-border-muted flex flex-col bg-canvas overflow-hidden min-h-[140px] rounded-none">
@@ -65,6 +67,7 @@ export function ResultPreview({
                 parsedResult.month !== undefined) && (
                 <AccountSummaryCard
                   accountId={parsedResult.account_id}
+                  accountType={accountType}
                   month={parsedResult.month}
                   balance={parsedResult.balance}
                 />

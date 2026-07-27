@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -59,6 +59,43 @@ fn get_units(app: &AppHandle) -> Result<Vec<ParserUnit>, AppError> {
     Ok(scan(&builtin, &user))
 }
 
+// Build a ParserFileInfo from a script path by reading its content and
+// extracting unit metadata. Shared by list_parser_files and create_parser_file.
+fn build_file_info(path: &Path, is_builtin: bool) -> Result<ParserFileInfo, AppError> {
+    let filename = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default()
+        .to_string();
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| AppError::Io(format!("read {}: {e}", path.display())))?;
+
+    let units = match crate::import::engine::extract_units_source(&content) {
+        Ok(metas) => metas
+            .into_iter()
+            .map(|m| ParserUnitInfo {
+                key: m.key,
+                name: m.name,
+                bank: m.bank,
+                format: m.format,
+                account_type: m.account_type,
+                account_source: m.account_source,
+                is_builtin,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    Ok(ParserFileInfo {
+        filename,
+        path: path.to_string_lossy().to_string(),
+        is_builtin,
+        content,
+        units,
+    })
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -98,12 +135,13 @@ pub async fn upload_file(
     logs.push(format!("Resolving parser format: {parser_key}"));
 
     // Resolve the parser unit and run extraction + transform in a blocking thread.
-    let (unit_key, unit_account_source, unit_currency, script_path) = {
+    let (unit_key, unit_account_source, unit_account_type, unit_currency, script_path) = {
         let units = get_units(&app)?;
         let unit = find(&units, &parser_key)?;
         (
             unit.key.clone(),
             unit.account_source.clone(),
+            unit.account_type.clone(),
             unit.currency.clone(),
             unit.script_path.clone(),
         )
@@ -111,7 +149,7 @@ pub async fn upload_file(
 
     logs.push(format!("Using parser script: {}", script_path.display()));
     logs.push(format!(
-        "Target account properties — Bank: {unit_account_source}, Currency: {unit_currency}"
+        "Target account properties — Bank: {unit_account_source}, Type: {unit_account_type}, Currency: {unit_currency}"
     ));
     logs.push(format!(
         "Extracting contents from document: {}",
@@ -141,27 +179,18 @@ pub async fn upload_file(
     let mut skipped = 0i64;
 
     match parse_result {
-        ParseResult::Checking {
-            account_id: ref aid,
-            ref transactions,
-        }
-        | ParseResult::Savings {
-            account_id: ref aid,
-            ref transactions,
+        ParseResult::Transactions {
+            account_id: aid,
+            transactions,
         } => {
-            account_id = aid.clone();
-            let account_type = if matches!(parse_result, ParseResult::Checking { .. }) {
-                "checking"
-            } else {
-                "savings"
-            };
+            account_id = aid;
             logs.push("Ensuring target account exists in database...".to_string());
             ensure_account_exists(
                 &mut tx,
                 &space_id,
                 &account_id,
                 &account_id,
-                account_type,
+                &unit_account_type,
                 &unit_account_source,
                 &unit_currency,
             )
@@ -169,7 +198,7 @@ pub async fn upload_file(
             insert_transactions(
                 &mut tx,
                 &classifier,
-                transactions,
+                &transactions,
                 &account_id,
                 &unit_currency,
                 &mut ImportAccumulator {
@@ -181,7 +210,7 @@ pub async fn upload_file(
             .await?;
         }
 
-        ParseResult::Investment {
+        ParseResult::MonthlyBalance {
             account_id: aid,
             month,
             balance,
@@ -194,7 +223,7 @@ pub async fn upload_file(
                 &space_id,
                 &account_id,
                 &account_id,
-                "investment",
+                &unit_account_type,
                 &unit_account_source,
                 &unit_currency,
             )
@@ -353,36 +382,8 @@ pub async fn list_parser_files(app: AppHandle) -> Result<Vec<ParserFileInfo>, Ap
                     if path.extension().and_then(|e| e.to_str()) != Some("js") {
                         continue;
                     }
-                    let filename = path
-                        .file_name()
-                        .and_then(|f| f.to_str())
-                        .unwrap_or_default()
-                        .to_string();
-
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let units = match crate::import::engine::extract_units_source(&content) {
-                            Ok(metas) => metas
-                                .into_iter()
-                                .map(|m| ParserUnitInfo {
-                                    key: m.key,
-                                    name: m.name,
-                                    bank: m.bank,
-                                    format: m.format,
-                                    account_type: m.account_type,
-                                    account_source: m.account_source,
-                                    is_builtin,
-                                })
-                                .collect(),
-                            Err(_) => Vec::new(),
-                        };
-
-                        files.push(ParserFileInfo {
-                            filename,
-                            path: path.to_string_lossy().to_string(),
-                            is_builtin,
-                            content,
-                            units,
-                        });
+                    if let Ok(info) = build_file_info(&path, is_builtin) {
+                        files.push(info);
                     }
                 }
             }
@@ -413,6 +414,98 @@ pub async fn save_parser_file(path: String, code: String) -> Result<(), AppError
     })
     .await
     .map_err(|e| AppError::Internal(format!("save_parser_file spawn: {e}")))?
+}
+
+// Create a brand-new user parser script. Rejects names that aren't `.js`,
+// contain path separators, or already exist. Never overwrites built-ins.
+#[tauri::command]
+pub async fn create_parser_file(
+    filename: String,
+    code: String,
+    app: AppHandle,
+) -> Result<ParserFileInfo, AppError> {
+    tokio::task::spawn_blocking(move || {
+        if !filename.ends_with(".js") {
+            return Err(AppError::InvalidInput(format!(
+                "parser filename must end with .js: {filename}"
+            )));
+        }
+        if filename.contains(std::path::MAIN_SEPARATOR)
+            || filename.contains('/')
+            || filename.contains('\\')
+        {
+            return Err(AppError::InvalidInput(format!(
+                "parser filename must not contain path separators: {filename}"
+            )));
+        }
+
+        let (_, user_dir) = parser_dirs(&app)?;
+        let path = user_dir.join(&filename);
+
+        if path.exists() {
+            return Err(AppError::InvalidInput(format!(
+                "parser file already exists: {filename}"
+            )));
+        }
+
+        std::fs::write(&path, code)
+            .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
+
+        build_file_info(&path, false)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("create_parser_file spawn: {e}")))?
+}
+
+// Delete a user parser script. Refuses to delete built-in scripts: the
+// target path must live strictly inside the user parsers directory.
+#[tauri::command]
+pub async fn delete_parser_file(path: String, app: AppHandle) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || {
+        let (_, user_dir) = parser_dirs(&app)?;
+        let user_dir = user_dir
+            .canonicalize()
+            .map_err(|e| AppError::Io(format!("canonicalize user parsers dir: {e}")))?;
+
+        let target = PathBuf::from(&path);
+        let target = target
+            .canonicalize()
+            .map_err(|e| AppError::Io(format!("canonicalize {}: {e}", target.display())))?;
+
+        if !target.starts_with(&user_dir) {
+            return Err(AppError::InvalidInput(
+                "refusing to delete built-in parser script".to_string(),
+            ));
+        }
+
+        std::fs::remove_file(&target)
+            .map_err(|e| AppError::Io(format!("delete {}: {e}", target.display())))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("delete_parser_file spawn: {e}")))?
+}
+
+// Live-parse unit metadata from a code string (the editor buffer) so the
+// frontend can refresh the "Unit to Run" dropdown as the user types.
+#[tauri::command]
+pub async fn extract_units_from_code(code: String) -> Result<Vec<ParserUnitInfo>, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let metas = crate::import::engine::extract_units_source(&code)?;
+        Ok(metas
+            .into_iter()
+            .map(|m| ParserUnitInfo {
+                key: m.key,
+                name: m.name,
+                bank: m.bank,
+                format: m.format,
+                account_type: m.account_type,
+                account_source: m.account_source,
+                is_builtin: false,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("extract_units_from_code spawn: {e}")))?
 }
 
 #[derive(Debug, serde::Serialize)]

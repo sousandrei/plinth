@@ -34,10 +34,10 @@ export const DialogContent = ({
   className,
 }: DialogContentProps): React.JSX.Element => (
   <BaseDialog.Portal>
-    <BaseDialog.Backdrop className="fixed inset-0 bg-foreground/30 backdrop-blur-[2px]" />
+    <BaseDialog.Backdrop className="fixed inset-0 bg-foreground/30 backdrop-blur-[2px] z-50" />
     <BaseDialog.Popup
       className={cn(
-        'fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2',
+        'fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50',
         'w-full max-w-md bg-canvas-raised',
         'border border-border-muted',
         'shadow-[0_20px_60px_-10px_oklch(0%_0_0_/_0.20)]',

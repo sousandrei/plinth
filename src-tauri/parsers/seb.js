@@ -1,4 +1,4 @@
-function transformSEB(data, unitName, unitAccountType) {
+function transformSEB(data, unitName) {
   var rows = data.rows;
 
   // Search first 10 rows for account number inside parens: e.g. "Konto (5000 1234567)"
@@ -59,7 +59,7 @@ function transformSEB(data, unitName, unitAccountType) {
   }
 
   return {
-    type: unitAccountType,
+    type: 'transactions',
     account_id: accountNumber,
     transactions: transactions,
   };
@@ -76,7 +76,7 @@ export default {
       account_source: 'seb',
       currency: 'SEK',
       transform(data) {
-        return transformSEB(data, 'seb_checking', 'checking');
+        return transformSEB(data, 'seb_checking');
       },
     },
     {
@@ -87,7 +87,7 @@ export default {
       account_source: 'seb',
       currency: 'SEK',
       transform(data) {
-        return transformSEB(data, 'seb_savings', 'savings');
+        return transformSEB(data, 'seb_savings');
       },
     },
   ],

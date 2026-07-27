@@ -11,16 +11,33 @@ export default meta;
 
 export const Default = {
   render: () => (
-    <AccountSummaryCard accountId="acct-123" month="2025-03" balance={452300} />
+    <AccountSummaryCard
+      accountId="acct-123"
+      accountType="investment"
+      month="2025-03"
+      balance={452300}
+    />
   ),
 };
 
 export const NoMonth = {
-  render: () => <AccountSummaryCard accountId="acct-123" balance={452300} />,
+  render: () => (
+    <AccountSummaryCard
+      accountId="acct-123"
+      accountType="savings"
+      balance={452300}
+    />
+  ),
 };
 
 export const NoBalance = {
-  render: () => <AccountSummaryCard accountId="acct-123" month="2025-03" />,
+  render: () => (
+    <AccountSummaryCard
+      accountId="acct-123"
+      accountType="checking"
+      month="2025-03"
+    />
+  ),
 };
 
 export const AccountIdOnly = {

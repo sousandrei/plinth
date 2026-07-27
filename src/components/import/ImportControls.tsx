@@ -1,4 +1,5 @@
 import type { ParserFileInfo } from '@/api/import';
+import type { ParserInfo } from '@/api/upload';
 import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
@@ -8,14 +9,18 @@ interface ImportControlsProps {
   loadingFiles: boolean;
   selectedFile: ParserFileInfo | null;
   onSelectedFileChange: (file: ParserFileInfo | null) => void;
+  units: ParserInfo[];
   targetUnit: string;
   onTargetUnitChange: (unit: string) => void;
   targetFile: string;
   onBrowseFile: () => void;
   onRunTest: () => void;
   onSaveScript: () => void;
+  onNewScript: () => void;
+  onDeleteScript: () => void;
   testPending: boolean;
   savePending: boolean;
+  deletePending: boolean;
 }
 
 export function ImportControls({
@@ -23,14 +28,18 @@ export function ImportControls({
   loadingFiles,
   selectedFile,
   onSelectedFileChange,
+  units,
   targetUnit,
   onTargetUnitChange,
   targetFile,
   onBrowseFile,
   onRunTest,
   onSaveScript,
+  onNewScript,
+  onDeleteScript,
   testPending,
   savePending,
+  deletePending,
 }: ImportControlsProps): React.JSX.Element {
   const scriptOptions =
     files?.map((f) => ({
@@ -39,10 +48,13 @@ export function ImportControls({
     })) ?? [];
 
   const unitOptions =
-    selectedFile?.units?.map((u) => ({
+    units?.map((u) => ({
       value: u.key,
       label: `${u.name} [${u.account_type}]`,
     })) ?? [];
+
+  const canDelete =
+    !!selectedFile && !selectedFile.is_builtin && !deletePending;
 
   return (
     <div className="flex items-end gap-4 p-3 border-b border-border-muted bg-canvas-raised shrink-0 flex-wrap rounded-none">
@@ -118,6 +130,22 @@ export function ImportControls({
           className="rounded-none"
         >
           {savePending ? <Spinner size="sm" /> : 'Save Script'}
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={onNewScript}
+          disabled={savePending || deletePending}
+          className="rounded-none"
+        >
+          New Script
+        </Button>
+        <Button
+          variant="ghost"
+          onClick={onDeleteScript}
+          disabled={!canDelete}
+          className="rounded-none"
+        >
+          {deletePending ? <Spinner size="sm" /> : 'Delete Script'}
         </Button>
       </div>
     </div>

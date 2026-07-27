@@ -1,11 +1,14 @@
 import { Editor } from '@monaco-editor/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
-import { open } from '@tauri-apps/plugin-dialog';
+import { ask, open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
 
 import {
   classifyTransactions,
+  createParserFile,
+  deleteParserFile,
+  extractUnitsFromCode,
   listParserFiles,
   type ParserFileInfo,
   saveParserFile,
@@ -14,8 +17,33 @@ import {
 import { ConsoleLogs } from '@/components/import/ConsoleLogs';
 import { ImportControls } from '@/components/import/ImportControls';
 import { ResultPreview } from '@/components/import/ResultPreview';
+import { Button } from '@/components/ui/Button';
+import { Dialog, DialogClose, DialogContent } from '@/components/ui/Dialog';
 import { toast } from '@/components/ui/Toast';
 import { cn } from '@/lib/util';
+
+const STARTER_TEMPLATE = `export default {
+  bank: 'MyBank',
+  units: [
+    {
+      key: 'mybank_checking',
+      name: 'MyBank Checking',
+      format: 'csv',
+      account_type: 'checking',
+      account_source: 'mybank',
+      currency: 'SEK',
+      transform(data) {
+        var rows = data.rows;
+        return {
+          type: 'transactions',
+          account_id: '',
+          transactions: [],
+        };
+      },
+    },
+  ],
+};
+`;
 
 interface ParsedTx {
   id: string;
@@ -57,6 +85,9 @@ function ImportDebugger(): React.JSX.Element {
   const [parsedResult, setParsedResult] = useState<TestOutput | null>(null);
   const [logsList, setLogsList] = useState<{ id: string; text: string }[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
+  const [newScriptOpen, setNewScriptOpen] = useState(false);
+  const [newScriptName, setNewScriptName] = useState('');
+  const [debouncedCode, setDebouncedCode] = useState('');
 
   // Dragging event handlers
   const handleMouseDownHorizontal = (e: React.MouseEvent) => {
@@ -109,19 +140,86 @@ function ImportDebugger(): React.JSX.Element {
     queryFn: listParserFiles,
   });
 
+  // Debounce editor content so we can live-parse unit metadata as the user types.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedCode(editorCode), 300);
+    return () => clearTimeout(t);
+  }, [editorCode]);
+
+  const isEdited = editorCode !== (selectedFile?.content ?? '');
+
+  const { data: liveUnits } = useQuery({
+    queryKey: ['parserUnits', debouncedCode],
+    queryFn: () => extractUnitsFromCode(debouncedCode),
+    enabled: debouncedCode.length > 0,
+  });
+
+  // Show server-parsed units for an unedited file, live-parsed units while editing.
+  const units = isEdited ? (liveUnits ?? []) : (selectedFile?.units ?? []);
+
+  const selectedUnit = units.find((u) => u.key === targetUnit);
+  const accountType = selectedUnit?.account_type;
+
   const saveMutation = useMutation({
     mutationFn: () => {
       if (!selectedFile) return Promise.reject(new Error('No script selected'));
       return saveParserFile(selectedFile.path, editorCode);
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       queryClient.invalidateQueries({ queryKey: ['parsers'] });
-      refetchFiles();
+      const result = await refetchFiles();
+      if (selectedFile && result.data) {
+        const updated = result.data.find((f) => f.path === selectedFile.path);
+        if (updated) setSelectedFile(updated);
+      }
       toast.success('Script saved');
     },
     onError: (err: unknown) => {
       toast.error(
         'Save failed',
+        err instanceof Error ? err.message : String(err),
+      );
+    },
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () => {
+      const filename = newScriptName.trim();
+      if (!filename) return Promise.reject(new Error('Filename is required'));
+      return createParserFile(filename, STARTER_TEMPLATE);
+    },
+    onSuccess: async (newFile) => {
+      queryClient.invalidateQueries({ queryKey: ['parsers'] });
+      await refetchFiles();
+      setSelectedFile(newFile);
+      setNewScriptOpen(false);
+      setNewScriptName('');
+      toast.success('Script created');
+    },
+    onError: (err: unknown) => {
+      toast.error(
+        'Create failed',
+        err instanceof Error ? err.message : String(err),
+      );
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedFile) return Promise.reject(new Error('No script selected'));
+      return deleteParserFile(selectedFile.path);
+    },
+    onSuccess: async () => {
+      queryClient.invalidateQueries({ queryKey: ['parsers'] });
+      await refetchFiles();
+      setSelectedFile(null);
+      setEditorCode('');
+      setTargetUnit('');
+      toast.success('Script deleted');
+    },
+    onError: (err: unknown) => {
+      toast.error(
+        'Delete failed',
         err instanceof Error ? err.message : String(err),
       );
     },
@@ -225,6 +323,20 @@ function ImportDebugger(): React.JSX.Element {
     }
   };
 
+  const handleNewScript = () => {
+    setNewScriptName('');
+    setNewScriptOpen(true);
+  };
+
+  const handleDeleteScript = async () => {
+    if (!selectedFile) return;
+    const confirmed = await ask(
+      `Delete "${selectedFile.filename}"? This cannot be undone.`,
+      { title: 'Delete Script', kind: 'warning' },
+    );
+    if (confirmed) deleteMutation.mutate();
+  };
+
   return (
     <div
       className={cn(
@@ -238,14 +350,18 @@ function ImportDebugger(): React.JSX.Element {
         loadingFiles={loadingFiles}
         selectedFile={selectedFile}
         onSelectedFileChange={setSelectedFile}
+        units={units}
         targetUnit={targetUnit}
         onTargetUnitChange={setTargetUnit}
         targetFile={targetFile}
         onBrowseFile={handleBrowseFile}
         onRunTest={() => testMutation.mutate()}
         onSaveScript={() => saveMutation.mutate()}
+        onNewScript={handleNewScript}
+        onDeleteScript={handleDeleteScript}
         testPending={testMutation.isPending}
         savePending={saveMutation.isPending}
+        deletePending={deleteMutation.isPending}
       />
 
       {/* BOTTOM WORKSPACE: Resizable Split Panels */}
@@ -313,6 +429,7 @@ function ImportDebugger(): React.JSX.Element {
             errorMsg={errorMsg}
             testPending={testMutation.isPending}
             draggingPanel={draggingPanel}
+            accountType={accountType}
           />
 
           {/* HORIZONTAL split DIVIDER (Logs) */}
@@ -334,6 +451,46 @@ function ImportDebugger(): React.JSX.Element {
           />
         </div>
       </div>
+
+      <Dialog open={newScriptOpen} onOpenChange={setNewScriptOpen}>
+        <DialogContent
+          title="New Parser Script"
+          description="Choose a filename. It will be created in your user parsers directory."
+        >
+          <div className="flex flex-col gap-4">
+            <input
+              type="text"
+              autoFocus
+              placeholder="mybank.js"
+              value={newScriptName}
+              onChange={(e) => setNewScriptName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') createMutation.mutate();
+              }}
+              className="w-full px-3 py-2 text-xs font-mono border border-border-subtle bg-canvas text-foreground focus:outline-none rounded-none"
+            />
+            <div className="flex justify-end gap-2 pt-3 border-t border-border-subtle">
+              <DialogClose
+                render={
+                  <Button
+                    variant="secondary"
+                    className="px-4 text-xs rounded-none h-9"
+                  >
+                    Cancel
+                  </Button>
+                }
+              />
+              <Button
+                disabled={!newScriptName.trim() || createMutation.isPending}
+                onClick={() => createMutation.mutate()}
+                className="px-4 text-xs rounded-none h-9"
+              >
+                {createMutation.isPending ? 'Creating…' : 'Create'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
