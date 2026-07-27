@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/sousandrei/plinth/compare/plinth-v1.5.0...plinth-v1.5.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* parsing screen units, script saving and avanza script update ([97d0113](https://github.com/sousandrei/plinth/commit/97d01137976bce365bb0989c482cec0fa0f83bf4))
+
 ## [1.5.0](https://github.com/sousandrei/plinth/compare/plinth-v1.4.0...plinth-v1.5.0) (2026-07-13)
 
 
