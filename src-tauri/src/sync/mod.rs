@@ -21,6 +21,9 @@ pub mod startup;
 pub mod tls;
 pub mod wire;
 
+#[cfg(test)]
+pub mod harness;
+
 pub use discovery::{PeerInfo, PeerRegistry};
 pub use pairing::PairingState;
 pub use scheduler::SyncSummary;
