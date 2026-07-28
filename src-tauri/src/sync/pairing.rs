@@ -567,10 +567,65 @@ async fn upsert_device_and_grant(
     display_name: &str,
     cert_pem: &str,
 ) -> Result<(), AppError> {
+    // Step 30.2: validate the joiner's cert before persisting. A
+    // malformed or mismatched cert is quarantined so the user can
+    // review it; the pairing is rejected outright — we'd rather
+    // fail the handshake than persist a half-trusted peer.
+    let validated = match crate::sync::cert_validation::parse_and_canonicalize(cert_pem) {
+        Ok(v) => v,
+        Err(e) => {
+            sqlx::query_file!(
+                "queries/sync/insert_quarantined_device.sql",
+                space_id,
+                device_id,
+                Option::<String>::None,
+                cert_pem,
+                format!("{e}"),
+            )
+            .execute(db)
+            .await
+            .map_err(|e| AppError::Db(format!("quarantine_device: {e}")))?;
+            return Err(e);
+        }
+    };
+    if let Err(e) = crate::sync::cert_validation::check_device_id_match(&validated, device_id) {
+        sqlx::query_file!(
+            "queries/sync/insert_quarantined_device.sql",
+            space_id,
+            device_id,
+            Some(validated.fingerprint.clone()),
+            cert_pem,
+            format!("{e}"),
+        )
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("quarantine_device: {e}")))?;
+        return Err(AppError::InvalidInput(format!("pairing: {e}")));
+    }
+    if let Err(e) =
+        crate::sync::cert_validation::check_against_existing(db, device_id, &validated.fingerprint)
+            .await
+    {
+        sqlx::query_file!(
+            "queries/sync/insert_quarantined_device.sql",
+            space_id,
+            device_id,
+            Some(validated.fingerprint.clone()),
+            cert_pem,
+            format!("{e}"),
+        )
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("quarantine_device: {e}")))?;
+        return Err(AppError::InvalidInput(format!("pairing: {e}")));
+    }
+
     sqlx::query_file!(
         "queries/sync/upsert_device.sql",
         device_id,
         cert_pem,
+        validated.der,
+        validated.fingerprint,
         display_name
     )
     .execute(db)
@@ -589,6 +644,23 @@ async fn upsert_device_and_grant(
     .await
     .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
     Ok(())
+}
+
+/// Test-only wrapper that exposes the private `upsert_device_and_grant`
+/// so the Step 30.2 ingress-validation tests can drive the function
+/// directly. The production callers (host-side `run_host_session`,
+/// `snapshot::apply_snapshot_frame`) go through their own internal
+/// paths; this wrapper just exists so the validation logic itself is
+/// testable without a live socket.
+#[cfg(test)]
+pub async fn upsert_device_and_grant_for_test(
+    db: &SqlitePool,
+    space_id: &str,
+    device_id: &str,
+    display_name: &str,
+    cert_pem: &str,
+) -> Result<(), AppError> {
+    upsert_device_and_grant(db, space_id, device_id, display_name, cert_pem).await
 }
 
 fn parse_address(s: &str) -> Result<(String, SocketAddr), AppError> {

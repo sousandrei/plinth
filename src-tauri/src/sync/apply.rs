@@ -338,8 +338,11 @@ async fn upsert_space_device(
     tx: &mut Transaction<'_, Sqlite>,
     p: &SpaceDevicePayload,
 ) -> Result<(), AppError> {
-    // Ensure a stub devices row exists to satisfy the FK constraint.
-    // The full cert is synced separately via the pairing flow.
+    // Step 30.2: change_log only carries the device_id (no cert).
+    // Validation against a real cert happens in the pairing /
+    // snapshot paths, not here. We accept the stub and let the
+    // pairing-time gate enforce fingerprint uniqueness when the
+    // actual cert arrives.
     sqlx::query_file!("queries/sync/apply/upsert_device_stub.sql", p.device_id)
         .execute(&mut **tx)
         .await

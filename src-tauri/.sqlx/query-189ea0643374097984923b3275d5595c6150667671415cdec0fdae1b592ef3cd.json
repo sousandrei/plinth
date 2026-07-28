@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Look up the device_id currently associated with a fingerprint.\n-- Returns at most one row. Used during cert ingress to detect\n-- fingerprint collisions (same fingerprint, different device_id) and\n-- device_id changes (same device_id, different fingerprint).\nSELECT device_id AS \"device_id!: String\"\nFROM devices\nWHERE fingerprint = ?1\nLIMIT 1;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "device_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "189ea0643374097984923b3275d5595c6150667671415cdec0fdae1b592ef3cd"
+}

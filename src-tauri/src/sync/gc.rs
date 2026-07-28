@@ -346,7 +346,7 @@ mod tests {
         let s1 = "s1";
         let u1 = "u1";
         let a1 = "a1";
-        let td1 = "td1";
+        let _td1 = "td1";
 
         sqlx::query_file!("queries/tests/insert_space_fixture.sql", s1, "test", ts, ts)
             .execute(&pool)

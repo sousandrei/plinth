@@ -452,3 +452,45 @@ pub async fn accept_pair_token(
         space_name: result.space_name,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Step 30.2 — Quarantined certs
+// ---------------------------------------------------------------------------
+
+/// One row in the `quarantined_devices` table, exposed to the UI so
+/// the user can see which certs were rejected and why. Populated by
+/// `pairing::upsert_device_and_grant` and the snapshot apply path
+/// when ingress validation fails.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QuarantinedDevice {
+    pub id: i64,
+    pub space_id: Option<String>,
+    pub claimed_device_id: String,
+    pub fingerprint: Option<String>,
+    pub cert_pem: String,
+    pub reason: String,
+    pub quarantined_at: String,
+}
+
+#[tauri::command]
+pub async fn list_quarantined_devices(
+    db: State<'_, DbPool>,
+) -> Result<Vec<QuarantinedDevice>, AppError> {
+    let rows = sqlx::query_file!("queries/sync/list_quarantined_devices.sql")
+        .fetch_all(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("list_quarantined_devices: {e}")))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| QuarantinedDevice {
+            id: r.id,
+            space_id: r.space_id,
+            claimed_device_id: r.claimed_device_id,
+            fingerprint: r.fingerprint,
+            cert_pem: r.cert_pem,
+            reason: r.reason,
+            quarantined_at: r.quarantined_at,
+        })
+        .collect())
+}

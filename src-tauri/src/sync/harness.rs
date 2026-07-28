@@ -29,6 +29,19 @@ use crate::sync::payloads::{SpacePayload, TablePayload, TransactionPayload};
 use crate::sync::session::{apply_round_core, store_peer_acks, validate_batch};
 use crate::sync::wire::{ChangeBatch, ChangeRow, CursorEntry};
 
+/// Generate a self-signed cert whose DNS SAN is `device_id`. Used by
+/// snapshot apply tests — `apply_snapshot_frame` validates the host
+/// cert (Step 30.2) so a fake `"CERT"` string won't survive.
+pub fn test_cert_pem(device_id: &str) -> String {
+    use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
+    let key = KeyPair::generate().unwrap();
+    let mut params = CertificateParams::new(vec![device_id.to_string()]).unwrap();
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, device_id);
+    params.distinguished_name = dn;
+    params.self_signed(&key).unwrap().pem()
+}
+
 /// One independent installation in the test mesh.
 #[allow(dead_code)]
 pub struct TestDevice {
@@ -196,8 +209,9 @@ pub async fn sync_direct(from: &TestDevice, to: &TestDevice) -> usize {
     total
 }
 
-async fn apply_batch(to: &TestDevice, batch: &ChangeBatch) {
-    apply_round_core(&to.pool, &batch.transport_device_id, &[batch.clone()])
+async fn apply_batch(to: &TestDevice, batch: ChangeBatch) {
+    let transport_device_id = batch.transport_device_id.clone();
+    apply_round_core(&to.pool, &transport_device_id, &[batch])
         .await
         .unwrap_or_else(|e| panic!("harness: apply_batch: {e}"));
 }
@@ -655,7 +669,7 @@ async fn snapshot_applies_users_before_memberships() {
         model_versions: vec![],
         host_device_id: "device-A".into(),
         host_device_name: "host".into(),
-        host_cert_pem: "CERT".into(),
+        host_cert_pem: test_cert_pem("device-A"),
     };
 
     // Apply on B with FKs enabled, using the production dependency order:
@@ -1020,7 +1034,7 @@ async fn concurrent_updates_opposite_orders_same_winner() {
     // Path 1: A first, then B.
     apply_batch(
         &c1,
-        &ChangeBatch {
+        ChangeBatch {
             space_id: "s1".into(),
             origin_device_id: "device-A".into(),
             transport_device_id: "device-A".into(),
@@ -1031,7 +1045,7 @@ async fn concurrent_updates_opposite_orders_same_winner() {
     .await;
     apply_batch(
         &c1,
-        &ChangeBatch {
+        ChangeBatch {
             space_id: "s1".into(),
             origin_device_id: "device-B".into(),
             transport_device_id: "device-B".into(),
@@ -1044,7 +1058,7 @@ async fn concurrent_updates_opposite_orders_same_winner() {
     // Path 2: B first, then A.
     apply_batch(
         &c2,
-        &ChangeBatch {
+        ChangeBatch {
             space_id: "s1".into(),
             origin_device_id: "device-B".into(),
             transport_device_id: "device-B".into(),
@@ -1055,7 +1069,7 @@ async fn concurrent_updates_opposite_orders_same_winner() {
     .await;
     apply_batch(
         &c2,
-        &ChangeBatch {
+        ChangeBatch {
             space_id: "s1".into(),
             origin_device_id: "device-A".into(),
             transport_device_id: "device-A".into(),
@@ -1206,7 +1220,7 @@ async fn older_update_cannot_resurrect_tombstone() {
     };
     apply_batch(
         &c,
-        &ChangeBatch {
+        ChangeBatch {
             space_id: "s1".into(),
             origin_device_id: "device-A".into(),
             transport_device_id: "device-A".into(),
@@ -1226,7 +1240,7 @@ async fn older_update_cannot_resurrect_tombstone() {
     let update_row = space_update_row("ch-upd", "s1", "resurrection attempt", "device-B", 5);
     apply_batch(
         &c,
-        &ChangeBatch {
+        ChangeBatch {
             space_id: "s1".into(),
             origin_device_id: "device-B".into(),
             transport_device_id: "device-B".into(),
@@ -1803,8 +1817,6 @@ async fn gc_preserves_changes_for_pending_revocation() {
     let b = TestDevice::create("device-B", &dir).await;
     let c = TestDevice::create("device-C", &dir).await;
 
-    let ts = "2024-01-01T00:00:00Z";
-
     a.insert_space("s1", "test").await;
 
     // Register B and C as trusted devices BEFORE syncing. C has
@@ -1882,8 +1894,6 @@ async fn peer_below_retained_floor_routes_to_snapshot() {
     let dir = TempDir::new().unwrap();
     let a = TestDevice::create("device-A", &dir).await;
     let b = TestDevice::create("device-B", &dir).await;
-
-    let ts = "2024-01-01T00:00:00Z";
 
     a.insert_space("s1", "test").await;
 
@@ -1990,7 +2000,6 @@ async fn cursor_zero_empty_history_nonzero_high_water_requires_recon() {
     let dir = TempDir::new().unwrap();
     let a = TestDevice::create("device-A", &dir).await;
     let b = TestDevice::create("device-B", &dir).await;
-    let ts = "2024-01-01T00:00:00Z";
 
     a.insert_space("s1", "test").await;
 
@@ -2034,7 +2043,6 @@ async fn cursor_below_retained_floor_requires_recon() {
     let dir = TempDir::new().unwrap();
     let a = TestDevice::create("device-A", &dir).await;
     let b = TestDevice::create("device-B", &dir).await;
-    let ts = "2024-01-01T00:00:00Z";
 
     a.insert_space("s1", "test").await;
     for i in 2..=5 {
@@ -2138,7 +2146,7 @@ async fn v2_reconciliation_flag_forces_snapshot() {
         .unwrap();
     assert_eq!(required, 1, "space must be marked for V2 reconciliation");
 
-    let (hw, rf, lmax, lmin) = gap_state(&a, "s1", "device-A").await;
+    let (hw, _rf, lmax, lmin) = gap_state(&a, "s1", "device-A").await;
 
     // Even with cursor at high_water, V2 flag forces reconciliation.
     let v2_required = true;
@@ -2217,7 +2225,6 @@ async fn space_devices_converge_to_one_logical_grant() {
 async fn space_grant_revoke_preserves_installation() {
     let dir = TempDir::new().unwrap();
     let a = TestDevice::create("device-A", &dir).await;
-    let ts = "2024-01-01T00:00:00Z";
 
     a.insert_space("s1", "test").await;
     a.insert_space("s2", "other").await;
@@ -2259,4 +2266,194 @@ async fn space_grant_revoke_preserves_installation() {
             .await
             .unwrap();
     assert_eq!(device_exists, 1, "installation identity preserved");
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 30.2 — validate certificate ingress
+// ---------------------------------------------------------------------------
+
+/// A well-formed cert whose SAN matches `device_id` is accepted;
+/// cert_der and fingerprint are populated.
+#[tokio::test]
+async fn pairing_with_valid_cert_populates_fingerprint() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+
+    let peer_id = "peer-1";
+    let cert = test_cert_pem(peer_id);
+    crate::sync::pairing::upsert_device_and_grant_for_test(&a.pool, "s1", peer_id, "Peer 1", &cert)
+        .await
+        .expect("valid cert must be accepted");
+
+    let fp: String =
+        sqlx::query_scalar!("SELECT fingerprint FROM devices WHERE device_id = 'peer-1'")
+            .fetch_one(&a.pool)
+            .await
+            .unwrap();
+    assert_eq!(fp.len(), 64, "fingerprint must be 64-char SHA-256 hex");
+    assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+
+    let der_bytes: i64 = sqlx::query_scalar::<_, i64>(
+        "SELECT LENGTH(cert_der) FROM devices WHERE device_id = 'peer-1'",
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap_or(0);
+    assert!(der_bytes > 0, "cert_der must be populated");
+}
+
+/// A cert whose SAN does not match the claimed `device_id` is
+/// rejected and quarantined.
+#[tokio::test]
+async fn pairing_with_mismatched_san_is_quarantined() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+
+    let cert_for_other = test_cert_pem("other-device");
+    let result = crate::sync::pairing::upsert_device_and_grant_for_test(
+        &a.pool,
+        "s1",
+        "peer-1",
+        "Peer 1",
+        &cert_for_other,
+    )
+    .await;
+    assert!(result.is_err(), "SAN mismatch must reject");
+
+    let count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM devices WHERE device_id = 'peer-1'")
+        .fetch_one(&a.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "rejected cert must not create devices row");
+
+    let quarantined: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM quarantined_devices WHERE claimed_device_id = 'peer-1'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(quarantined, 1, "rejected cert must be quarantined");
+}
+
+/// Two device_ids sharing the same fingerprint is rejected — one
+/// cert is one installation.
+#[tokio::test]
+async fn pairing_with_fingerprint_collision_is_quarantined() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    a.insert_space("s2", "other").await;
+
+    let cert = test_cert_pem("peer-1");
+    // First pairing accepts the cert under device_id "peer-1".
+    crate::sync::pairing::upsert_device_and_grant_for_test(
+        &a.pool, "s1", "peer-1", "Peer 1", &cert,
+    )
+    .await
+    .expect("first pairing succeeds");
+
+    // A second pairing presenting the same cert under a different
+    // device_id must be rejected.
+    let result = crate::sync::pairing::upsert_device_and_grant_for_test(
+        &a.pool, "s2", "peer-2", "Peer 2", &cert,
+    )
+    .await;
+    assert!(result.is_err(), "fingerprint collision must reject");
+
+    let peer_2_count: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM devices WHERE device_id = 'peer-2'")
+            .fetch_one(&a.pool)
+            .await
+            .unwrap();
+    assert_eq!(peer_2_count, 0, "colliding device_id must not be persisted");
+
+    let quarantined: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM quarantined_devices WHERE claimed_device_id = 'peer-2'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        quarantined, 1,
+        "colliding fingerprint must be quarantined under the new device_id"
+    );
+}
+
+/// A device_id presenting a different fingerprint than the one
+/// already stored is rejected — the same installation MUST always
+/// present the same cert.
+#[tokio::test]
+async fn pairing_with_changed_fingerprint_is_quarantined() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+
+    let cert_v1 = test_cert_pem("peer-1");
+    crate::sync::pairing::upsert_device_and_grant_for_test(
+        &a.pool, "s1", "peer-1", "Peer 1", &cert_v1,
+    )
+    .await
+    .expect("first pairing succeeds");
+
+    // Generate a different cert for the same claimed device_id.
+    let cert_v2 = test_cert_pem("peer-1");
+    assert_ne!(
+        cert_v1, cert_v2,
+        "two fresh certs for the same device_id must differ"
+    );
+
+    let result = crate::sync::pairing::upsert_device_and_grant_for_test(
+        &a.pool, "s1", "peer-1", "Peer 1", &cert_v2,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "fingerprint change for same device_id must reject"
+    );
+
+    let quarantined: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM quarantined_devices WHERE claimed_device_id = 'peer-1'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(quarantined, 1, "changed fingerprint must be quarantined");
+}
+
+/// Garbage PEM input is quarantined without a fingerprint (we never
+/// got far enough to compute one).
+#[tokio::test]
+async fn pairing_with_malformed_pem_is_quarantined() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+
+    let result = crate::sync::pairing::upsert_device_and_grant_for_test(
+        &a.pool,
+        "s1",
+        "peer-1",
+        "Peer 1",
+        "this is not a cert",
+    )
+    .await;
+    assert!(result.is_err(), "malformed PEM must reject");
+
+    let quarantined: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM quarantined_devices \
+         WHERE claimed_device_id = 'peer-1' AND fingerprint IS NULL"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        quarantined, 1,
+        "malformed PEM must be quarantined without fingerprint"
+    );
 }

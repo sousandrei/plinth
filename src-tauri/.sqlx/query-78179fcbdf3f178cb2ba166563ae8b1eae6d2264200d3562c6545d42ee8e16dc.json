@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Insert a quarantined device row. Used when a cert fails ingress\n-- validation (parse error, SAN mismatch, fingerprint collision,\n-- device_id/fingerprint conflict). The caller passes the reason as a\n-- short human-readable string; the row is not surfaced to other\n-- devices via the change_log.\nINSERT INTO quarantined_devices (space_id, claimed_device_id, fingerprint, cert_pem, reason)\nVALUES (?1, ?2, ?3, ?4, ?5);\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "78179fcbdf3f178cb2ba166563ae8b1eae6d2264200d3562c6545d42ee8e16dc"
+}

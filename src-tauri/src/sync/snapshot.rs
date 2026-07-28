@@ -407,10 +407,53 @@ async fn upsert_device_and_grant(
     display_name: &str,
     cert_pem: &str,
 ) -> Result<(), AppError> {
+    // Step 30.2: validate the host's cert before persisting. Same
+    // invariants as `pairing::upsert_device_and_grant`. The host's
+    // cert is the trust anchor for every subsequent change in the
+    // snapshot, so it must be rejected on any inconsistency.
+    let validated = crate::sync::cert_validation::parse_and_canonicalize(cert_pem)
+        .map_err(|e| AppError::InvalidInput(format!("snapshot host cert: {e}")))?;
+    crate::sync::cert_validation::check_device_id_match(&validated, device_id)
+        .map_err(|e| AppError::InvalidInput(format!("snapshot host cert: {e}")))?;
+
+    // Fingerprint / device_id uniqueness against the in-tx devices
+    // table. We can't easily look at *committed* state from inside a
+    // transaction, but since the snapshot path always runs against
+    // a fresh joiner DB the in-tx view is the only view that matters.
+    let by_fp = sqlx::query_file!(
+        "queries/sync/get_device_id_by_fingerprint.sql",
+        validated.fingerprint.clone()
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("snapshot fingerprint lookup: {e}")))?;
+    if let Some(row) = by_fp
+        && row.device_id != device_id
+    {
+        return Err(AppError::InvalidInput(format!(
+            "snapshot host cert: fingerprint already mapped to {}",
+            row.device_id
+        )));
+    }
+    let by_id = sqlx::query_file!("queries/sync/get_fingerprint_by_device_id.sql", device_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| AppError::Db(format!("snapshot device lookup: {e}")))?;
+    if let Some(row) = by_id {
+        let existing = row.fingerprint;
+        if !existing.is_empty() && existing != validated.fingerprint {
+            return Err(AppError::InvalidInput(format!(
+                "snapshot host cert: device_id {device_id} already has a different fingerprint"
+            )));
+        }
+    }
+
     sqlx::query_file!(
         "queries/sync/upsert_device.sql",
         device_id,
         cert_pem,
+        validated.der,
+        validated.fingerprint,
         display_name
     )
     .execute(&mut **tx)

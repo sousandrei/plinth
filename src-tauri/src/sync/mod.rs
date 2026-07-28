@@ -1,6 +1,7 @@
 pub mod apply;
 pub mod apply_guard;
 pub mod cert_match;
+pub mod cert_validation;
 pub mod changelog;
 pub mod client;
 pub mod conflict_detector;
