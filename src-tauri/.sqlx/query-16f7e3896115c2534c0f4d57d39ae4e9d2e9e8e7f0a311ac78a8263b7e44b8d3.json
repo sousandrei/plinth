@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Raise the local sequence clock to at least the incoming origin_seq.\n-- This is the Lamport clock rule: after observing a remote change with\n-- seq N, the next local write gets seq > N. See data/PLAN.md Step 29.3.\nUPDATE app_settings\nSET value = CAST(MAX(CAST(value AS INTEGER), ?1) AS TEXT)\nWHERE key = 'sync_seq'\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "16f7e3896115c2534c0f4d57d39ae4e9d2e9e8e7f0a311ac78a8263b7e44b8d3"
+}

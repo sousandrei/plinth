@@ -24,11 +24,11 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 
 use crate::error::AppError;
-use crate::sync::apply;
 use crate::sync::apply_guard::run_as_device;
 use crate::sync::changelog;
 use crate::sync::cursors;
 use crate::sync::payloads::{SpacePayload, TablePayload};
+use crate::sync::session::apply_remote_row;
 use crate::sync::wire::{ChangeBatch, ChangeRow};
 
 /// One independent installation in the test mesh.
@@ -181,28 +181,7 @@ async fn apply_batch(to: &TestDevice, batch: &ChangeBatch) {
         let rows = rows.clone();
         Box::pin(async move {
             for row in &rows {
-                let payload_json = match &row.payload {
-                    Some(p) => Some(p.to_json().unwrap_or_default()),
-                    None => None,
-                };
-                sqlx::query_file!(
-                    "queries/sync/insert_remote_change_log.sql",
-                    row.id,
-                    row.space_id,
-                    row.table_name,
-                    row.row_id,
-                    row.operation,
-                    payload_json,
-                    row.seq,
-                    row.device_id,
-                    row.device_id,
-                    row.seq,
-                )
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| AppError::Db(format!("harness insert_remote_change_log: {e}")))?;
-
-                apply::apply_change(tx, row).await?;
+                apply_remote_row(tx, row).await?;
             }
             cursors::advance(tx, &space_id, &origin, final_seq).await?;
             Ok::<(), AppError>(())
@@ -229,6 +208,36 @@ pub fn space_insert_row(
         table_name: "spaces".into(),
         row_id: space_id.into(),
         operation: "insert".into(),
+        payload: Some(TablePayload::Space(SpacePayload {
+            id: space_id.into(),
+            name: name.into(),
+            created_at: ts.into(),
+            updated_at: ts.into(),
+        })),
+        seq,
+        device_id: device_id.into(),
+        changed_at: ts.into(),
+    }
+}
+
+/// Convenience: build a `spaces` update `ChangeRow` authored by
+/// `device_id`. Mirrors what the SQLite trigger would produce for an
+/// UPDATE on the spaces table.
+#[allow(dead_code)]
+pub fn space_update_row(
+    change_id: &str,
+    space_id: &str,
+    name: &str,
+    device_id: &str,
+    seq: i64,
+) -> ChangeRow {
+    let ts = "2024-01-01T00:00:00Z";
+    ChangeRow {
+        id: change_id.into(),
+        space_id: space_id.into(),
+        table_name: "spaces".into(),
+        row_id: space_id.into(),
+        operation: "update".into(),
         payload: Some(TablePayload::Space(SpacePayload {
             id: space_id.into(),
             name: name.into(),
@@ -865,20 +874,9 @@ async fn ledger_v2_row_winners_track_tombstones() {
         .await
         .unwrap();
 
-    // Bootstrap row_winners from the current change_log.
-    sqlx::query!(
-        "INSERT INTO row_winners (space_id, table_name, row_id, winning_seq, winning_origin, deleted) \
-         WITH ranked AS (\
-             SELECT space_id, table_name, row_id, seq, device_id, \
-                    CASE WHEN operation = 'delete' THEN 1 ELSE 0 END AS is_delete, \
-                    ROW_NUMBER() OVER (PARTITION BY space_id, table_name, row_id ORDER BY seq DESC, device_id DESC) AS rn \
-             FROM change_log\
-         ) \
-         SELECT space_id, table_name, row_id, seq, device_id, is_delete FROM ranked WHERE rn = 1"
-    )
-    .execute(&a.pool)
-    .await
-    .unwrap();
+    // The 0006 change_log_winner_upsert trigger maintains row_winners
+    // automatically — the delete change_log row inserted above upserts
+    // the winner to (2, device-A, deleted=1).
 
     let winner = sqlx::query!(
         "SELECT winning_seq, winning_origin, deleted \
@@ -989,5 +987,265 @@ async fn duplicate_relay_is_idempotent() {
     assert_eq!(
         count, 1,
         "duplicate relay must be idempotent — exactly one row for the origin"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 29.3 — Lamport revisions
+// ---------------------------------------------------------------------------
+
+/// Concurrent updates delivered in opposite orders select the same
+/// winner. Device A and B both update the same row with seq=5. The
+/// tiebreaker is `origin_device_id DESC`, so "device-B" > "device-A"
+/// regardless of delivery order.
+#[tokio::test]
+async fn concurrent_updates_opposite_orders_same_winner() {
+    let dir = TempDir::new().unwrap();
+
+    let src = TestDevice::create("device-SRC", &dir).await;
+    src.insert_space("s1", "original").await;
+
+    let c1 = TestDevice::create("device-C1", &dir).await;
+    let c2 = TestDevice::create("device-C2", &dir).await;
+    sync_direct(&src, &c1).await;
+    sync_direct(&src, &c2).await;
+
+    let update_a = space_update_row("ch-a", "s1", "A version", "device-A", 5);
+    let update_b = space_update_row("ch-b", "s1", "B version", "device-B", 5);
+
+    // Path 1: A first, then B.
+    apply_batch(
+        &c1,
+        &ChangeBatch {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            rows: vec![update_a.clone()],
+            final_seq: 5,
+        },
+    )
+    .await;
+    apply_batch(
+        &c1,
+        &ChangeBatch {
+            space_id: "s1".into(),
+            device_id: "device-B".into(),
+            rows: vec![update_b.clone()],
+            final_seq: 5,
+        },
+    )
+    .await;
+
+    // Path 2: B first, then A.
+    apply_batch(
+        &c2,
+        &ChangeBatch {
+            space_id: "s1".into(),
+            device_id: "device-B".into(),
+            rows: vec![update_b.clone()],
+            final_seq: 5,
+        },
+    )
+    .await;
+    apply_batch(
+        &c2,
+        &ChangeBatch {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            rows: vec![update_a.clone()],
+            final_seq: 5,
+        },
+    )
+    .await;
+
+    let w1 = sqlx::query!(
+        "SELECT winning_seq, winning_origin, deleted FROM row_winners \
+         WHERE space_id = 's1' AND table_name = 'spaces'"
+    )
+    .fetch_one(&c1.pool)
+    .await
+    .unwrap();
+    let w2 = sqlx::query!(
+        "SELECT winning_seq, winning_origin, deleted FROM row_winners \
+         WHERE space_id = 's1' AND table_name = 'spaces'"
+    )
+    .fetch_one(&c2.pool)
+    .await
+    .unwrap();
+
+    assert_eq!(w1.winning_origin, "device-B", "C1 winner must be B");
+    assert_eq!(w2.winning_origin, "device-B", "C2 winner must be B");
+    assert_eq!(w1.winning_seq, w2.winning_seq);
+
+    let n1: String = sqlx::query_scalar!("SELECT name FROM spaces WHERE id = 's1'")
+        .fetch_one(&c1.pool)
+        .await
+        .unwrap();
+    let n2: String = sqlx::query_scalar!("SELECT name FROM spaces WHERE id = 's1'")
+        .fetch_one(&c2.pool)
+        .await
+        .unwrap();
+    assert_eq!(n1, "B version");
+    assert_eq!(n2, "B version");
+}
+
+/// A delete observed before a later local update is ordered before
+/// that update. The Lamport clock raise ensures the local write gets
+/// a higher seq than the remote delete, so the update wins and the
+/// row is alive.
+#[tokio::test]
+async fn delete_before_local_update() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    a.insert_space("s1", "original").await;
+    sync_direct(&a, &b).await;
+
+    // A deletes the space.
+    sqlx::query_file!("queries/spaces/soft_delete_space.sql", "s1")
+        .execute(&a.pool)
+        .await
+        .unwrap();
+    sqlx::query_file!("queries/spaces/increment_sync_seq.sql")
+        .execute(&a.pool)
+        .await
+        .unwrap();
+    sqlx::query_file!("queries/spaces/insert_space_delete_changelog.sql", "s1")
+        .execute(&a.pool)
+        .await
+        .unwrap();
+
+    // Sync A→B: B receives the delete.
+    sync_direct(&a, &b).await;
+
+    let deleted: i64 = sqlx::query_scalar!("SELECT deleted FROM spaces WHERE id = 's1'")
+        .fetch_one(&b.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        deleted, 1,
+        "space must be deleted after receiving remote delete"
+    );
+
+    // sync_seq must be raised to at least the delete's seq.
+    let sync_seq_before: i64 = sqlx::query_scalar!(
+        "SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'sync_seq'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert!(
+        sync_seq_before >= 2,
+        "sync_seq must be raised after receiving delete"
+    );
+
+    // B makes a local update (undelete + rename).
+    sqlx::query!("UPDATE spaces SET name = 'recovered', deleted = 0 WHERE id = 's1'")
+        .execute(&b.pool)
+        .await
+        .unwrap();
+
+    let local_seq: i64 = sqlx::query_scalar!(
+        "SELECT COALESCE(MAX(seq), 0) FROM change_log \
+         WHERE device_id = 'device-B' AND space_id = 's1'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert!(
+        local_seq > sync_seq_before,
+        "local write must get seq > raised sync_seq"
+    );
+
+    let winner = sqlx::query!(
+        "SELECT winning_seq, winning_origin, deleted FROM row_winners \
+         WHERE space_id = 's1' AND table_name = 'spaces'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        winner.winning_origin, "device-B",
+        "local update must win over remote delete"
+    );
+    assert_eq!(
+        winner.deleted, 0,
+        "winner should be an update, not a tombstone"
+    );
+}
+
+/// An older update cannot resurrect a winning tombstone. A delete with
+/// seq=6 wins. An update with seq=5 arrives later and loses the
+/// comparison — the tombstone persists, the row stays deleted.
+#[tokio::test]
+async fn older_update_cannot_resurrect_tombstone() {
+    let dir = TempDir::new().unwrap();
+    let c = TestDevice::create("device-C", &dir).await;
+
+    c.insert_space("s1", "original").await;
+
+    // Apply a delete from device-A with seq=6.
+    let delete_row = ChangeRow {
+        id: "ch-del".into(),
+        space_id: "s1".into(),
+        table_name: "spaces".into(),
+        row_id: "s1".into(),
+        operation: "delete".into(),
+        payload: None,
+        seq: 6,
+        device_id: "device-A".into(),
+        changed_at: "2024-01-01T00:00:00Z".into(),
+    };
+    apply_batch(
+        &c,
+        &ChangeBatch {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            rows: vec![delete_row],
+            final_seq: 6,
+        },
+    )
+    .await;
+
+    let deleted: i64 = sqlx::query_scalar!("SELECT deleted FROM spaces WHERE id = 's1'")
+        .fetch_one(&c.pool)
+        .await
+        .unwrap();
+    assert_eq!(deleted, 1, "space must be deleted after tombstone wins");
+
+    // Now apply an older update (seq=5) from device-B.
+    let update_row = space_update_row("ch-upd", "s1", "resurrection attempt", "device-B", 5);
+    apply_batch(
+        &c,
+        &ChangeBatch {
+            space_id: "s1".into(),
+            device_id: "device-B".into(),
+            rows: vec![update_row],
+            final_seq: 5,
+        },
+    )
+    .await;
+
+    let winner = sqlx::query!(
+        "SELECT winning_seq, winning_origin, deleted FROM row_winners \
+         WHERE space_id = 's1' AND table_name = 'spaces'"
+    )
+    .fetch_one(&c.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        winner.winning_seq, 6,
+        "older update must not dethrone the tombstone"
+    );
+    assert_eq!(winner.winning_origin, "device-A");
+    assert_eq!(winner.deleted, 1, "tombstone must persist");
+
+    let still_deleted: i64 = sqlx::query_scalar!("SELECT deleted FROM spaces WHERE id = 's1'")
+        .fetch_one(&c.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        still_deleted, 1,
+        "older update cannot resurrect a tombstone"
     );
 }

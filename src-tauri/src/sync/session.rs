@@ -1,5 +1,5 @@
 use serde::Serialize;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
@@ -702,6 +702,83 @@ async fn apply_snapshot_stream(
     Ok(())
 }
 
+/// Apply one remote change_log row with Lamport revision tracking.
+///
+/// 1. Raises the local sequence clock to at least the incoming seq.
+/// 2. Inserts the change_log row (for relay) with its original origin.
+/// 3. Compares `(origin_seq, origin_device_id)` against the current
+///    winner. A losing revision is skipped — the row body is not
+///    materialized.
+/// 4. If the incoming revision wins, upserts `row_winners` and
+///    materializes the row body via `apply_change`.
+///
+/// Must be called inside `run_as_device` so triggers are suppressed.
+pub(crate) async fn apply_remote_row(
+    tx: &mut Transaction<'_, Sqlite>,
+    row: &ChangeRow,
+) -> Result<(), AppError> {
+    sqlx::query_file!("queries/sync/raise_sync_seq.sql", row.seq)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| AppError::Db(format!("raise_sync_seq: {e}")))?;
+
+    let payload_json = row.payload.as_ref().and_then(|p| p.to_json().ok());
+    sqlx::query_file!(
+        "queries/sync/insert_remote_change_log.sql",
+        row.id,
+        row.space_id,
+        row.table_name,
+        row.row_id,
+        row.operation,
+        payload_json,
+        row.seq,
+        row.device_id,
+        row.device_id,
+        row.seq,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("insert_remote_change_log: {e}")))?;
+
+    let existing = sqlx::query_file!(
+        "queries/sync/get_row_winner.sql",
+        row.space_id,
+        row.table_name,
+        row.row_id
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("get_row_winner: {e}")))?;
+
+    let incoming_wins = match existing {
+        None => true,
+        Some(e) => {
+            row.seq > e.winning_seq
+                || (row.seq == e.winning_seq && row.device_id > e.winning_origin)
+        }
+    };
+
+    if !incoming_wins {
+        return Ok(());
+    }
+
+    let is_delete: i64 = if row.operation == "delete" { 1 } else { 0 };
+    sqlx::query_file!(
+        "queries/sync/upsert_row_winner.sql",
+        row.space_id,
+        row.table_name,
+        row.row_id,
+        row.seq,
+        row.device_id,
+        is_delete,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_row_winner: {e}")))?;
+
+    apply::apply_change(tx, row).await
+}
+
 /// Apply one `ChangeBatch` atomically with its cursor advance, and emit
 /// `sync://evicted` if this device's own trusted_devices row was deleted.
 async fn apply_batch(
@@ -749,24 +826,7 @@ async fn apply_batch(
                 let device_id_inner = device_id_for_closure.clone();
                 Box::pin(async move {
                     for row in &batch.rows {
-                        let payload_json = row.payload.as_ref().and_then(|p| p.to_json().ok());
-                        sqlx::query_file!(
-                            "queries/sync/insert_remote_change_log.sql",
-                            row.id,
-                            row.space_id,
-                            row.table_name,
-                            row.row_id,
-                            row.operation,
-                            payload_json,
-                            row.seq,
-                            row.device_id,
-                            row.device_id,
-                            row.seq,
-                        )
-                        .execute(&mut **tx)
-                        .await
-                        .map_err(|e| AppError::Db(format!("insert_remote_change_log: {e}")))?;
-                        apply::apply_change(tx, row).await?;
+                        apply_remote_row(tx, row).await?;
                     }
                     cursors::advance(tx, &space_id, &device_id_inner, final_seq).await?;
                     Ok(())
@@ -786,24 +846,7 @@ async fn apply_batch(
         let device_id_inner = device_id_for_closure.clone();
         Box::pin(async move {
             for row in &batch.rows {
-                let payload_json = row.payload.as_ref().and_then(|p| p.to_json().ok());
-                sqlx::query_file!(
-                    "queries/sync/insert_remote_change_log.sql",
-                    row.id,
-                    row.space_id,
-                    row.table_name,
-                    row.row_id,
-                    row.operation,
-                    payload_json,
-                    row.seq,
-                    row.device_id,
-                    row.device_id,
-                    row.seq,
-                )
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| AppError::Db(format!("insert_remote_change_log: {e}")))?;
-                apply::apply_change(tx, row).await?;
+                apply_remote_row(tx, row).await?;
             }
             cursors::advance(tx, &batch_space_id, &device_id_inner, final_seq).await?;
             Ok(())
