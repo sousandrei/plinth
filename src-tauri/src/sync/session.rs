@@ -403,13 +403,34 @@ async fn ship_batches<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let final_seq = changelog::max_seq(db, space_id, device_id).await?;
-    let min_seq = changelog::min_seq(db, space_id, device_id).await?;
+    let gap = sqlx::query_file!("queries/sync/get_origin_gap_state.sql", space_id, device_id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| AppError::Db(format!("get_origin_gap_state: {e}")))?;
 
-    if peer_last_seq > 0 && min_seq > 0 && peer_last_seq < min_seq {
+    let v2_required = sqlx::query_file!("queries/sync/get_v2_reconciliation.sql", space_id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| AppError::Db(format!("get_v2_reconciliation: {e}")))?
+        .required;
+
+    let effective_high_water = gap.high_water.max(gap.live_max_seq);
+    let effective_floor = if gap.live_min_seq > 0 {
+        gap.live_min_seq
+    } else {
+        gap.retained_floor
+    };
+
+    let needs_reconciliation = v2_required == 1
+        || (effective_high_water > 0 && gap.live_max_seq == 0)
+        || (peer_last_seq > 0 && peer_last_seq < effective_floor)
+        || (peer_last_seq > effective_high_water);
+
+    if needs_reconciliation {
         eprintln!(
-            "session: peer cursor {peer_last_seq} < min_seq {min_seq} for space {space_id} device {device_id}; \
-             streaming full snapshot"
+            "session: reconciliation required for space {space_id} device {device_id} \
+             (v2_required={v2_required}, high_water={}, live_max={}, floor={}, peer_cursor={peer_last_seq})",
+            effective_high_water, gap.live_max_seq, effective_floor
         );
         stream_space_snapshot(wr, db, app, space_id, device_id).await?;
         write_frame(wr, &Frame::SnapshotEnd).await?;
@@ -420,13 +441,14 @@ where
                 origin_device_id: device_id.to_string(),
                 transport_device_id: transport_device_id.to_string(),
                 rows: vec![],
-                final_seq,
+                final_seq: effective_high_water,
             }),
         )
         .await?;
         return Ok(());
     }
 
+    let final_seq = gap.live_max_seq;
     let mut last_sent = peer_last_seq;
     loop {
         let rows = changelog::read_since(

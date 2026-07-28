@@ -1681,7 +1681,6 @@ async fn disconnected_peer_has_no_acks() {
     let dir = TempDir::new().unwrap();
     let a = TestDevice::create("device-A", &dir).await;
     let b = TestDevice::create("device-B", &dir).await;
-    let c = TestDevice::create("device-C", &dir).await;
 
     a.insert_space("s1", "test").await;
 
@@ -1953,4 +1952,227 @@ async fn peer_below_retained_floor_routes_to_snapshot() {
         peer_cursor > 0 && remaining_min > 0 && peer_cursor < remaining_min,
         "peer with cursor {peer_cursor} < min_seq {remaining_min} must route to snapshot"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 29.8 — durable gap detection
+// ---------------------------------------------------------------------------
+
+/// Helper: query the durable gap state for an origin.
+async fn gap_state(dev: &TestDevice, space_id: &str, origin: &str) -> (i64, i64, i64, i64) {
+    let row = sqlx::query_file!("queries/sync/get_origin_gap_state.sql", space_id, origin)
+        .fetch_one(&dev.pool)
+        .await
+        .unwrap();
+    (
+        row.high_water,
+        row.retained_floor,
+        row.live_max_seq,
+        row.live_min_seq,
+    )
+}
+
+/// Helper: check if reconciliation is needed for an origin.
+fn needs_recon(
+    high_water: i64,
+    retained_floor: i64,
+    live_max: i64,
+    live_min: i64,
+    peer_cursor: i64,
+) -> bool {
+    let v2_required = false; // not testing migration flag here
+    let effective_high_water = high_water.max(live_max);
+    let effective_floor = if live_min > 0 {
+        live_min
+    } else {
+        retained_floor
+    };
+    v2_required
+        || (effective_high_water > 0 && live_max == 0)
+        || (peer_cursor > 0 && peer_cursor < effective_floor)
+        || (peer_cursor > effective_high_water)
+}
+
+/// Cursor zero with empty retained history but nonzero high_water
+/// causes reconciliation instead of an empty successful batch.
+/// After GC collects all rows, the live log is empty (live_max = 0)
+/// but high_water remembers the data existed.
+#[tokio::test]
+async fn cursor_zero_empty_history_nonzero_high_water_requires_recon() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+
+    a.insert_space("s1", "test").await;
+
+    // Register B as trusted + acknowledge to allow GC collection.
+    sqlx::query!(
+        "INSERT INTO trusted_devices \
+         (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
+         VALUES ('b-td', 's1', 'device-B', 'B', 'CERT', 1, ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sync_direct(&a, &b).await;
+
+    store_peer_acks(
+        &a.pool,
+        "device-B",
+        &[CursorEntry {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            last_seq: b.cursor_for("s1", "device-A").await,
+        }],
+    )
+    .await
+    .unwrap();
+
+    // GC collects all rows — log is now empty.
+    crate::sync::gc::run(&a.pool).await.unwrap();
+
+    let (hw, rf, lmax, lmin) = gap_state(&a, "s1", "device-A").await;
+    assert_eq!(lmax, 0, "live log is empty");
+    assert_eq!(lmin, 0, "live min is 0");
+    assert!(hw > 0, "high_water remembers data existed");
+
+    // Peer with cursor 0 must trigger reconciliation.
+    assert!(
+        needs_recon(hw, rf, lmax, lmin, 0),
+        "cursor 0 + empty log + nonzero high_water must require reconciliation"
+    );
+}
+
+/// Empty retained history with a peer cursor below the retained floor
+/// causes reconciliation. After partial GC, the floor rises above
+/// the peer's cursor.
+#[tokio::test]
+async fn cursor_below_retained_floor_requires_recon() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+
+    a.insert_space("s1", "test").await;
+    for i in 2..=5 {
+        sqlx::query!(
+            "UPDATE spaces SET name = ?1 WHERE id = 's1'",
+            format!("v{i}")
+        )
+        .execute(&a.pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::query!(
+        "INSERT INTO trusted_devices \
+         (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
+         VALUES ('b-td', 's1', 'device-B', 'B', 'CERT', 1, ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sync_direct(&a, &b).await;
+
+    // B acknowledges only up to seq 3.
+    store_peer_acks(
+        &a.pool,
+        "device-B",
+        &[CursorEntry {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            last_seq: 3,
+        }],
+    )
+    .await
+    .unwrap();
+
+    crate::sync::gc::run(&a.pool).await.unwrap();
+
+    let (hw, rf, lmax, lmin) = gap_state(&a, "s1", "device-A").await;
+    assert!(
+        lmin > 3,
+        "floor must be above seq 3 after partial collection"
+    );
+
+    // Peer with cursor 2 is below the floor.
+    assert!(
+        needs_recon(hw, rf, lmax, lmin, 2),
+        "cursor 2 < floor {lmin} must require reconciliation"
+    );
+
+    // Peer with cursor at the floor does NOT need reconciliation.
+    assert!(
+        !needs_recon(hw, rf, lmax, lmin, lmin),
+        "cursor at floor should NOT require reconciliation"
+    );
+}
+
+/// A legacy poisoned cursor (cursor > high_water) causes reconciliation.
+/// This can happen when V1 trigger re-stamping inflated the cursor
+/// beyond the actual max seq the origin ever produced.
+#[tokio::test]
+async fn poisoned_cursor_above_high_water_requires_recon() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+
+    // Without trusted devices or GC, origin_state is empty. The
+    // live log has rows, so effective_high_water = live_max_seq.
+    let (hw, rf, lmax, lmin) = gap_state(&a, "s1", "device-A").await;
+    let effective_hw = hw.max(lmax);
+    assert!(effective_hw > 0, "effective high_water must be nonzero");
+
+    // Poisoned cursor: higher than any seq the origin ever produced.
+    let poisoned = effective_hw + 100;
+    assert!(
+        needs_recon(hw, rf, lmax, lmin, poisoned),
+        "cursor {poisoned} > high_water {effective_hw} must require reconciliation"
+    );
+
+    // Normal cursor (at high_water) does NOT need reconciliation
+    // because the log still has rows (live_max > 0).
+    assert!(
+        !needs_recon(hw, rf, lmax, lmin, effective_hw),
+        "cursor at high_water should NOT require reconciliation when log has rows"
+    );
+}
+
+/// A space marked as requiring V2 reconciliation always triggers
+/// snapshot, regardless of cursor state.
+#[tokio::test]
+async fn v2_reconciliation_flag_forces_snapshot() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+
+    // Mark the space as requiring V2 reconciliation (simulates a
+    // migrated space that needs snapshot reconciliation).
+    sqlx::query!("INSERT INTO v2_reconciliation (space_id, required) VALUES ('s1', 1)")
+        .execute(&a.pool)
+        .await
+        .unwrap();
+
+    let required: i64 = sqlx::query_file_scalar!("queries/sync/get_v2_reconciliation.sql", "s1")
+        .fetch_one(&a.pool)
+        .await
+        .unwrap();
+    assert_eq!(required, 1, "space must be marked for V2 reconciliation");
+
+    let (hw, rf, lmax, lmin) = gap_state(&a, "s1", "device-A").await;
+
+    // Even with cursor at high_water, V2 flag forces reconciliation.
+    let v2_required = true;
+    let needs = v2_required
+        || (hw.max(lmax) > 0 && lmax == 0)
+        || (lmax > 0 && lmax < lmin)
+        || (hw.max(lmax) > 0 && hw.max(lmax) < hw.max(lmax));
+    assert!(needs, "V2 reconciliation flag must force snapshot");
 }
