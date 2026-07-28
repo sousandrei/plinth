@@ -8,6 +8,7 @@ use crate::error::AppError;
 use crate::sync::apply_guard::{GuardedFuture, run_as_device};
 use crate::sync::cert_match::PeerIdentity;
 use crate::sync::frame;
+use crate::sync::payloads::TablePayload;
 use crate::sync::wire::{
     Bye, ChangeBatch, ChangeRow, CursorEntry, Cursors, Frame, Hello, ModelVersionSummary,
     PROTOCOL_VERSION, Pong,
@@ -702,6 +703,207 @@ async fn apply_snapshot_stream(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Batch validation — Step 29.4
+// ---------------------------------------------------------------------------
+
+/// Validate a `ChangeBatch` before any writes. Rejects atomically:
+/// if any row fails, the entire batch is refused without side effects.
+///
+/// Check 1 (transport device trusted for the space) is handled by the
+/// caller via `PeerIdentity::shared_space_ids` — this function covers
+/// checks 2–7.
+pub(crate) fn validate_batch(batch: &ChangeBatch) -> Result<(), AppError> {
+    let batch_space = &batch.space_id;
+    let batch_origin = &batch.device_id;
+    let mut prev_seq: i64 = 0;
+
+    for row in &batch.rows {
+        if row.device_id != *batch_origin {
+            return Err(AppError::InvalidInput(format!(
+                "validate_batch: row origin {} != batch origin {}",
+                row.device_id, batch_origin
+            )));
+        }
+
+        if row.space_id != *batch_space {
+            return Err(AppError::InvalidInput(format!(
+                "validate_batch: row space {} != batch space {}",
+                row.space_id, batch_space
+            )));
+        }
+
+        match row.operation.as_str() {
+            "insert" | "update" => {
+                let payload = row.payload.as_ref().ok_or_else(|| {
+                    AppError::InvalidInput(format!(
+                        "validate_batch: missing payload for {}/{}",
+                        row.table_name, row.operation
+                    ))
+                })?;
+                if payload.as_table_name() != row.table_name {
+                    return Err(AppError::InvalidInput(format!(
+                        "validate_batch: payload variant {} != table_name {}",
+                        payload.as_table_name(),
+                        row.table_name
+                    )));
+                }
+                validate_payload_keys(row, payload)?;
+            }
+            "delete" => {
+                validate_delete_key(row, batch_space)?;
+            }
+            other => {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: unknown operation {other:?}"
+                )));
+            }
+        }
+
+        if row.seq <= 0 {
+            return Err(AppError::InvalidInput(format!(
+                "validate_batch: non-positive seq {}",
+                row.seq
+            )));
+        }
+        if row.seq <= prev_seq {
+            return Err(AppError::InvalidInput(format!(
+                "validate_batch: seq {} not strictly monotonic (prev {})",
+                row.seq, prev_seq
+            )));
+        }
+        prev_seq = row.seq;
+    }
+
+    Ok(())
+}
+
+/// Verify that the payload's logical keys match the row envelope
+/// (`row_id` and `space_id`). Each table has its own key shape.
+fn validate_payload_keys(row: &ChangeRow, payload: &TablePayload) -> Result<(), AppError> {
+    fn mismatch(field: &str, expected: &str, actual: &str) -> AppError {
+        AppError::InvalidInput(format!(
+            "validate_batch: payload key mismatch: {field}: expected {expected:?}, got {actual:?}"
+        ))
+    }
+
+    match payload {
+        TablePayload::Space(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("space.id", &p.id, &row.row_id));
+            }
+            if p.id != row.space_id {
+                return Err(mismatch("space.id/space_id", &p.id, &row.space_id));
+            }
+        }
+        TablePayload::SpaceMember(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch("member.space_id", &p.space_id, &row.space_id));
+            }
+            let expected = format!("{}:{}", p.space_id, p.user_id);
+            if expected != row.row_id {
+                return Err(mismatch("member.row_id", &expected, &row.row_id));
+            }
+        }
+        TablePayload::Account(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("account.id", &p.id, &row.row_id));
+            }
+            if p.space_id != row.space_id {
+                return Err(mismatch("account.space_id", &p.space_id, &row.space_id));
+            }
+        }
+        TablePayload::Category(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("category.id", &p.id, &row.row_id));
+            }
+            if p.space_id != row.space_id {
+                return Err(mismatch("category.space_id", &p.space_id, &row.space_id));
+            }
+        }
+        TablePayload::Transaction(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("transaction.id", &p.id, &row.row_id));
+            }
+        }
+        TablePayload::AccountSummary(p) => {
+            let expected = format!("{}:{}", p.account_id, p.month);
+            if expected != row.row_id {
+                return Err(mismatch("summary.row_id", &expected, &row.row_id));
+            }
+        }
+        TablePayload::SpaceSetting(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch("setting.space_id", &p.space_id, &row.space_id));
+            }
+            let expected = format!("{}:{}", p.space_id, p.key);
+            if expected != row.row_id {
+                return Err(mismatch("setting.row_id", &expected, &row.row_id));
+            }
+        }
+        TablePayload::TrustedDevice(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("device.id", &p.id, &row.row_id));
+            }
+            if p.space_id != row.space_id {
+                return Err(mismatch("device.space_id", &p.space_id, &row.space_id));
+            }
+        }
+        TablePayload::ModelVersion(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch("model.space_id", &p.space_id, &row.space_id));
+            }
+            let expected = format!("{}:{}", p.space_id, p.version);
+            if expected != row.row_id {
+                return Err(mismatch("model.row_id", &expected, &row.row_id));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verify composite delete keys are well-formed and scoped to the
+/// outer space. Single-PK tables (accounts, categories, transactions,
+/// trusted_devices) need no composite-key check.
+fn validate_delete_key(row: &ChangeRow, batch_space_id: &str) -> Result<(), AppError> {
+    match row.table_name.as_str() {
+        "spaces" => {
+            if row.row_id != row.space_id {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: spaces delete row_id {} != space_id {}",
+                    row.row_id, row.space_id
+                )));
+            }
+        }
+        "space_members" | "space_settings" | "model_versions" => {
+            let parts: Vec<&str> = row.row_id.splitn(2, ':').collect();
+            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: invalid composite delete key {:?} for {}",
+                    row.row_id, row.table_name
+                )));
+            }
+            if parts[0] != batch_space_id {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: delete key space {} != batch space {}",
+                    parts[0], batch_space_id
+                )));
+            }
+        }
+        "account_summaries" => {
+            let parts: Vec<&str> = row.row_id.splitn(2, ':').collect();
+            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: invalid composite delete key {:?} for account_summaries",
+                    row.row_id
+                )));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Apply one remote change_log row with Lamport revision tracking.
 ///
 /// 1. Raises the local sequence clock to at least the incoming seq.
@@ -791,6 +993,8 @@ async fn apply_batch(
     if !peer.shared_space_ids.contains(&batch.space_id) {
         return Ok(());
     }
+
+    validate_batch(&batch)?;
 
     let kind = classify_batch(&batch.rows, local_device_id);
     let is_space_deletion = matches!(kind, BatchKind::SpaceDeletion);

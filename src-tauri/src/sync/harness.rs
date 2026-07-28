@@ -28,7 +28,7 @@ use crate::sync::apply_guard::run_as_device;
 use crate::sync::changelog;
 use crate::sync::cursors;
 use crate::sync::payloads::{SpacePayload, TablePayload};
-use crate::sync::session::apply_remote_row;
+use crate::sync::session::{apply_remote_row, validate_batch};
 use crate::sync::wire::{ChangeBatch, ChangeRow};
 
 /// One independent installation in the test mesh.
@@ -169,6 +169,8 @@ pub async fn sync_direct(from: &TestDevice, to: &TestDevice) -> usize {
 }
 
 async fn apply_batch(to: &TestDevice, batch: &ChangeBatch) {
+    validate_batch(batch).unwrap_or_else(|e| panic!("harness: validate_batch: {e}"));
+
     let space_id = batch.space_id.clone();
     let origin_override = batch.device_id.clone();
     let origin = batch.device_id.clone();
@@ -1248,4 +1250,181 @@ async fn older_update_cannot_resurrect_tombstone() {
         still_deleted, 1,
         "older update cannot resurrect a tombstone"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 29.4 — envelope and payload validation
+// ---------------------------------------------------------------------------
+
+/// A well-formed batch with valid insert and delete rows passes.
+#[test]
+fn validate_batch_accepts_valid_batch() {
+    let insert_row = space_insert_row("ch-1", "s1", "test", "device-A", 1);
+    let delete_row = ChangeRow {
+        id: "ch-2".into(),
+        space_id: "s1".into(),
+        table_name: "spaces".into(),
+        row_id: "s1".into(),
+        operation: "delete".into(),
+        payload: None,
+        seq: 2,
+        device_id: "device-A".into(),
+        changed_at: "2024-01-01T00:00:00Z".into(),
+    };
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![insert_row, delete_row],
+        final_seq: 2,
+    };
+    assert!(validate_batch(&batch).is_ok());
+}
+
+/// An empty batch passes (cursor-only advance with no changes).
+#[test]
+fn validate_batch_accepts_empty_batch() {
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![],
+        final_seq: 0,
+    };
+    assert!(validate_batch(&batch).is_ok());
+}
+
+/// A row whose origin doesn't match the batch origin is rejected.
+#[test]
+fn validate_batch_rejects_mismatched_origin() {
+    let mut row = space_insert_row("ch-1", "s1", "test", "device-A", 1);
+    row.device_id = "device-B".into();
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![row],
+        final_seq: 1,
+    };
+    assert!(validate_batch(&batch).is_err());
+}
+
+/// A row whose space doesn't match the batch space is rejected.
+#[test]
+fn validate_batch_rejects_mismatched_space() {
+    let mut row = space_insert_row("ch-1", "s1", "test", "device-A", 1);
+    row.space_id = "s2".into();
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![row],
+        final_seq: 1,
+    };
+    assert!(validate_batch(&batch).is_err());
+}
+
+/// An insert without a payload, a payload variant mismatch, and a
+/// payload key mismatch are all rejected.
+#[test]
+fn validate_batch_rejects_payload_envelope_mismatches() {
+    // Missing payload for insert.
+    let mut no_payload = space_insert_row("ch-1", "s1", "test", "device-A", 1);
+    no_payload.payload = None;
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![no_payload],
+        final_seq: 1,
+    };
+    assert!(validate_batch(&batch).is_err());
+
+    // Payload variant mismatches table_name.
+    let mut wrong_variant = space_insert_row("ch-2", "s1", "test", "device-A", 1);
+    wrong_variant.table_name = "accounts".into(); // payload is Space, not Account
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![wrong_variant],
+        final_seq: 1,
+    };
+    assert!(validate_batch(&batch).is_err());
+
+    // Payload id doesn't match row_id.
+    let mut key_mismatch = space_insert_row("ch-3", "s1", "test", "device-A", 1);
+    key_mismatch.row_id = "wrong-id".into();
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![key_mismatch],
+        final_seq: 1,
+    };
+    assert!(validate_batch(&batch).is_err());
+}
+
+/// A composite delete key that is malformed or scoped to a different
+/// space is rejected.
+#[test]
+fn validate_batch_rejects_invalid_delete_key() {
+    // Malformed: no colon.
+    let malformed = ChangeRow {
+        id: "ch-1".into(),
+        space_id: "s1".into(),
+        table_name: "space_members".into(),
+        row_id: "no-colon".into(),
+        operation: "delete".into(),
+        payload: None,
+        seq: 1,
+        device_id: "device-A".into(),
+        changed_at: "2024-01-01T00:00:00Z".into(),
+    };
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![malformed],
+        final_seq: 1,
+    };
+    assert!(validate_batch(&batch).is_err());
+
+    // Wrong space scope: space part "s2" != batch space "s1".
+    let wrong_scope = ChangeRow {
+        id: "ch-2".into(),
+        space_id: "s1".into(),
+        table_name: "space_members".into(),
+        row_id: "s2:u1".into(),
+        operation: "delete".into(),
+        payload: None,
+        seq: 1,
+        device_id: "device-A".into(),
+        changed_at: "2024-01-01T00:00:00Z".into(),
+    };
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![wrong_scope],
+        final_seq: 1,
+    };
+    assert!(validate_batch(&batch).is_err());
+}
+
+/// Non-positive and non-monotonic sequences are rejected.
+#[test]
+fn validate_batch_rejects_bad_seq() {
+    // Non-positive seq.
+    let mut zero_seq = space_insert_row("ch-1", "s1", "test", "device-A", 0);
+    zero_seq.seq = 0;
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![zero_seq],
+        final_seq: 0,
+    };
+    assert!(validate_batch(&batch).is_err());
+
+    // Non-monotonic: seq goes backwards.
+    let row1 = space_insert_row("ch-2", "s1", "first", "device-A", 5);
+    let row2 = space_update_row("ch-3", "s1", "second", "device-A", 3);
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        rows: vec![row1, row2],
+        final_seq: 5,
+    };
+    assert!(validate_batch(&batch).is_err());
 }
