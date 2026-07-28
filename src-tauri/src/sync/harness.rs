@@ -2750,3 +2750,491 @@ async fn collect_snapshot_captures_complete_consistent_state() {
     assert!(snap.transactions.is_empty());
     assert!(snap.account_summaries.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 31.2 — merge without echoes (tombstone honoring)
+// ---------------------------------------------------------------------------
+
+/// Step 31.2: when a `row_winner` arrives with `deleted = 1`, the
+/// receiver must remove the corresponding row from the source table —
+/// stale state from before the snapshot was captured should not survive
+/// the merge.
+///
+/// The test constructs a snapshot that includes a category row followed
+/// by a tombstoned row_winner, applies it through the production
+/// `apply_guard` + `apply_snapshot_frame` path, and verifies the
+/// category is gone afterwards.
+#[tokio::test]
+async fn snapshot_apply_deletes_tombstoned_rows() {
+    use crate::sync::apply_guard::run_as_device;
+    use crate::sync::snapshot::{
+        SnapshotFrame, SpaceSnapshot, WireCategory, WireRowWinner, WireSpace,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let b = TestDevice::create("device-B", &dir).await;
+
+    // Pre-seed receiver B with a stale category "stale_cat" that is
+    // *not* referenced by any tombstone — this stays untouched, since
+    // the snapshot only authoritatively deletes rows it explicitly
+    // tombstones. Step 31.2 is about honoring tombstones, not about
+    // wiping unmentioned rows.
+    let ts = "2024-01-01T00:00:00Z";
+    b.insert_space("s1", "Main").await;
+    sqlx::query!(
+        "INSERT INTO categories (id, name, color, space_id) VALUES ('stale_cat', 'Stale', '#fff', 's1')"
+    )
+    .execute(&b.pool)
+    .await
+    .unwrap();
+
+    // Host sends: Space + Categories (includes "old_cat" to be deleted
+    // and "keep_cat" to survive) + RowWinners (tombstone for "old_cat").
+    let snapshot = SpaceSnapshot {
+        snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+        snapshot_id: "snap-tombstone-1".into(),
+        host_device_id: "device-A".into(),
+        host_device_name: "Host A".into(),
+        host_cert_pem: test_cert_pem("device-A"),
+        high_water_vector: vec![],
+        row_winners: vec![WireRowWinner {
+            space_id: "s1".into(),
+            table_name: "categories".into(),
+            row_id: "old_cat".into(),
+            winning_seq: 5,
+            winning_origin: "device-A".into(),
+            deleted: 1,
+        }],
+        space: WireSpace {
+            id: "s1".into(),
+            name: "Main".into(),
+            created_at: ts.into(),
+            updated_at: ts.into(),
+        },
+        members: vec![],
+        users: vec![],
+        categories: vec![
+            WireCategory {
+                id: "old_cat".into(),
+                name: "To Be Deleted".into(),
+                color: "#000".into(),
+                space_id: "s1".into(),
+            },
+            WireCategory {
+                id: "keep_cat".into(),
+                name: "Survives".into(),
+                color: "#0f0".into(),
+                space_id: "s1".into(),
+            },
+        ],
+        accounts: vec![],
+        transactions: vec![],
+        account_summaries: vec![],
+        space_settings: vec![],
+        model_versions: vec![],
+        devices: vec![],
+        space_devices: vec![],
+    };
+
+    // Production apply path: under apply_guard, with host as author.
+    run_as_device(&b.pool, "device-A", move |tx| {
+        let snap = snapshot.clone();
+        Box::pin(async move {
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snap,
+                &SnapshotFrame::Space(snap.space.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snap,
+                &SnapshotFrame::Categories(snap.categories.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snap,
+                &SnapshotFrame::RowWinners(snap.row_winners.clone()),
+            )
+            .await?;
+            Ok::<(), crate::error::AppError>(())
+        })
+    })
+    .await
+    .expect("snapshot apply must succeed");
+
+    // Tombstoned category removed
+    let old_count: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM categories WHERE id = 'old_cat'")
+            .fetch_one(&b.pool)
+            .await
+            .unwrap();
+    assert_eq!(old_count, 0, "tombstoned category must be removed");
+
+    // Non-tombstoned category preserved
+    let keep_count: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM categories WHERE id = 'keep_cat'")
+            .fetch_one(&b.pool)
+            .await
+            .unwrap();
+    assert_eq!(keep_count, 1, "non-tombstoned category must survive");
+
+    // Untouched local category (no tombstone) is left alone.
+    let stale_count: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM categories WHERE id = 'stale_cat'")
+            .fetch_one(&b.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        stale_count, 1,
+        "category without a tombstone must be left alone"
+    );
+
+    // row_winner table records the tombstone
+    let winner_deleted: i64 = sqlx::query_scalar!(
+        "SELECT deleted FROM row_winners WHERE space_id='s1' AND table_name='categories' AND row_id='old_cat'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(winner_deleted, 1, "row_winner must record tombstone");
+}
+
+/// Step 31.2: `install_snapshot_cursors` writes the cursor vector to
+/// `sync_cursors` in a separate transaction so a crash between snapshot
+/// apply and cursor installation is detectable (next sync re-snapshots).
+/// `MAX(...)` clamping inside `upsert_cursor.sql` guarantees the cursor
+/// only moves forward.
+#[tokio::test]
+async fn snapshot_installs_cursor_vector_post_commit() {
+    use crate::sync::snapshot::WireOriginState;
+
+    let dir = TempDir::new().unwrap();
+    let b = TestDevice::create("device-B", &dir).await;
+    b.insert_space("s1", "shared").await;
+
+    // Two origins in the vector — host at seq 42, peer at seq 17.
+    let vector = vec![
+        WireOriginState {
+            origin_device_id: "device-A".into(),
+            high_water: 42,
+            retained_floor: 10,
+        },
+        WireOriginState {
+            origin_device_id: "peer-C".into(),
+            high_water: 17,
+            retained_floor: 5,
+        },
+    ];
+
+    crate::sync::snapshot::install_snapshot_cursors(&b.pool, "s1", &vector, "device-A")
+        .await
+        .expect("install_snapshot_cursors must succeed");
+
+    let host_cursor: i64 = sqlx::query_scalar!(
+        "SELECT last_seq FROM sync_cursors WHERE space_id='s1' AND peer_device_id='device-A'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(host_cursor, 42, "host cursor advanced to high_water");
+
+    let peer_cursor: i64 = sqlx::query_scalar!(
+        "SELECT last_seq FROM sync_cursors WHERE space_id='s1' AND peer_device_id='peer-C'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(peer_cursor, 17, "peer cursor advanced to high_water");
+
+    // Calling install a second time with a SMALLER seq must not regress
+    // the cursor — MAX(...) clamp is the safety belt.
+    let smaller = vec![WireOriginState {
+        origin_device_id: "device-A".into(),
+        high_water: 5,
+        retained_floor: 0,
+    }];
+    crate::sync::snapshot::install_snapshot_cursors(&b.pool, "s1", &smaller, "device-A")
+        .await
+        .expect("install_snapshot_cursors (regression test) must succeed");
+
+    let host_cursor: i64 = sqlx::query_scalar!(
+        "SELECT last_seq FROM sync_cursors WHERE space_id='s1' AND peer_device_id='device-A'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(host_cursor, 42, "cursor must NOT regress on smaller seq");
+
+    // If the host isn't in the vector, the function should still install
+    // it at the max observed high water (defensive fallback).
+    let vector_no_host = vec![WireOriginState {
+        origin_device_id: "peer-C".into(),
+        high_water: 99,
+        retained_floor: 0,
+    }];
+    sqlx::query!("DELETE FROM sync_cursors WHERE space_id='s1' AND peer_device_id='device-A'")
+        .execute(&b.pool)
+        .await
+        .unwrap();
+    crate::sync::snapshot::install_snapshot_cursors(&b.pool, "s1", &vector_no_host, "device-A")
+        .await
+        .expect("install_snapshot_cursors (host fallback) must succeed");
+
+    let host_cursor: i64 = sqlx::query_scalar!(
+        "SELECT last_seq FROM sync_cursors WHERE space_id='s1' AND peer_device_id='device-A'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        host_cursor, 99,
+        "host cursor installed at max high_water when not in vector"
+    );
+}
+
+/// Step 31.2: `verify_snapshot_boundary` rejects snapshots whose
+/// chunks disagree on the space_id or whose schema version is
+/// unsupported. A mixed-space stream could otherwise poison a
+/// partial apply that passes all per-row checks.
+#[tokio::test]
+async fn snapshot_rejects_inconsistent_space_ids() {
+    use crate::sync::snapshot::{SnapshotFrame, WireSpace};
+    use crate::sync::wire::SnapshotChunk;
+
+    let good = SnapshotChunk {
+        space_id: "s1".into(),
+        frame: SnapshotFrame::Space(WireSpace {
+            id: "s1".into(),
+            name: "n".into(),
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        }),
+    };
+    let bad = SnapshotChunk {
+        space_id: "s2".into(),
+        frame: SnapshotFrame::Space(WireSpace {
+            id: "s2".into(),
+            name: "n".into(),
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        }),
+    };
+
+    // All-chunks-same-space: ok
+    let result = crate::sync::snapshot::verify_snapshot_boundary(
+        "s1",
+        crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+        std::slice::from_ref(&good),
+    );
+    assert!(result.is_ok(), "uniform stream must pass");
+
+    // Mixed-space: rejected
+    let result = crate::sync::snapshot::verify_snapshot_boundary(
+        "s1",
+        crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+        &[good, bad],
+    );
+    let err = result.expect_err("mixed-space must be rejected");
+    assert!(
+        err.to_string().contains("snapshot boundary"),
+        "error must mention boundary: {err}"
+    );
+
+    // Unsupported schema version: rejected
+    let result = crate::sync::snapshot::verify_snapshot_boundary(
+        "s1",
+        crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION + 999,
+        &[],
+    );
+    let err = result.expect_err("unsupported schema must be rejected");
+    assert!(
+        err.to_string().contains("unsupported snapshot_schema_version"),
+        "error must mention schema version: {err}"
+    );
+
+    // Empty expected space_id: rejected
+    let result = crate::sync::snapshot::verify_snapshot_boundary(
+        "",
+        crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+        &[],
+    );
+    assert!(result.is_err(), "empty expected space_id must be rejected");
+}
+
+/// Step 31.2: snapshot application must NOT create any
+/// `change_log` rows attributed to the local device. The `apply_guard`
+/// suppresses triggers and stamps `applying_as_device` with the host,
+/// so a receiver that applies a snapshot will not echo those rows back
+/// to the network on the next sync — the host is the authoritative
+/// author of every row the snapshot contains.
+///
+/// Verification: count change_log rows before vs after a snapshot apply
+/// that materializes a new category, a new space grant, and a new
+/// transaction. The counts must be identical.
+#[tokio::test]
+async fn snapshot_apply_creates_no_local_change_log() {
+    use crate::sync::apply_guard::run_as_device;
+    use crate::sync::snapshot::{
+        SnapshotFrame, SpaceSnapshot, WireCategory, WireDevice, WireSpace, WireSpaceDevice,
+        WireTransaction,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let b = TestDevice::create("device-B", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+    b.insert_space("s1", "shared").await;
+
+    // Register an account so the foreign key on transactions is satisfied.
+    sqlx::query!(
+        "INSERT INTO accounts (id, name, currency, account_type, account_source, color, space_id) \
+         VALUES ('acc-1', 'Checking', 'USD', 'checking', 'manual', '#fff', 's1')"
+    )
+    .execute(&b.pool)
+    .await
+    .unwrap();
+
+    let before: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM change_log")
+        .fetch_one(&b.pool)
+        .await
+        .unwrap();
+    // Note: B's local inserts (space, account) create change_log rows
+    // attributed to 'device-B'. We snapshot the count so we can prove
+    // the snapshot apply adds zero rows on top.
+
+    // Build a snapshot from host A that contains fresh data. The
+    // host's cert is generated once and reused in both the snapshot
+    // header and the Devices chunk — different invocations of
+    // `test_cert_pem` produce different fingerprints and would fail
+    // the End frame's fingerprint-uniqueness check.
+    let host_cert = test_cert_pem("device-A");
+    let snapshot = SpaceSnapshot {
+        snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+        snapshot_id: "snap-noecho".into(),
+        host_device_id: "device-A".into(),
+        host_device_name: "Host A".into(),
+        host_cert_pem: host_cert.clone(),
+        high_water_vector: vec![],
+        row_winners: vec![],
+        space: WireSpace {
+            id: "s1".into(),
+            name: "shared".into(),
+            created_at: ts.into(),
+            updated_at: ts.into(),
+        },
+        members: vec![],
+        users: vec![],
+        categories: vec![WireCategory {
+            id: "cat-new".into(),
+            name: "New".into(),
+            color: "#0f0".into(),
+            space_id: "s1".into(),
+        }],
+        accounts: vec![],
+        transactions: vec![WireTransaction {
+            id: "tx-1".into(),
+            booking_date: "2024-01-01".into(),
+            value_date: "2024-01-01".into(),
+            reference: "ref".into(),
+            text: "txn".into(),
+            currency: "USD".into(),
+            amount: -1000,
+            balance: 9000,
+            approved: 0,
+            note: "n".into(),
+            category: Some("cat-new".into()),
+            account_id: "acc-1".into(),
+        }],
+        account_summaries: vec![],
+        space_settings: vec![],
+        model_versions: vec![],
+        devices: vec![WireDevice {
+            device_id: "device-A".into(),
+            cert_pem: host_cert,
+            display_name: "Host A".into(),
+        }],
+        space_devices: vec![WireSpaceDevice {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            trust_mode: TrustMode::Active,
+            paired_at: ts.into(),
+        }],
+    };
+
+    // Apply on B with the production apply_guard path.
+    run_as_device(&b.pool, "device-A", move |tx| {
+        let snap = snapshot.clone();
+        Box::pin(async move {
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snap,
+                &SnapshotFrame::Space(snap.space.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snap,
+                &SnapshotFrame::Categories(snap.categories.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snap,
+                &SnapshotFrame::Transactions(snap.transactions.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snap,
+                &SnapshotFrame::Devices(snap.devices.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snap,
+                &SnapshotFrame::SpaceDevices(snap.space_devices.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(tx, &snap, &SnapshotFrame::End).await?;
+            Ok::<(), crate::error::AppError>(())
+        })
+    })
+    .await
+    .expect("snapshot apply must succeed");
+
+    let after: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM change_log")
+        .fetch_one(&b.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "snapshot apply must NOT create any change_log rows"
+    );
+
+    // Any change_log rows that exist must be attributed to the local
+    // device for legitimate pre-snapshot writes (B's space insert +
+    // auto-updated_at + account insert), not the snapshot host.
+    let local_rows: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM change_log WHERE device_id = 'device-B'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    let host_rows: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM change_log WHERE device_id = 'device-A'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert!(
+        local_rows >= 1,
+        "B has at least one pre-snapshot local row (space insert)"
+    );
+    assert_eq!(
+        host_rows, 0,
+        "no echo rows attributed to the snapshot host"
+    );
+}

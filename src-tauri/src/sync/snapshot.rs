@@ -3,6 +3,7 @@ use sqlx::SqlitePool;
 use tauri::AppHandle;
 
 use crate::error::AppError;
+use crate::sync::apply::apply_tombstone;
 use crate::sync::trust_mode::TrustMode;
 
 pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
@@ -391,6 +392,106 @@ pub async fn collect_snapshot(
 }
 
 // ---------------------------------------------------------------------------
+// Boundary: validate the snapshot stream before opening apply_guard
+// ---------------------------------------------------------------------------
+
+/// Step 31.2: verify the snapshot boundary before opening the apply
+/// transaction. Rejects mixed-space streams and unsupported schema
+/// versions, so a hostile or buggy peer cannot poison the receiver's
+/// state with a partial apply that passes all per-row checks.
+///
+/// Returns `Ok(())` on success. The caller MUST abort before any DB
+/// write on `Err(_)`.
+pub fn verify_snapshot_boundary(
+    expected_space_id: &str,
+    snapshot_schema_version: u32,
+    chunks: &[crate::sync::wire::SnapshotChunk],
+) -> Result<(), AppError> {
+    if snapshot_schema_version != SNAPSHOT_SCHEMA_VERSION {
+        return Err(AppError::InvalidInput(format!(
+            "snapshot boundary: unsupported snapshot_schema_version {} (expected {})",
+            snapshot_schema_version, SNAPSHOT_SCHEMA_VERSION
+        )));
+    }
+
+    if expected_space_id.is_empty() {
+        return Err(AppError::InvalidInput(
+            "snapshot boundary: empty expected space_id".into(),
+        ));
+    }
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        if chunk.space_id != expected_space_id {
+            return Err(AppError::InvalidInput(format!(
+                "snapshot boundary: chunk {i} has space_id {:?} != expected {:?}",
+                chunk.space_id, expected_space_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Install: advance cursors after snapshot apply commits
+// ---------------------------------------------------------------------------
+
+/// Step 31.2: install the complete cursor vector AFTER the snapshot
+/// apply transaction commits. Opens a separate write transaction so a
+/// crash between snapshot apply and cursor installation is detectable:
+/// the snapshot is on disk but the cursor says "0" — the next sync will
+/// request a fresh snapshot, which is correct (idempotent re-apply).
+///
+/// Each `WireOriginState` becomes a `sync_cursors(space_id, origin)` row
+/// advanced to `high_water`. The host is included if it appears in the
+/// vector; if not, we still install `sync_cursors(space_id, host) =
+/// host_high_water` derived from the vector's max (defensive — the host
+/// is by definition one of the origins, but a hostile snapshot claiming
+/// otherwise shouldn't trap the receiver in an infinite re-snapshot
+/// loop).
+///
+/// `MAX(...)` clamping inside `upsert_cursor.sql` guarantees the cursor
+/// only ever moves forward — concurrent incremental syncs that landed
+/// between the snapshot's capture and this install can't be undone.
+pub async fn install_snapshot_cursors(
+    db: &SqlitePool,
+    space_id: &str,
+    high_water_vector: &[WireOriginState],
+    host_device_id: &str,
+) -> Result<(), AppError> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("install_snapshot_cursors begin: {e}")))?;
+
+    let mut max_high_water: i64 = 0;
+    for os in high_water_vector {
+        crate::sync::cursors::advance(&mut tx, space_id, &os.origin_device_id, os.high_water)
+            .await
+            .map_err(|e| AppError::Db(format!("install_snapshot_cursors: {e}")))?;
+        if os.high_water > max_high_water {
+            max_high_water = os.high_water;
+        }
+    }
+
+    // Defensive: if the host isn't in the vector, install it at the
+    // max observed high water so the next sync doesn't re-request the
+    // whole backlog from seq=1.
+    if !high_water_vector
+        .iter()
+        .any(|os| os.origin_device_id == host_device_id)
+    {
+        crate::sync::cursors::advance(&mut tx, space_id, host_device_id, max_high_water)
+            .await
+            .map_err(|e| AppError::Db(format!("install_snapshot_cursors host: {e}")))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("install_snapshot_cursors commit: {e}")))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Apply: persist a snapshot inside an open transaction
 // ---------------------------------------------------------------------------
 
@@ -415,6 +516,13 @@ pub async fn apply_snapshot_frame(
         SnapshotFrame::RowWinners(chunk) => {
             for rw in chunk {
                 upsert_row_winner(tx, rw).await?;
+                // Step 31.2: honor tombstoned winners. The previous
+                // chunks may have re-materialized a row that the host
+                // has since deleted — apply the tombstone now to keep
+                // the receiver's row set in sync with `row_winners`.
+                if rw.deleted != 0 {
+                    apply_tombstone(tx, &rw.table_name, &rw.row_id).await?;
+                }
             }
         }
         SnapshotFrame::Devices(chunk) => {

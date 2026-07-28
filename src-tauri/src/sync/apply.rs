@@ -168,6 +168,110 @@ async fn apply_delete(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
     Ok(())
 }
 
+/// Delete a tombstoned row from its source table during snapshot apply.
+/// Dispatch is identical to `apply_delete` but takes the row identity
+/// directly (no `ChangeRow` wrapping). Used by the snapshot merge path
+/// after `row_winners` with `deleted = 1` are installed — the row
+/// materialization step may have re-created a previously-deleted row,
+/// so this pass is required to clean up stale state on the receiver.
+///
+/// Like `apply_delete`, this function is idempotent on non-existent rows
+/// and is safe to call inside `apply_guard::run_as_device` (triggers are
+/// suppressed, so no echo change_log entries are written).
+pub async fn apply_tombstone(
+    tx: &mut Transaction<'_, Sqlite>,
+    table_name: &str,
+    row_id: &str,
+) -> Result<(), AppError> {
+    match table_name {
+        "spaces" => {
+            sqlx::query_file!("queries/sync/apply/soft_delete_space.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone spaces: {e}")))?;
+        }
+        "space_members" => {
+            let (space_id, user_id) = split_composite(row_id, "space_members")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_space_member.sql",
+                space_id,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone space_members: {e}")))?;
+        }
+        "accounts" => {
+            sqlx::query_file!("queries/sync/apply/delete_account.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone accounts: {e}")))?;
+        }
+        "categories" => {
+            sqlx::query_file!("queries/sync/apply/delete_category.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone categories: {e}")))?;
+        }
+        "transactions" => {
+            sqlx::query_file!("queries/sync/apply/delete_transaction.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone transactions: {e}")))?;
+        }
+        "account_summaries" => {
+            let (account_id, month) = split_composite(row_id, "account_summaries")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_account_summary.sql",
+                month,
+                account_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone account_summaries: {e}")))?;
+        }
+        "space_settings" => {
+            let (space_id, key) = split_composite(row_id, "space_settings")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_space_setting.sql",
+                space_id,
+                key
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone space_settings: {e}")))?;
+        }
+        "space_devices" => {
+            let (space_id, device_id) = split_composite(row_id, "space_devices")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_space_device.sql",
+                space_id,
+                device_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone space_devices: {e}")))?;
+        }
+        "model_versions" => {
+            let (space_id, version) = split_composite(row_id, "model_versions")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_model_version.sql",
+                space_id,
+                version
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone model_versions: {e}")))?;
+        }
+        other => {
+            return Err(AppError::InvalidInput(format!(
+                "apply_tombstone: unknown table {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Per-table upserts. Each one is a thin wrapper around the corresponding
 // `queries/sync/apply/upsert_*.sql` file. Kept as separate functions to

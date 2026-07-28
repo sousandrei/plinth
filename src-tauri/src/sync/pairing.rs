@@ -480,6 +480,26 @@ pub async fn run_joiner(
     .await
     .map_err(|e| AppError::Db(format!("pairing persist: {e}")))?;
 
+    // Step 31.2: install the cursor vector AFTER the snapshot tx commits.
+    // The streaming skeleton above had an empty high_water_vector, so we
+    // re-read the just-applied origin_state rows from disk and use those.
+    let high_water_vector: Vec<crate::sync::snapshot::WireOriginState> = sqlx::query_file_as!(
+        crate::sync::snapshot::WireOriginState,
+        "queries/snapshots/list_origin_states.sql",
+        space_id
+    )
+    .fetch_all(&db)
+    .await
+    .map_err(|e| AppError::Db(format!("pairing list_origin_states: {e}")))?;
+    crate::sync::snapshot::install_snapshot_cursors(
+        &db,
+        &space_id,
+        &high_water_vector,
+        &host_device_id,
+    )
+    .await
+    .map_err(|e| AppError::Db(format!("pairing install cursors: {e}")))?;
+
     Ok(PairingResult {
         space_id,
         space_name,

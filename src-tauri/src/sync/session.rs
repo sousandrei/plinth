@@ -776,30 +776,64 @@ where
 /// device (not the local device) is stamped as the author of every
 /// change_log row. The body collapses the chunk buffer back into a
 /// `SpaceSnapshot` and reuses `snapshot::apply_snapshot_frame`.
+///
+/// Step 31.2: after the apply transaction commits, install the
+/// complete cursor vector in a separate transaction so subsequent
+/// incremental syncs pick up where the snapshot left off (instead of
+/// re-shipping the entire backlog from seq=1).
 async fn apply_snapshot_stream(
     db: &SqlitePool,
-    mut snapshot: crate::sync::snapshot::SpaceSnapshot,
+    snapshot: crate::sync::snapshot::SpaceSnapshot,
     chunks: &[crate::sync::wire::SnapshotChunk],
 ) -> Result<(), AppError> {
+    // Step 31.2: verify the snapshot boundary BEFORE opening the apply
+    // transaction. A mixed-space or unsupported-version snapshot must
+    // be rejected outright — partial apply would leak hostile state.
+    let expected_space_id = snapshot.space.id.clone();
+    crate::sync::snapshot::verify_snapshot_boundary(
+        &expected_space_id,
+        snapshot.snapshot_schema_version,
+        chunks,
+    )?;
+
     // Apply each frame independently so a mid-stream failure aborts the
     // whole batch (apply_guard transaction rolls back).
+    //
+    // The snapshot skeleton is built from `collect_snapshot` (session
+    // path) or the pair-header (pairing path), so `snapshot.space.id`
+    // is populated from the start — the End frame's trusted_device
+    // upsert can find the space without needing to lift it from a
+    // later chunk.
     let host_device_id = snapshot.host_device_id.clone();
     let chunks_owned: Vec<_> = chunks.to_vec();
+    let snapshot_for_apply = snapshot.clone();
     crate::sync::apply_guard::run_as_device(db, &host_device_id, move |tx| {
         Box::pin(async move {
             for chunk in &chunks_owned {
-                crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot, &chunk.frame).await?;
-                // Lift the space identity out of the first Space frame
-                // so the End frame's trusted_device upsert can find it.
-                if let crate::sync::snapshot::SnapshotFrame::Space(s) = &chunk.frame {
-                    snapshot.space = s.clone();
-                }
+                crate::sync::snapshot::apply_snapshot_frame(
+                    tx,
+                    &snapshot_for_apply,
+                    &chunk.frame,
+                )
+                .await?;
             }
             Ok(())
         })
     })
     .await
     .map_err(|e| AppError::Db(format!("apply_snapshot_stream: {e}")))?;
+
+    // Step 31.2: install cursor vector AFTER commit. Separate tx so a
+    // crash here is detectable and the next sync can safely re-snapshot.
+    crate::sync::snapshot::install_snapshot_cursors(
+        db,
+        &expected_space_id,
+        &snapshot.high_water_vector,
+        &snapshot.host_device_id,
+    )
+    .await
+    .map_err(|e| AppError::Db(format!("apply_snapshot_stream cursors: {e}")))?;
+
     Ok(())
 }
 
