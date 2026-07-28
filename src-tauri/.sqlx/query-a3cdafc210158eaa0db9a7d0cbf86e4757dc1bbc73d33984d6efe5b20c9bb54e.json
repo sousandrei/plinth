@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Insert an incoming change_log row with its original origin identity.\n-- Used by the remote-apply path before materializing the row body.\n-- ON CONFLICT DO NOTHING on the unique origin key makes relay\n-- idempotent: the same change arriving through two relay paths is\n-- inserted only once. See data/PLAN.md Step 29.2.\nINSERT INTO change_log\n    (id, space_id, table_name, row_id, operation, payload, seq, device_id,\n     origin_device_id, origin_seq)\nVALUES\n    (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)\nON CONFLICT (space_id, origin_device_id, origin_seq)\n    WHERE origin_device_id IS NOT NULL AND origin_seq IS NOT NULL\n    DO NOTHING\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "a3cdafc210158eaa0db9a7d0cbf86e4757dc1bbc73d33984d6efe5b20c9bb54e"
+}

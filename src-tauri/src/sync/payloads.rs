@@ -155,6 +155,23 @@ impl TablePayload {
             Self::ModelVersion(_) => "model_versions",
         }
     }
+
+    /// Serialize the inner payload struct (not the tagged enum) to JSON.
+    /// This is the inverse of `from_json` — the trigger's `json_object`
+    /// produces plain object JSON, and this method matches that format.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        match self {
+            Self::Space(p) => serde_json::to_string(p),
+            Self::SpaceMember(p) => serde_json::to_string(p),
+            Self::Account(p) => serde_json::to_string(p),
+            Self::Category(p) => serde_json::to_string(p),
+            Self::Transaction(p) => serde_json::to_string(p),
+            Self::AccountSummary(p) => serde_json::to_string(p),
+            Self::SpaceSetting(p) => serde_json::to_string(p),
+            Self::TrustedDevice(p) => serde_json::to_string(p),
+            Self::ModelVersion(p) => serde_json::to_string(p),
+        }
+    }
 }
 
 /// Parse a `change_log.payload` JSON string into a typed `TablePayload`,

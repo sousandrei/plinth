@@ -2,28 +2,30 @@ use sqlx::SqlitePool;
 
 use crate::error::AppError;
 
-/// Run all six GC passes in order. Called after every successful outbound
-/// sync session. Safe to call concurrently — each pass is a single DELETE
-/// statement that SQLite serialises internally through WAL.
+/// Run the safe GC passes only. Called after every successful outbound
+/// sync session and after `delete_space`.
 ///
-/// Passes:
-///   1. Compaction        — keep only the highest-seq row per (space, table, row_id)
-///   2. All-consumed      — drop rows every enabled peer has already applied
-///   3. 90-day hard cap   — drop rows older than 90 days unconditionally
-///   4. Deleted spaces    — hard-delete soft-deleted space skeletons with no
+/// Disabled passes:
+///   - `compact`, `all_peers_consumed`, `cap_90_days` — can discard
+///     changes that offline peers have not yet consumed. Replaced by
+///     acknowledgment-based collection in Phase 29. See `data/PLAN.md`
+///     Step 28.2.
+///   - `orphan_users` — deleting a local profile solely because it has
+///     no current `space_members` row is a user-facing policy decision,
+///     not automatic cleanup. Explicit local profile deletion is
+///     defined in Phase 32. See `data/PLAN.md` Step 28.3.
+///
+/// Safe passes:
+///   1. Deleted spaces    — hard-delete soft-deleted space skeletons with no
 ///      remaining change_log entries
-///   5. Orphan cleanup    — remove trusted_devices / evicted_devices for deleted spaces
-///   6. Orphan users      — remove users with no remaining space_members rows
+///   2. Orphan cleanup    — remove trusted_devices / evicted_devices for deleted spaces
 pub async fn run(db: &SqlitePool) -> Result<(), AppError> {
-    compact(db).await?;
-    all_peers_consumed(db).await?;
-    cap_90_days(db).await?;
     deleted_spaces(db).await?;
     orphan_trusted_devices(db).await?;
-    orphan_users(db).await?;
     Ok(())
 }
 
+#[cfg(test)]
 async fn compact(db: &SqlitePool) -> Result<(), AppError> {
     sqlx::query_file!("queries/sync/gc_compact.sql")
         .execute(db)
@@ -32,6 +34,7 @@ async fn compact(db: &SqlitePool) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(test)]
 async fn all_peers_consumed(db: &SqlitePool) -> Result<(), AppError> {
     sqlx::query_file!("queries/sync/gc_all_peers_consumed.sql")
         .execute(db)
@@ -40,6 +43,7 @@ async fn all_peers_consumed(db: &SqlitePool) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(test)]
 async fn cap_90_days(db: &SqlitePool) -> Result<(), AppError> {
     sqlx::query_file!("queries/sync/gc_90day_cap.sql")
         .execute(db)
@@ -64,6 +68,7 @@ async fn orphan_trusted_devices(db: &SqlitePool) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(test)]
 async fn orphan_users(db: &SqlitePool) -> Result<(), AppError> {
     sqlx::query_file!("queries/sync/gc_orphan_users.sql")
         .execute(db)

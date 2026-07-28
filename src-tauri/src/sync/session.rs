@@ -464,10 +464,10 @@ where
 
     let space_id_owned = snapshot.space.id.clone();
 
-    // First chunk: space + members + users + categories (the seed
-    // data needed before any of the dependent tables can be inserted).
-    // Categories are seeded in `create_space` on a fresh space, so they
-    // fit comfortably in one frame.
+    // First chunk: space + users + members (the seed data needed
+    // before any of the dependent tables can be inserted). Users must
+    // precede members because `space_members.user_id` has a FK to
+    // `users(id)`.
     write_frame(
         wr,
         &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
@@ -480,7 +480,7 @@ where
         wr,
         &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
             space_id: space_id_owned.clone(),
-            frame: crate::sync::snapshot::SnapshotFrame::Members(snapshot.members.clone()),
+            frame: crate::sync::snapshot::SnapshotFrame::Users(snapshot.users.clone()),
         }),
     )
     .await?;
@@ -488,7 +488,7 @@ where
         wr,
         &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
             space_id: space_id_owned.clone(),
-            frame: crate::sync::snapshot::SnapshotFrame::Users(snapshot.users.clone()),
+            frame: crate::sync::snapshot::SnapshotFrame::Members(snapshot.members.clone()),
         }),
     )
     .await?;
@@ -749,6 +749,23 @@ async fn apply_batch(
                 let device_id_inner = device_id_for_closure.clone();
                 Box::pin(async move {
                     for row in &batch.rows {
+                        let payload_json = row.payload.as_ref().and_then(|p| p.to_json().ok());
+                        sqlx::query_file!(
+                            "queries/sync/insert_remote_change_log.sql",
+                            row.id,
+                            row.space_id,
+                            row.table_name,
+                            row.row_id,
+                            row.operation,
+                            payload_json,
+                            row.seq,
+                            row.device_id,
+                            row.device_id,
+                            row.seq,
+                        )
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(|e| AppError::Db(format!("insert_remote_change_log: {e}")))?;
                         apply::apply_change(tx, row).await?;
                     }
                     cursors::advance(tx, &space_id, &device_id_inner, final_seq).await?;
@@ -769,6 +786,23 @@ async fn apply_batch(
         let device_id_inner = device_id_for_closure.clone();
         Box::pin(async move {
             for row in &batch.rows {
+                let payload_json = row.payload.as_ref().and_then(|p| p.to_json().ok());
+                sqlx::query_file!(
+                    "queries/sync/insert_remote_change_log.sql",
+                    row.id,
+                    row.space_id,
+                    row.table_name,
+                    row.row_id,
+                    row.operation,
+                    payload_json,
+                    row.seq,
+                    row.device_id,
+                    row.device_id,
+                    row.seq,
+                )
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("insert_remote_change_log: {e}")))?;
                 apply::apply_change(tx, row).await?;
             }
             cursors::advance(tx, &batch_space_id, &device_id_inner, final_seq).await?;

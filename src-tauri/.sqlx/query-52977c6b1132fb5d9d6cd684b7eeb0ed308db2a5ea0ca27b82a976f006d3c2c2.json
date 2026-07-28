@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app_settings (key, value)\nVALUES ('applying_remote', '1')\nON CONFLICT(key) DO UPDATE SET value = excluded.value\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "52977c6b1132fb5d9d6cd684b7eeb0ed308db2a5ea0ca27b82a976f006d3c2c2"
+}

@@ -712,13 +712,13 @@ async fn apply_header(
     crate::sync::snapshot::apply_snapshot_frame(
         tx,
         &skeleton,
-        &SnapshotFrame::Members(header.members.clone()),
+        &SnapshotFrame::Users(header.users.clone()),
     )
     .await?;
     crate::sync::snapshot::apply_snapshot_frame(
         tx,
         &skeleton,
-        &SnapshotFrame::Users(header.users.clone()),
+        &SnapshotFrame::Members(header.members.clone()),
     )
     .await?;
     crate::sync::snapshot::apply_snapshot_frame(tx, &skeleton, &SnapshotFrame::End).await?;
