@@ -23,12 +23,10 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 
-use crate::error::AppError;
-use crate::sync::apply_guard::run_as_device;
 use crate::sync::changelog;
 use crate::sync::cursors;
-use crate::sync::payloads::{SpacePayload, TablePayload};
-use crate::sync::session::{apply_remote_row, validate_batch};
+use crate::sync::payloads::{SpacePayload, TablePayload, TransactionPayload};
+use crate::sync::session::{apply_round_core, validate_batch};
 use crate::sync::wire::{ChangeBatch, ChangeRow};
 
 /// One independent installation in the test mesh.
@@ -141,6 +139,7 @@ pub async fn sync_direct(from: &TestDevice, to: &TestDevice) -> usize {
         .await
         .unwrap_or_else(|e| panic!("harness: list origins: {e}"));
 
+    let mut batches = Vec::new();
     let mut total = 0usize;
     for o in origins {
         let space_id = o.space_id;
@@ -155,42 +154,27 @@ pub async fn sync_direct(from: &TestDevice, to: &TestDevice) -> usize {
             .await
             .unwrap_or_else(|e| panic!("harness: max_seq: {e}"));
 
-        let batch = ChangeBatch {
+        let count = rows.len();
+        batches.push(ChangeBatch {
             space_id: space_id.clone(),
-            device_id: origin_device.clone(),
+            origin_device_id: origin_device.clone(),
+            transport_device_id: from.device_id.clone(),
             rows,
             final_seq,
-        };
-        let count = batch.rows.len();
-        apply_batch(to, &batch).await;
+        });
         total += count;
     }
+
+    apply_round_core(&to.pool, &from.device_id, &batches)
+        .await
+        .unwrap_or_else(|e| panic!("harness: apply_round_core: {e}"));
     total
 }
 
 async fn apply_batch(to: &TestDevice, batch: &ChangeBatch) {
-    validate_batch(batch).unwrap_or_else(|e| panic!("harness: validate_batch: {e}"));
-
-    let space_id = batch.space_id.clone();
-    let origin_override = batch.device_id.clone();
-    let origin = batch.device_id.clone();
-    let final_seq = batch.final_seq;
-    let rows = batch.rows.clone();
-
-    run_as_device(&to.pool, &origin_override, move |tx| {
-        let space_id = space_id.clone();
-        let origin = origin.clone();
-        let rows = rows.clone();
-        Box::pin(async move {
-            for row in &rows {
-                apply_remote_row(tx, row).await?;
-            }
-            cursors::advance(tx, &space_id, &origin, final_seq).await?;
-            Ok::<(), AppError>(())
-        })
-    })
-    .await
-    .unwrap_or_else(|e| panic!("harness: apply_batch: {e}"));
+    apply_round_core(&to.pool, &batch.transport_device_id, &[batch.clone()])
+        .await
+        .unwrap_or_else(|e| panic!("harness: apply_batch: {e}"));
 }
 
 /// Convenience: build a `spaces` insert `ChangeRow` authored by
@@ -1020,7 +1004,8 @@ async fn concurrent_updates_opposite_orders_same_winner() {
         &c1,
         &ChangeBatch {
             space_id: "s1".into(),
-            device_id: "device-A".into(),
+            origin_device_id: "device-A".into(),
+            transport_device_id: "device-A".into(),
             rows: vec![update_a.clone()],
             final_seq: 5,
         },
@@ -1030,7 +1015,8 @@ async fn concurrent_updates_opposite_orders_same_winner() {
         &c1,
         &ChangeBatch {
             space_id: "s1".into(),
-            device_id: "device-B".into(),
+            origin_device_id: "device-B".into(),
+            transport_device_id: "device-B".into(),
             rows: vec![update_b.clone()],
             final_seq: 5,
         },
@@ -1042,7 +1028,8 @@ async fn concurrent_updates_opposite_orders_same_winner() {
         &c2,
         &ChangeBatch {
             space_id: "s1".into(),
-            device_id: "device-B".into(),
+            origin_device_id: "device-B".into(),
+            transport_device_id: "device-B".into(),
             rows: vec![update_b.clone()],
             final_seq: 5,
         },
@@ -1052,7 +1039,8 @@ async fn concurrent_updates_opposite_orders_same_winner() {
         &c2,
         &ChangeBatch {
             space_id: "s1".into(),
-            device_id: "device-A".into(),
+            origin_device_id: "device-A".into(),
+            transport_device_id: "device-A".into(),
             rows: vec![update_a.clone()],
             final_seq: 5,
         },
@@ -1202,7 +1190,8 @@ async fn older_update_cannot_resurrect_tombstone() {
         &c,
         &ChangeBatch {
             space_id: "s1".into(),
-            device_id: "device-A".into(),
+            origin_device_id: "device-A".into(),
+            transport_device_id: "device-A".into(),
             rows: vec![delete_row],
             final_seq: 6,
         },
@@ -1221,7 +1210,8 @@ async fn older_update_cannot_resurrect_tombstone() {
         &c,
         &ChangeBatch {
             space_id: "s1".into(),
-            device_id: "device-B".into(),
+            origin_device_id: "device-B".into(),
+            transport_device_id: "device-B".into(),
             rows: vec![update_row],
             final_seq: 5,
         },
@@ -1273,7 +1263,8 @@ fn validate_batch_accepts_valid_batch() {
     };
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![insert_row, delete_row],
         final_seq: 2,
     };
@@ -1285,7 +1276,8 @@ fn validate_batch_accepts_valid_batch() {
 fn validate_batch_accepts_empty_batch() {
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![],
         final_seq: 0,
     };
@@ -1299,7 +1291,8 @@ fn validate_batch_rejects_mismatched_origin() {
     row.device_id = "device-B".into();
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![row],
         final_seq: 1,
     };
@@ -1313,7 +1306,8 @@ fn validate_batch_rejects_mismatched_space() {
     row.space_id = "s2".into();
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![row],
         final_seq: 1,
     };
@@ -1329,7 +1323,8 @@ fn validate_batch_rejects_payload_envelope_mismatches() {
     no_payload.payload = None;
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![no_payload],
         final_seq: 1,
     };
@@ -1340,7 +1335,8 @@ fn validate_batch_rejects_payload_envelope_mismatches() {
     wrong_variant.table_name = "accounts".into(); // payload is Space, not Account
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![wrong_variant],
         final_seq: 1,
     };
@@ -1351,7 +1347,8 @@ fn validate_batch_rejects_payload_envelope_mismatches() {
     key_mismatch.row_id = "wrong-id".into();
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![key_mismatch],
         final_seq: 1,
     };
@@ -1376,7 +1373,8 @@ fn validate_batch_rejects_invalid_delete_key() {
     };
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![malformed],
         final_seq: 1,
     };
@@ -1396,7 +1394,8 @@ fn validate_batch_rejects_invalid_delete_key() {
     };
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![wrong_scope],
         final_seq: 1,
     };
@@ -1411,7 +1410,8 @@ fn validate_batch_rejects_bad_seq() {
     zero_seq.seq = 0;
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![zero_seq],
         final_seq: 0,
     };
@@ -1422,9 +1422,144 @@ fn validate_batch_rejects_bad_seq() {
     let row2 = space_update_row("ch-3", "s1", "second", "device-A", 3);
     let batch = ChangeBatch {
         space_id: "s1".into(),
-        device_id: "device-A".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
         rows: vec![row1, row2],
         final_seq: 5,
     };
     assert!(validate_batch(&batch).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 29.5 — change and apply barriers
+// ---------------------------------------------------------------------------
+
+/// A child change relayed before its parent does not permanently fail.
+/// Device A creates a space, B creates an account, A creates a
+/// transaction referencing B's account. When A relays both origins
+/// to C, the transaction (origin A) arrives in the same round as the
+/// account (origin B). Without FK-safe staging, the transaction
+/// would fail because the account doesn't exist yet. With staging,
+/// the account is applied before the transaction.
+#[tokio::test]
+async fn child_before_parent_succeeds() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+    let c = TestDevice::create("device-C", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    sync_direct(&a, &b).await;
+
+    sqlx::query!(
+        "INSERT INTO accounts (id, name, currency, account_type, account_source, color, space_id) \
+         VALUES ('a1', 'Checking', 'USD', 'checking', 'manual', '#000', 's1')"
+    )
+    .execute(&b.pool)
+    .await
+    .unwrap();
+
+    sync_direct(&b, &a).await;
+
+    sqlx::query!(
+        "INSERT INTO transactions \
+         (id, booking_date, value_date, reference, text, currency, amount, balance, approved, note, account_id) \
+         VALUES ('t1', '2024-01-01', '2024-01-01', 'ref', 'test', 'USD', 1000, 1000, 1, '', 'a1')"
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sync_direct(&a, &c).await;
+
+    let tx_count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM transactions WHERE id = 't1'")
+        .fetch_one(&c.pool)
+        .await
+        .unwrap();
+    assert_eq!(tx_count, 1, "transaction must be applied after its account");
+
+    let acct_count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM accounts WHERE id = 'a1'")
+        .fetch_one(&c.pool)
+        .await
+        .unwrap();
+    assert_eq!(acct_count, 1, "account must be applied");
+}
+
+/// A sender receives explicit proof of the receiver's committed
+/// cursors. After `sync_direct`, the receiver's cursor for each
+/// origin must match the sender's max_seq — this is the data that
+/// `AppliedCursors` would carry on the wire.
+#[tokio::test]
+async fn applied_cursors_proof() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    sync_direct(&a, &b).await;
+
+    let cursor = b.cursor_for("s1", "device-A").await;
+    assert!(cursor > 0, "cursor must be advanced after sync");
+
+    let max_seq = changelog::max_seq(&a.pool, "s1", "device-A").await.unwrap();
+    assert_eq!(
+        cursor, max_seq,
+        "cursor must match sender's max_seq — explicit proof of commit"
+    );
+}
+
+/// Apply failure produces no cursor or acknowledgment advance. A
+/// batch with a transaction referencing a non-existent account
+/// fails the FK constraint inside the `run_as_device` transaction.
+/// The transaction rolls back — cursors are not advanced.
+#[tokio::test]
+async fn apply_failure_no_cursor_advance() {
+    let dir = TempDir::new().unwrap();
+    let c = TestDevice::create("device-C", &dir).await;
+
+    c.insert_space("s1", "test").await;
+
+    let bad_row = ChangeRow {
+        id: "ch-bad".into(),
+        space_id: "s1".into(),
+        table_name: "transactions".into(),
+        row_id: "t1".into(),
+        operation: "insert".into(),
+        payload: Some(TablePayload::Transaction(TransactionPayload {
+            id: "t1".into(),
+            booking_date: "2024-01-01".into(),
+            value_date: "2024-01-01".into(),
+            reference: "ref".into(),
+            text: "test".into(),
+            currency: "USD".into(),
+            amount: 1000,
+            balance: 1000,
+            approved: 1,
+            note: "".into(),
+            category: None,
+            account_id: "nonexistent".into(),
+        })),
+        seq: 1,
+        device_id: "device-A".into(),
+        changed_at: "2024-01-01T00:00:00Z".into(),
+    };
+
+    let batch = ChangeBatch {
+        space_id: "s1".into(),
+        origin_device_id: "device-A".into(),
+        transport_device_id: "device-A".into(),
+        rows: vec![bad_row],
+        final_seq: 1,
+    };
+
+    let cursor_before = c.cursor_for("s1", "device-A").await;
+
+    let result = apply_round_core(&c.pool, "device-A", &[batch]).await;
+    assert!(result.is_err(), "apply should fail with FK violation");
+
+    let cursor_after = c.cursor_for("s1", "device-A").await;
+    assert_eq!(
+        cursor_after, cursor_before,
+        "cursor must not advance on failure"
+    );
 }

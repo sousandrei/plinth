@@ -10,8 +10,8 @@ use crate::sync::cert_match::PeerIdentity;
 use crate::sync::frame;
 use crate::sync::payloads::TablePayload;
 use crate::sync::wire::{
-    Bye, ChangeBatch, ChangeRow, CursorEntry, Cursors, Frame, Hello, ModelVersionSummary,
-    PROTOCOL_VERSION, Pong,
+    AppliedCursors, Bye, ChangeBatch, ChangeRow, ChangesDone, CursorEntry, Cursors, Frame, Hello,
+    ModelVersionSummary, PROTOCOL_VERSION, Pong,
 };
 use crate::sync::{apply, changelog, cursors, model_sync};
 
@@ -164,6 +164,7 @@ where
 {
     let (cursors_tx, cursors_rx) = oneshot::channel::<Cursors>();
     let (model_versions_tx, model_versions_rx) = oneshot::channel::<ModelVersionSummary>();
+    let (applied_cursors_tx, applied_cursors_rx) = oneshot::channel::<AppliedCursors>();
 
     let db_recv = db.clone();
     let app_recv = app.clone();
@@ -177,6 +178,7 @@ where
         peer.clone(),
         cursors_rx,
         model_versions_rx,
+        applied_cursors_rx,
     );
     let recv_fut = recv_half(
         read_half,
@@ -186,6 +188,7 @@ where
         peer_recv,
         cursors_tx,
         model_versions_tx,
+        applied_cursors_tx,
     );
 
     let (send_res, recv_res) = tokio::join!(send_fut, recv_fut);
@@ -226,6 +229,7 @@ async fn send_half<W>(
     peer: PeerIdentity,
     cursors_rx: oneshot::Receiver<Cursors>,
     model_versions_rx: oneshot::Receiver<ModelVersionSummary>,
+    applied_cursors_rx: oneshot::Receiver<AppliedCursors>,
 ) -> Result<(), AppError>
 where
     W: AsyncWrite + Unpin,
@@ -273,6 +277,7 @@ where
             &entry.space_id,
             &entry.device_id,
             entry.last_seq,
+            &local_device_id,
         )
         .await?;
     }
@@ -290,12 +295,37 @@ where
 
             for d in devices {
                 if d.device_id != peer.device_id {
-                    ship_batches(&mut wr, &db, &app, space_id, &d.device_id, 0).await?;
+                    ship_batches(
+                        &mut wr,
+                        &db,
+                        &app,
+                        space_id,
+                        &d.device_id,
+                        0,
+                        &local_device_id,
+                    )
+                    .await?;
                 }
             }
-            ship_batches(&mut wr, &db, &app, space_id, &local_device_id, 0).await?;
+            ship_batches(
+                &mut wr,
+                &db,
+                &app,
+                space_id,
+                &local_device_id,
+                0,
+                &local_device_id,
+            )
+            .await?;
         }
     }
+
+    // --- ChangesDone + AppliedCursors barrier ---
+    write_frame(&mut wr, &Frame::ChangesDone(ChangesDone {})).await?;
+    let applied = applied_cursors_rx.await.map_err(|_| {
+        AppError::Internal("session: recv half dropped before sending AppliedCursors".into())
+    })?;
+    write_frame(&mut wr, &Frame::AppliedCursors(applied)).await?;
 
     // --- Model version exchange ---
     // Sweep orphan files for each shared space BEFORE building the
@@ -357,8 +387,10 @@ where
     Ok(())
 }
 
-/// Ship change_log rows for `(space_id, local_device_id)` with seq >
-/// peer_last_seq in batches of `DEFAULT_BATCH_LIMIT`.
+/// Ship change_log rows for `(space_id, device_id)` with seq >
+/// peer_last_seq in batches of `DEFAULT_BATCH_LIMIT`. `transport_device_id`
+/// is the local device's ID — stamped on every batch so the receiver
+/// can verify it against the TLS peer identity.
 async fn ship_batches<W>(
     wr: &mut W,
     db: &SqlitePool,
@@ -366,6 +398,7 @@ async fn ship_batches<W>(
     space_id: &str,
     device_id: &str,
     peer_last_seq: i64,
+    transport_device_id: &str,
 ) -> Result<(), AppError>
 where
     W: AsyncWrite + Unpin,
@@ -380,15 +413,12 @@ where
         );
         stream_space_snapshot(wr, db, app, space_id, device_id).await?;
         write_frame(wr, &Frame::SnapshotEnd).await?;
-        // After the snapshot is applied, the joiner is caught up to
-        // final_seq by construction (the snapshot contains every row
-        // currently in the synced tables). Emit an empty batch to mark
-        // the cursor advance.
         write_frame(
             wr,
             &Frame::Batch(ChangeBatch {
                 space_id: space_id.to_string(),
-                device_id: device_id.to_string(),
+                origin_device_id: device_id.to_string(),
+                transport_device_id: transport_device_id.to_string(),
                 rows: vec![],
                 final_seq,
             }),
@@ -422,7 +452,8 @@ where
             wr,
             &Frame::Batch(ChangeBatch {
                 space_id: space_id.to_string(),
-                device_id: device_id.to_string(),
+                origin_device_id: device_id.to_string(),
+                transport_device_id: transport_device_id.to_string(),
                 rows,
                 final_seq: batch_final,
             }),
@@ -563,24 +594,26 @@ async fn recv_half<R>(
     peer: PeerIdentity,
     cursors_tx: oneshot::Sender<Cursors>,
     model_versions_tx: oneshot::Sender<ModelVersionSummary>,
+    applied_cursors_tx: oneshot::Sender<AppliedCursors>,
 ) -> Result<(), AppError>
 where
     R: AsyncRead + Unpin,
 {
+    let _ = &local_device_id; // used by apply_batch (not called in this path yet)
+
     // Cursors
     let peer_cursors = expect_cursors(&mut rd).await?;
     cursors_tx.send(peer_cursors).map_err(|_| {
         AppError::Internal("session: send half dropped before receiving Cursors".into())
     })?;
 
-    // Frame loop: ChangeBatch* (or Snapshot* SnapshotEnd Batch) then
-    // ModelVersionSummary then ModelData* then Bye
+    // Frame loop: Batch* (staged) then ChangesDone (applies round)
+    // then AppliedCursors (proof) then ModelVersionSummary then
+    // ModelData* then Bye. Snapshots are handled inline as before.
     let mut peer_model_summary_sent = false;
     let mut model_versions_tx = Some(model_versions_tx);
-    // When the host streams a full snapshot for one space, it sends
-    // Snapshot* frames followed by SnapshotEnd. We accumulate the
-    // chunks, apply them under apply_guard once SnapshotEnd arrives,
-    // then continue with the normal Batch flow.
+    let mut applied_cursors_tx = Some(applied_cursors_tx);
+    let mut staged_batches: Vec<ChangeBatch> = Vec::new();
     let mut snapshot_buf: Vec<crate::sync::wire::SnapshotChunk> = Vec::new();
     let mut snapshot_space: Option<String> = None;
     let mut snapshot_host: Option<crate::sync::snapshot::SpaceSnapshot> = None;
@@ -588,7 +621,35 @@ where
         let frame = crate::sync::frame::read_frame(&mut rd).await?;
         match frame {
             Frame::Batch(batch) => {
-                apply_batch(&db, &local_device_id, &peer, batch, &app).await?;
+                staged_batches.push(batch);
+            }
+            Frame::ChangesDone(_) => {
+                let entries = apply_round_core(&db, &peer.device_id, &staged_batches).await?;
+                let rows_count = staged_batches.iter().map(|b| b.rows.len()).sum::<usize>();
+                let spaces: std::collections::HashSet<&str> =
+                    staged_batches.iter().map(|b| b.space_id.as_str()).collect();
+                for space_id in &spaces {
+                    let _ = app.emit(
+                        "sync://applied",
+                        SyncAppliedPayload {
+                            space_id: space_id.to_string(),
+                            rows: rows_count as u64,
+                            snapshot: false,
+                        },
+                    );
+                }
+                staged_batches.clear();
+                if let Some(tx) = applied_cursors_tx.take() {
+                    tx.send(AppliedCursors { entries }).map_err(|_| {
+                        AppError::Internal(
+                            "session: send half dropped before receiving AppliedCursors".into(),
+                        )
+                    })?;
+                }
+            }
+            Frame::AppliedCursors(_) => {
+                // Peer's proof of commit — received but no action needed;
+                // cursor state was already advanced on the peer side.
             }
             Frame::Snapshot(chunk) => {
                 if snapshot_space.is_none() {
@@ -715,7 +776,7 @@ async fn apply_snapshot_stream(
 /// checks 2–7.
 pub(crate) fn validate_batch(batch: &ChangeBatch) -> Result<(), AppError> {
     let batch_space = &batch.space_id;
-    let batch_origin = &batch.device_id;
+    let batch_origin = &batch.origin_device_id;
     let mut prev_seq: i64 = 0;
 
     for row in &batch.rows {
@@ -981,8 +1042,79 @@ pub(crate) async fn apply_remote_row(
     apply::apply_change(tx, row).await
 }
 
+// ---------------------------------------------------------------------------
+// Round-based apply — Step 29.5
+// ---------------------------------------------------------------------------
+
+/// Foreign-key-safe table ordering. Tables with lower priority are
+/// applied first so that child rows (e.g. transactions) never
+/// reference a parent (e.g. account) that hasn't been inserted yet.
+fn table_priority(table_name: &str) -> u8 {
+    match table_name {
+        "spaces" => 0,
+        "accounts" | "categories" | "space_settings" | "trusted_devices" | "model_versions" => 1,
+        "space_members" => 2,
+        "transactions" | "account_summaries" => 3,
+        _ => 4,
+    }
+}
+
+/// Apply a complete sync round: validate all batches, flatten rows,
+/// sort by foreign-key-safe order, apply inside one `run_as_device`
+/// transaction, and advance all cursors. Returns the cursor entries
+/// that should be reported back to the sender via `AppliedCursors`.
+///
+/// This is the core logic shared by the production recv half and the
+/// test harness. The production wrapper adds transport-identity
+/// verification and event emission.
+pub(crate) async fn apply_round_core(
+    db: &SqlitePool,
+    transport_device_id: &str,
+    batches: &[ChangeBatch],
+) -> Result<Vec<CursorEntry>, AppError> {
+    for batch in batches {
+        validate_batch(batch)?;
+    }
+
+    let mut all_rows: Vec<ChangeRow> = batches
+        .iter()
+        .flat_map(|b| b.rows.iter().cloned())
+        .collect();
+    all_rows.sort_by_key(|r| (table_priority(&r.table_name), r.seq));
+
+    let cursor_entries: Vec<CursorEntry> = batches
+        .iter()
+        .map(|b| CursorEntry {
+            space_id: b.space_id.clone(),
+            device_id: b.origin_device_id.clone(),
+            last_seq: b.final_seq,
+        })
+        .collect();
+
+    let rows = all_rows;
+    let cursors = cursor_entries.clone();
+    run_as_device(db, transport_device_id, move |tx| {
+        let rows = rows.clone();
+        let cursors = cursors.clone();
+        Box::pin(async move {
+            for row in &rows {
+                apply_remote_row(tx, row).await?;
+            }
+            for c in &cursors {
+                cursors::advance(tx, &c.space_id, &c.device_id, c.last_seq).await?;
+            }
+            Ok::<(), AppError>(())
+        })
+    })
+    .await
+    .map_err(|e| AppError::Db(format!("apply_round_core: {e}")))?;
+
+    Ok(cursor_entries)
+}
+
 /// Apply one `ChangeBatch` atomically with its cursor advance, and emit
 /// `sync://evicted` if this device's own trusted_devices row was deleted.
+#[allow(dead_code)]
 async fn apply_batch(
     db: &SqlitePool,
     local_device_id: &str,
@@ -1002,7 +1134,7 @@ async fn apply_batch(
 
     let space_id = batch.space_id.clone();
     let evicted_space_id = batch.space_id.clone();
-    let batch_device_id = batch.device_id.clone();
+    let batch_device_id = batch.origin_device_id.clone();
     let final_seq = batch.final_seq;
     let batch_space_id = batch.space_id.clone();
 
@@ -1082,6 +1214,7 @@ async fn apply_batch(
 /// Classify a change batch to determine if it represents a space deletion
 /// (suppresses eviction detection) or a potential device revocation
 /// (triggers the eviction DB check). See PLAN.md §9.5.
+#[allow(dead_code)]
 enum BatchKind {
     SpaceDeletion,
     PotentialEviction,
@@ -1096,6 +1229,7 @@ enum BatchKind {
 /// device revocation happened to share the same shipping window —
 /// acceptable risk: the revoked device's data is gone either way, and the
 /// next batch from the same peer will re-trigger eviction detection.
+#[allow(dead_code)]
 fn classify_batch(rows: &[ChangeRow], local_device_id: &str) -> BatchKind {
     if rows
         .iter()
