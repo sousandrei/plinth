@@ -21,6 +21,12 @@ pub struct PeerInfo {
     pub port: u16,
     pub pairing_port: Option<u16>,
     pub space_ids: Vec<String>,
+    /// Step 30.3: SHA-256 fingerprint of the peer's cert as
+    /// advertised over mDNS. The dialer cross-checks this against
+    /// the cert presented at TLS handshake time — a mismatch means
+    /// the cert was rotated and the dialer should fall back to
+    /// pairing, not silently trust the new cert.
+    pub fingerprint: Option<String>,
     pub last_seen: u64,
 }
 
@@ -102,6 +108,23 @@ async fn read_device_id(db: &SqlitePool) -> Result<String, AppError> {
         .ok_or_else(|| AppError::Internal("device_id missing from app_settings".into()))
 }
 
+/// Step 30.3: advertise the local device's cert fingerprint over
+/// mDNS so peers can sanity-check the cert they're about to receive
+/// before they open the TLS connection. Returns `None` on cold
+/// start (the local cert row is created by `identity::ensure_identity`
+/// on first launch — by the time mDNS advertises, it's already
+/// there; this is just a defensive `?`).
+async fn read_local_fingerprint(
+    db: &SqlitePool,
+    device_id: &str,
+) -> Result<Option<String>, AppError> {
+    let row = sqlx::query_file!("queries/sync/get_local_fingerprint.sql", device_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| AppError::Db(format!("read local fingerprint: {e}")))?;
+    Ok(row.map(|r| r.fingerprint).filter(|s| !s.is_empty()))
+}
+
 /// All space IDs visible on this device. Used to populate the mDNS TXT
 /// record so peers can decide whether to attempt a sync session.
 ///
@@ -137,6 +160,9 @@ async fn run(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let device_id = read_device_id(&db).await?;
     let space_ids = read_advertised_space_ids(&db).await.unwrap_or_default();
+    let fingerprint = read_local_fingerprint(&db, &device_id)
+        .await
+        .unwrap_or_default();
 
     let daemon = ServiceDaemon::new()?;
 
@@ -147,6 +173,9 @@ async fn run(
     properties.insert("device_id".into(), device_id.clone());
     properties.insert("spaces".into(), space_ids.join(","));
     properties.insert("pairing_port".into(), PAIRING_PORT.to_string());
+    if let Some(fp) = fingerprint {
+        properties.insert("fingerprint".into(), fp);
+    }
 
     let info = ServiceInfo::new(
         SERVICE_TYPE,
@@ -209,6 +238,9 @@ async fn run(
                     let pairing_port = props
                         .get_property_val_str("pairing_port")
                         .and_then(|s| s.parse::<u16>().ok());
+                    let fingerprint = props
+                        .get_property_val_str("fingerprint")
+                        .map(|s| s.to_string());
                     registry_for_loop.upsert(PeerInfo {
                         device_id: peer_device_id.to_string(),
                         name,
@@ -216,6 +248,7 @@ async fn run(
                         port: info.get_port(),
                         pairing_port,
                         space_ids,
+                        fingerprint,
                         last_seen: now_unix(),
                     });
                 }

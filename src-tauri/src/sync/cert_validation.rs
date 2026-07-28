@@ -21,6 +21,15 @@
 //! reject the entire pairing or change row, but the
 //! `apply::upsert_space_device` path takes the device-id-only change
 //! and quarantines the missing cert instead).
+//!
+//! Step 30.3 also adds `extract_public_key_info` and
+//! `validity_window`, which the TLS verifier consumes to:
+//!
+//! - Verify handshake signatures (TLS 1.2 and 1.3) using the cert's
+//!   own public key, with the right `ring` algorithm for Ed25519 and
+//!   ECDSA P-256.
+//! - Reject certs whose `notBefore` / `notAfter` window doesn't include
+//!   "now".
 
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -28,6 +37,85 @@ use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::*;
 
 use crate::error::AppError;
+
+/// One of the public-key algorithms the TLS verifier knows how to
+/// drive. Returned by `extract_public_key_info` and consumed by
+/// `tls::TrustedDeviceVerifier` to pick the right `ring` algorithm
+/// for handshake signature verification.
+#[derive(Debug, Clone)]
+pub enum PublicKeyInfo {
+    /// SubjectPublicKeyInfo carries an Ed25519 public key. The byte
+    /// slice is the 32-byte raw public key, exactly what
+    /// `ring::signature::ED25519` expects.
+    Ed25519(Vec<u8>),
+    /// SubjectPublicKeyInfo carries an ECDSA P-256 public key. The
+    /// byte slice is the raw X9.62 uncompressed point
+    /// (`04 || X || Y`, 65 bytes) — exactly what
+    /// `ring::signature::ECDSA_P256_SHA256_ASN1` expects.
+    EcdsaP256(Vec<u8>),
+}
+
+/// Parse a cert's DER, return its public key in the form the TLS
+/// handshake verifier can use. Returns `None` for any algorithm we
+/// don't currently support (RSA, Ed448, post-quantum, etc.). Callers
+/// MUST treat `None` as a hard failure — the verifier can't make any
+/// trust claim about a cert whose key it doesn't understand.
+pub fn extract_public_key_info(der: &[u8]) -> Option<PublicKeyInfo> {
+    // The OIDs we care about. Hardcoded here because x509-parser's
+    // build script generates OID constants behind a feature gate
+    // (`verify`, `verify-aws`) that we don't pull in — we only need
+    // the algorithm identifier, not the full PKIX verifier.
+    //   id-ecPublicKey  = 1.2.840.10045.2.1
+    //   prime256v1      = 1.2.840.10045.3.1.7
+    //   id-Ed25519      = 1.3.101.112
+    let ec_oid = asn1_rs::oid!(1.2.840.10045.2.1);
+    let p256_oid = asn1_rs::oid!(1.2.840.10045.3.1.7);
+    let ed_oid = asn1_rs::oid!(1.3.101.112);
+
+    let (_, cert) = X509Certificate::from_der(der).ok()?;
+    let spki = cert.public_key();
+    let alg_oid = &spki.algorithm.algorithm;
+
+    if alg_oid == &ed_oid {
+        Some(PublicKeyInfo::Ed25519(
+            spki.subject_public_key.data.to_vec(),
+        ))
+    } else if alg_oid == &ec_oid {
+        // Curve must be P-256. The curve OID lives in
+        // `algorithm.parameters` (an `Any`). Re-parse it as an OID.
+        let curve_ok = spki
+            .algorithm
+            .parameters()
+            .and_then(|p| p.as_oid().ok())
+            .map(|c| c == p256_oid)
+            .unwrap_or(false);
+        if !curve_ok {
+            return None;
+        }
+        match spki.parsed().ok()? {
+            x509_parser::public_key::PublicKey::EC(point) => {
+                Some(PublicKeyInfo::EcdsaP256(point.data().to_vec()))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+/// Extract the cert's `notBefore` and `notAfter` as unix seconds, or
+/// `None` if the cert can't be parsed. Used by the TLS verifier to
+/// reject expired or not-yet-valid certs at handshake time.
+pub fn validity_window(der: &[u8]) -> Option<(u64, u64)> {
+    let (_, cert) = X509Certificate::from_der(der).ok()?;
+    let tbs = &cert.tbs_certificate;
+    let nb = tbs.validity.not_before.timestamp();
+    let na = tbs.validity.not_after.timestamp();
+    if nb < 0 || na < 0 {
+        return None;
+    }
+    Some((nb as u64, na as u64))
+}
 
 /// A certificate that has passed every check in `validate_leaf_cert`.
 #[derive(Debug, Clone)]
@@ -325,5 +413,34 @@ mod tests {
         let b = parse_and_canonicalize(&pem).unwrap();
         assert_eq!(a.fingerprint, b.fingerprint);
         assert_eq!(a.der, b.der);
+    }
+
+    #[test]
+    fn extract_public_key_returns_p256_for_rcgen_default() {
+        // rcgen::KeyPair::generate() defaults to ECDSA P-256 SHA-256.
+        let (_pem, der) = make_cert_with_dns_san("device-pk");
+        let info = extract_public_key_info(&der).expect("p256 expected");
+        match info {
+            PublicKeyInfo::EcdsaP256(point) => {
+                // X9.62 uncompressed: 04 || X (32 bytes) || Y (32 bytes) = 65 bytes.
+                assert_eq!(point.len(), 65);
+                assert_eq!(point[0], 0x04);
+            }
+            other => panic!("expected EcdsaP256, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validity_window_is_reasonable() {
+        let (_pem, der) = make_cert_with_dns_san("device-valid");
+        let (nb, na) = validity_window(&der).expect("validity");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // The window is from rcgen defaults: notBefore ≈ now, notAfter
+        // ≈ now + 10 years. We allow ±1 day of slack.
+        assert!(nb <= now + 86_400);
+        assert!(na >= now + 365 * 24 * 3600);
     }
 }

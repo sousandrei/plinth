@@ -44,6 +44,12 @@ rust-argon2 = "3.0.0"
 # Random salt generation
 getrandom = "0.4.3"
 
+# Direct dep of ring for handshake signature verification (Step 30.3).
+# rustls already pulls ring transitively, but we want a stable major
+# version pin in Cargo.toml so future rustls upgrades don't silently
+# change the API we depend on.
+ring = "0.17"
+
 # UUIDs for generated IDs
 uuid = { version = "1.24", features = ["v4"] }
 
@@ -98,3 +104,4 @@ cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [dev-dependencies]
 tempfile = "3"
+time = { version = "0.3", features = ["std"] }
