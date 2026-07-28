@@ -128,8 +128,9 @@ async fn read_local_fingerprint(
 /// All space IDs visible on this device. Used to populate the mDNS TXT
 /// record so peers can decide whether to attempt a sync session.
 ///
-/// In Step 3 this will narrow to spaces that have at least one
-/// `trusted_devices` row with `sync_enabled = 1`.
+/// Step 30.4: narrowed to spaces that have at least one
+/// `space_devices` row with `trust_mode = 'active'`. Revoking and
+/// revocation-only grants don't pull the peer in.
 async fn read_advertised_space_ids(db: &SqlitePool) -> Result<Vec<String>, AppError> {
     let rows = sqlx::query_file!("queries/sync/list_advertised_space_ids.sql")
         .fetch_all(db)

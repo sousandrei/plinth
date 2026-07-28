@@ -352,7 +352,7 @@ async fn upsert_space_device(
         "queries/sync/apply/upsert_space_device.sql",
         p.space_id,
         p.device_id,
-        p.sync_enabled,
+        p.trust_mode,
         p.paired_at
     )
     .execute(&mut **tx)
@@ -581,8 +581,8 @@ mod tests {
             .await
             .unwrap();
         sqlx::query!(
-            "INSERT INTO space_devices (space_id, device_id, sync_enabled, paired_at) \
-             VALUES ('s1', 'peer-1', 1, ?1)",
+            "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
+             VALUES ('s1', 'peer-1', 'active', ?1)",
             ts
         )
         .execute(&pool)
@@ -599,7 +599,7 @@ mod tests {
             payload: Some(TablePayload::SpaceDevice(SpaceDevicePayload {
                 space_id: s1.into(),
                 device_id: "peer-1".into(),
-                sync_enabled: 1,
+                trust_mode: crate::sync::trust_mode::TrustMode::Active,
                 paired_at: ts.into(),
             })),
             seq: 1,

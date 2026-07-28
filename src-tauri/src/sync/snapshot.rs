@@ -465,7 +465,7 @@ async fn upsert_device_and_grant(
         "queries/sync/upsert_space_device.sql",
         space_id,
         device_id,
-        1_i64,
+        crate::sync::trust_mode::TrustMode::Active,
         now
     )
     .execute(&mut **tx)

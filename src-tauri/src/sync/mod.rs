@@ -20,6 +20,7 @@ pub mod session;
 pub mod snapshot;
 pub mod startup;
 pub mod tls;
+pub mod trust_mode;
 pub mod wire;
 
 #[cfg(test)]

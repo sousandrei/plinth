@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::sync::trust_mode::TrustMode;
+
 // ---------------------------------------------------------------------------
 // One payload struct per synced table. Field names and types must match
 // exactly what the SQLite triggers produce via `json_object(...)` in
@@ -99,7 +101,11 @@ pub struct SpaceSettingPayload {
 pub struct SpaceDevicePayload {
     pub space_id: String,
     pub device_id: String,
-    pub sync_enabled: i64,
+    /// Step 30.4: serialized as the lowercase enum string
+    /// (`active` / `revoking` / `revocation_only`). Old payloads carried
+    /// `sync_enabled: 0|1`; new peers reject unknown trust_mode values
+    /// at apply time rather than guessing.
+    pub trust_mode: TrustMode,
     pub paired_at: String,
 }
 

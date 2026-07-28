@@ -203,15 +203,9 @@ where
     recv_res?;
     send_res?;
 
-    for space_id in &peer.shared_space_ids {
-        let _ = sqlx::query_file!(
-            "queries/sync/delete_evicted_device.sql",
-            space_id,
-            peer.device_id
-        )
-        .execute(&db)
-        .await;
-    }
+    // Step 30.4: no eviction tombstone to clean up. A revoked peer
+    // simply has no space_devices row to begin with (the change_log
+    // DELETE row IS the durable record of revocation).
 
     Ok(())
 }
@@ -236,7 +230,7 @@ where
 {
     // --- Cursor exchange ---
     let mut cursor_entries = Vec::new();
-    for space_id in &peer.shared_space_ids {
+    for space_id in peer.outbound_spaces() {
         let devices = sqlx::query_file!("queries/sync/list_space_devices.sql", space_id)
             .fetch_all(&db)
             .await
@@ -246,7 +240,7 @@ where
             if d.device_id != local_device_id {
                 let last_seq = cursors::get(&db, space_id, &d.device_id).await?;
                 cursor_entries.push(CursorEntry {
-                    space_id: space_id.clone(),
+                    space_id: space_id.to_string(),
                     device_id: d.device_id,
                     last_seq,
                 });
@@ -267,7 +261,7 @@ where
 
     // --- Change batches ---
     for entry in &peer_cursors.entries {
-        if !peer.shared_space_ids.contains(&entry.space_id) {
+        if !peer.outbound_contains(&entry.space_id) {
             continue;
         }
         ship_batches(
@@ -286,8 +280,8 @@ where
         .iter()
         .map(|e| e.space_id.as_str())
         .collect();
-    for space_id in &peer.shared_space_ids {
-        if !mentioned.contains(space_id.as_str()) {
+    for space_id in peer.outbound_spaces() {
+        if !mentioned.contains(space_id) {
             let devices = sqlx::query_file!("queries/sync/list_space_devices.sql", space_id)
                 .fetch_all(&db)
                 .await
@@ -333,13 +327,14 @@ where
     // propagated since the previous session, and the local files
     // matching that deletion should be removed now so the summary
     // doesn't claim we still have them.
-    for space_id in &peer.shared_space_ids {
+    let outbound_owned: Vec<String> = peer.outbound_spaces().map(|s| s.to_string()).collect();
+    for space_id in &outbound_owned {
         if let Err(e) = model_sync::gc_orphan_files(&db, &app, space_id).await {
             eprintln!("session: gc_orphan_files {space_id}: {e}");
         }
     }
 
-    let local_summary = model_sync::local_summary(&db, &app, &peer.shared_space_ids).await;
+    let local_summary = model_sync::local_summary(&db, &app, &outbound_owned).await;
     write_frame(&mut wr, &Frame::ModelVersionSummary(local_summary)).await?;
 
     let peer_summary = model_versions_rx.await.map_err(|_| {
@@ -354,7 +349,7 @@ where
     // integrity and canonical disagreement — happens in
     // `model_sync::apply_model` on the receiver side.
     for peer_entry in &peer_summary.entries {
-        if !peer.shared_space_ids.contains(&peer_entry.space_id) {
+        if !peer.outbound_contains(&peer_entry.space_id) {
             continue;
         }
         let peer_versions: std::collections::HashSet<u32> =
@@ -733,7 +728,7 @@ where
                         "session: ModelData arrived before ModelVersionSummary".into(),
                     ));
                 }
-                if peer.shared_space_ids.contains(&data.space_id)
+                if peer.inbound_contains(&data.space_id)
                     && let Err(e) = model_sync::apply_model(&app, &db, &data).await
                 {
                     eprintln!(
@@ -793,7 +788,7 @@ async fn apply_snapshot_stream(
 /// if any row fails, the entire batch is refused without side effects.
 ///
 /// Check 1 (transport device trusted for the space) is handled by the
-/// caller via `PeerIdentity::shared_space_ids` — this function covers
+/// caller via `PeerIdentity::inbound_contains` — this function covers
 /// checks 2–7.
 pub(crate) fn validate_batch(batch: &ChangeBatch) -> Result<(), AppError> {
     let batch_space = &batch.space_id;
@@ -1169,7 +1164,7 @@ async fn apply_batch(
     batch: ChangeBatch,
     app: &AppHandle,
 ) -> Result<(), AppError> {
-    if !peer.shared_space_ids.contains(&batch.space_id) {
+    if !peer.inbound_contains(&batch.space_id) {
         return Ok(());
     }
 

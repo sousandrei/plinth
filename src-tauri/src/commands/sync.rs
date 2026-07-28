@@ -14,6 +14,7 @@ use crate::{
             self, PAIRING_PORT, PairToken, PairingState, WireAccount, WireAccountSummary,
             WireCategory, WireMember, WireSpace, WireSpaceSetting, WireTransaction, WireUser,
         },
+        trust_mode::TrustMode,
     },
 };
 
@@ -129,16 +130,11 @@ pub async fn remove_space_device(
     .await
     .map_err(|e| AppError::Db(format!("remove_space_device fetch cert: {e}")))?;
 
-    if let Some(c) = cert {
-        sqlx::query_file!(
-            "queries/sync/insert_evicted_device.sql",
-            active.space_id,
-            device_id,
-            c.cert_pem
-        )
-        .execute(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("remove_space_device insert evicted: {e}")))?;
+    if let Some(_c) = cert {
+        // Step 30.4: revocation is the absence of a space_devices row.
+        // No tombstone table needed — the change_log row carrying the
+        // DELETE is itself the durable record, and the cert falls out
+        // of the TLS trust set automatically.
     }
 
     sqlx::query_file!(
@@ -149,6 +145,59 @@ pub async fn remove_space_device(
     .execute(&*db)
     .await
     .map_err(|e| AppError::Db(format!("remove_space_device delete: {e}")))?;
+
+    debounce.notify_mutation();
+    Ok(())
+}
+
+/// Step 30.4: transition an existing (space, device) grant between
+/// trust modes ('active' ↔ 'revoking' ↔ 'revocation_only'). The new
+/// state is captured in change_log and propagates to peers on their
+/// next sync round. Note: this command does NOT evict a device — to
+/// revoke access entirely, call `remove_space_device` afterwards (or
+/// directly, skipping the revoking intermediate).
+#[tauri::command]
+pub async fn set_space_device_trust_mode(
+    device_id: String,
+    trust_mode: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
+) -> Result<(), AppError> {
+    let active = session.require()?;
+
+    let mode: TrustMode = trust_mode.parse().map_err(|e: AppError| {
+        AppError::InvalidInput(format!("set_space_device_trust_mode: {e}"))
+    })?;
+
+    let local_device_id = sqlx::query_file_scalar!("queries/settings/get_setting.sql", "device_id")
+        .fetch_optional(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("set_space_device_trust_mode read device_id: {e}")))?
+        .ok_or_else(|| AppError::Internal("device_id missing from app_settings".into()))?;
+
+    if local_device_id == device_id {
+        return Err(AppError::InvalidInput(
+            "cannot change trust mode of this device from itself".into(),
+        ));
+    }
+
+    let updated = sqlx::query_file!(
+        "queries/sync/update_space_device_trust_mode.sql",
+        active.space_id,
+        device_id,
+        mode
+    )
+    .execute(&*db)
+    .await
+    .map_err(|e| AppError::Db(format!("set_space_device_trust_mode: {e}")))?;
+
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound(format!(
+            "no space_devices row for ({}, {})",
+            active.space_id, device_id
+        )));
+    }
 
     debounce.notify_mutation();
     Ok(())

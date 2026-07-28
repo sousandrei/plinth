@@ -410,9 +410,9 @@ pub async fn delete_space(
 
     // Delete child data. Triggers fire for each deletion, populating
     // change_log with entries that sync will ship to peers.
-    // trusted_devices and evicted_devices are preserved so that sync
-    // queries (which INNER JOIN spaces) continue to match the soft-deleted
-    // space until all peers have consumed the deletion changes.
+    // space_devices rows are preserved so that sync queries (which
+    // INNER JOIN spaces) continue to match the soft-deleted space
+    // until all peers have consumed the deletion changes.
     sqlx::query_file!("queries/spaces/delete_space_members.sql", space_id)
         .execute(&mut *tx)
         .await
@@ -449,8 +449,8 @@ pub async fn delete_space(
         .await
         .map_err(|e| AppError::Db(format!("delete_space accounts: {e}")))?;
 
-    // NOT deleted: trusted_devices, evicted_devices (needed for sync queries
-    // to still match), sync_cursors (needed by GC all_peers_consumed pass),
+    // NOT deleted: space_devices (needed for sync queries to still match),
+    // sync_cursors (needed by GC all_peers_consumed pass),
     // sync_conflicts (harmless, cleaned up by 90-day cap if needed).
 
     // Increment sync_seq one more time so the space delete entry has a seq

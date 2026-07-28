@@ -27,6 +27,7 @@ use crate::sync::changelog;
 use crate::sync::cursors;
 use crate::sync::payloads::{SpacePayload, TablePayload, TransactionPayload};
 use crate::sync::session::{apply_round_core, store_peer_acks, validate_batch};
+use crate::sync::trust_mode::TrustMode;
 use crate::sync::wire::{ChangeBatch, ChangeRow, CursorEntry};
 
 /// Generate a self-signed cert whose DNS SAN is `device_id`. Used by
@@ -113,7 +114,7 @@ impl TestDevice {
     /// Register a peer device and grant it access to a space. Inserts
     /// into both `devices` and `space_devices` so the peer is recognized
     /// for TLS and for sync GC's required-devices check.
-    pub async fn grant_peer(&self, space_id: &str, peer_device_id: &str, sync_enabled: i64) {
+    pub async fn grant_peer(&self, space_id: &str, peer_device_id: &str, trust_mode: TrustMode) {
         sqlx::query!(
             "INSERT OR IGNORE INTO devices (device_id, cert_pem, display_name) \
              VALUES (?1, 'CERT', ?1)",
@@ -123,12 +124,12 @@ impl TestDevice {
         .await
         .unwrap();
         sqlx::query!(
-            "INSERT INTO space_devices (space_id, device_id, sync_enabled, paired_at) \
+            "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
              VALUES (?1, ?2, ?3, '2024-01-01T00:00:00Z') \
-             ON CONFLICT(space_id, device_id) DO UPDATE SET sync_enabled = excluded.sync_enabled",
+             ON CONFLICT(space_id, device_id) DO UPDATE SET trust_mode = excluded.trust_mode",
             space_id,
             peer_device_id,
-            sync_enabled
+            trust_mode
         )
         .execute(&self.pool)
         .await
@@ -422,8 +423,8 @@ async fn gc_preserves_change_when_third_peer_offline() {
 
     // Register B and C as trusted peers in space s1 on A so the old
     // all_peers_consumed query has peers to check against.
-    a.grant_peer("s1", "device-B", 1).await;
-    a.grant_peer("s1", "device-C", 1).await;
+    a.grant_peer("s1", "device-B", TrustMode::Active).await;
+    a.grant_peer("s1", "device-C", TrustMode::Active).await;
 
     // A's change_log for s1 now has rows from three origins:
     //   seq=1, device-A  (original insert)
@@ -489,7 +490,7 @@ async fn gc_never_compacts_across_origins() {
     // and delete seq=1 — losing device-B's origin entirely.
     // Register C as a trusted device that hasn't acknowledged so
     // collect_acked preserves device-A's relayed rows on B.
-    b.grant_peer("s1", "device-C", 1).await;
+    b.grant_peer("s1", "device-C", TrustMode::Active).await;
 
     crate::sync::gc::run(&b.pool).await.unwrap();
 
@@ -1808,8 +1809,9 @@ async fn gc_collection_updates_retained_floor() {
 }
 
 /// Pending device revocations survive ordinary history collection.
-/// A device with sync_enabled=0 (pending revocation) still appears
-/// in trusted_devices, so the GC keeps changes until it acknowledges.
+/// A device with trust_mode = 'revoking' (pending revocation) still
+/// appears in space_devices, so the GC keeps changes until it
+/// acknowledges.
 #[tokio::test]
 async fn gc_preserves_changes_for_pending_revocation() {
     let dir = TempDir::new().unwrap();
@@ -1820,10 +1822,13 @@ async fn gc_preserves_changes_for_pending_revocation() {
     a.insert_space("s1", "test").await;
 
     // Register B and C as trusted devices BEFORE syncing. C has
-    // sync_enabled=0 (pending revocation). The inserts create
+    // trust_mode = 'revoking' (pending revocation). The inserts create
     // change_log rows that B and C need to receive and acknowledge.
-    for (peer, enabled) in &[("device-B", 1i64), ("device-C", 0)] {
-        a.grant_peer("s1", peer, *enabled).await;
+    for (peer, mode) in &[
+        ("device-B", TrustMode::Active),
+        ("device-C", TrustMode::Revoking),
+    ] {
+        a.grant_peer("s1", peer, *mode).await;
     }
 
     // Sync A→B and A→C so both receive all changes (space + trusted_devices).
@@ -1898,7 +1903,7 @@ async fn peer_below_retained_floor_routes_to_snapshot() {
     a.insert_space("s1", "test").await;
 
     // Register B as trusted so GC has a required device to check.
-    a.grant_peer("s1", "device-B", 1).await;
+    a.grant_peer("s1", "device-B", TrustMode::Active).await;
 
     // Create multiple change_log rows by updating the space name.
     for i in 2..=5 {
@@ -2004,7 +2009,7 @@ async fn cursor_zero_empty_history_nonzero_high_water_requires_recon() {
     a.insert_space("s1", "test").await;
 
     // Register B as trusted + acknowledge to allow GC collection.
-    a.grant_peer("s1", "device-B", 1).await;
+    a.grant_peer("s1", "device-B", TrustMode::Active).await;
 
     sync_direct(&a, &b).await;
 
@@ -2055,7 +2060,7 @@ async fn cursor_below_retained_floor_requires_recon() {
         .unwrap();
     }
 
-    a.grant_peer("s1", "device-B", 1).await;
+    a.grant_peer("s1", "device-B", TrustMode::Active).await;
 
     sync_direct(&a, &b).await;
 
@@ -2175,7 +2180,7 @@ async fn space_devices_converge_to_one_logical_grant() {
     let ts = "2024-01-01T00:00:00Z";
 
     a.insert_space("s1", "test").await;
-    a.grant_peer("s1", "peer-1", 1).await;
+    a.grant_peer("s1", "peer-1", TrustMode::Active).await;
 
     // Apply a changelog row from the peer for the same (space_id, device_id).
     let mut tx = a.pool.begin().await.unwrap();
@@ -2188,7 +2193,7 @@ async fn space_devices_converge_to_one_logical_grant() {
         payload: Some(TablePayload::SpaceDevice(SpaceDevicePayload {
             space_id: "s1".into(),
             device_id: "peer-1".into(),
-            sync_enabled: 0, // even with different sync_enabled
+            trust_mode: TrustMode::Revoking, // even with different trust_mode
             paired_at: ts.into(),
         })),
         seq: 1,
@@ -2208,13 +2213,13 @@ async fn space_devices_converge_to_one_logical_grant() {
     .unwrap();
     assert_eq!(count, 1, "converge to one logical grant");
 
-    let sync_enabled: i64 = sqlx::query_scalar!(
-        "SELECT sync_enabled FROM space_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
+    let trust_mode: String = sqlx::query_scalar!(
+        "SELECT trust_mode FROM space_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
     )
     .fetch_one(&a.pool)
     .await
     .unwrap();
-    assert_eq!(sync_enabled, 0, "latest value wins on conflict");
+    assert_eq!(trust_mode, "revoking", "latest value wins on conflict");
 }
 
 /// Removing one space grant does not remove the same installation
@@ -2228,8 +2233,8 @@ async fn space_grant_revoke_preserves_installation() {
 
     a.insert_space("s1", "test").await;
     a.insert_space("s2", "other").await;
-    a.grant_peer("s1", "peer-1", 1).await;
-    a.grant_peer("s2", "peer-1", 1).await;
+    a.grant_peer("s1", "peer-1", TrustMode::Active).await;
+    a.grant_peer("s2", "peer-1", TrustMode::Active).await;
 
     let count_before: i64 =
         sqlx::query_scalar!("SELECT COUNT(*) FROM space_devices WHERE device_id = 'peer-1'")
@@ -2455,5 +2460,190 @@ async fn pairing_with_malformed_pem_is_quarantined() {
     assert_eq!(
         quarantined, 1,
         "malformed PEM must be quarantined without fingerprint"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 30.4 — separate trust modes
+// ---------------------------------------------------------------------------
+
+/// A trust_mode transition on the originating device is captured in
+/// change_log and propagates to the remote peer. Step 30.4's `set_
+/// space_device_trust_mode` flow is exercised here via the underlying
+/// SQL query the Tauri command wraps.
+#[tokio::test]
+async fn trust_mode_revoking_propagates_through_change_log() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    a.grant_peer("s1", "device-B", TrustMode::Active).await;
+    sync_direct(&a, &b).await;
+
+    // Originator transitions the grant to 'revoking'.
+    sqlx::query_file!(
+        "queries/sync/update_space_device_trust_mode.sql",
+        "s1",
+        "device-B",
+        TrustMode::Revoking
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sync_direct(&a, &b).await;
+
+    let mode: String = sqlx::query_scalar!(
+        "SELECT trust_mode FROM space_devices WHERE space_id = 's1' AND device_id = 'device-B'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        mode, "revoking",
+        "trust_mode transition must propagate through change_log"
+    );
+}
+
+/// A grant that has been transitioned back to 'active' from 'revoking'
+/// propagates correctly. This is the "we changed our mind" path.
+#[tokio::test]
+async fn trust_mode_revival_to_active_propagates() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    a.grant_peer("s1", "device-B", TrustMode::Revoking).await;
+    sync_direct(&a, &b).await;
+
+    // Verify the initial state landed.
+    let mode: String = sqlx::query_scalar!(
+        "SELECT trust_mode FROM space_devices WHERE space_id = 's1' AND device_id = 'device-B'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(mode, "revoking", "initial revoking state must propagate");
+
+    sqlx::query_file!(
+        "queries/sync/update_space_device_trust_mode.sql",
+        "s1",
+        "device-B",
+        TrustMode::Active
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sync_direct(&a, &b).await;
+
+    let mode: String = sqlx::query_scalar!(
+        "SELECT trust_mode FROM space_devices WHERE space_id = 's1' AND device_id = 'device-B'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        mode, "active",
+        "trust_mode transition to active must propagate"
+    );
+}
+
+/// A grant transitioned to `revocation_only` propagates. The remote
+/// peer must apply the new trust_mode, even though it can't ship us
+/// data while in that state.
+#[tokio::test]
+async fn trust_mode_revocation_only_propagates() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    a.grant_peer("s1", "device-B", TrustMode::Active).await;
+    sync_direct(&a, &b).await;
+
+    sqlx::query_file!(
+        "queries/sync/update_space_device_trust_mode.sql",
+        "s1",
+        "device-B",
+        TrustMode::RevocationOnly
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sync_direct(&a, &b).await;
+
+    let mode: String = sqlx::query_scalar!(
+        "SELECT trust_mode FROM space_devices WHERE space_id = 's1' AND device_id = 'device-B'"
+    )
+    .fetch_one(&b.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        mode, "revocation_only",
+        "revocation_only transition must propagate"
+    );
+}
+
+/// An update that targets a non-existent grant is a no-op at the SQL
+/// level. The Tauri command layer translates `rows_affected == 0`
+/// into a `NotFound` error — this test pins the underlying SQL
+/// behavior the command relies on.
+#[tokio::test]
+async fn update_trust_mode_for_missing_grant_is_noop() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+
+    let updated = sqlx::query_file!(
+        "queries/sync/update_space_device_trust_mode.sql",
+        "s1",
+        "missing-device",
+        TrustMode::Revoking
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    assert_eq!(updated.rows_affected(), 0, "no row exists to update");
+}
+
+/// The CHECK constraint on `space_devices.trust_mode` rejects unknown
+/// values. The Rust `TrustMode::parse` defends at the parse layer;
+/// this test pins the belt-and-suspenders SQL-level check, which would
+/// catch a future bug in `TrustMode::parse` or a malformed JSON payload.
+#[tokio::test]
+async fn sql_check_constraint_rejects_unknown_trust_mode() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    sqlx::query!(
+        "INSERT INTO devices (device_id, cert_pem, display_name) VALUES ('peer-1', 'CERT', 'P')"
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    // Bypass the TrustMode enum by writing the column directly.
+    let result = sqlx::query!(
+        "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
+         VALUES ('s1', 'peer-1', 'unknown_state', '2024-01-01T00:00:00Z')"
+    )
+    .execute(&a.pool)
+    .await;
+
+    assert!(
+        result.is_err(),
+        "SQL CHECK constraint must reject unknown trust_mode values"
+    );
+    let err = result.err().unwrap();
+    assert!(
+        err.to_string().contains("CHECK constraint failed"),
+        "expected CHECK constraint error, got: {err}"
     );
 }

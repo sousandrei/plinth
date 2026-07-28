@@ -2,7 +2,7 @@
 SELECT
     sd.space_id    AS "space_id!: String",
     sd.device_id   AS "device_id!: String",
-    sd.sync_enabled AS "sync_enabled!: i64",
+    sd.trust_mode  AS "trust_mode!: String",
     sd.paired_at   AS "paired_at!: String",
     d.display_name AS "display_name!: String"
 FROM space_devices sd

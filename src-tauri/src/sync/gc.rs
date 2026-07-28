@@ -260,8 +260,8 @@ mod tests {
             .await
             .unwrap();
         sqlx::query!(
-            "INSERT INTO space_devices (space_id, device_id, sync_enabled, paired_at) \
-             VALUES ('s1', 'dev-1', 1, ?1)",
+            "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
+             VALUES ('s1', 'dev-1', 'active', ?1)",
             ts
         )
         .execute(&pool)
@@ -378,8 +378,8 @@ mod tests {
             .await
             .unwrap();
         sqlx::query!(
-            "INSERT INTO space_devices (space_id, device_id, sync_enabled, paired_at) \
-             VALUES (?1, 'peer-1', 1, ?2)",
+            "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
+             VALUES (?1, 'peer-1', 'active', ?2)",
             s1,
             ts
         )

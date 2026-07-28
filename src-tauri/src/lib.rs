@@ -201,6 +201,7 @@ pub fn run() {
             commands::sync::force_sync_now,
             commands::sync::list_space_devices,
             commands::sync::remove_space_device,
+            commands::sync::set_space_device_trust_mode,
             commands::sync::list_quarantined_devices,
             commands::sync::generate_pair_token,
             commands::sync::accept_pair_token,

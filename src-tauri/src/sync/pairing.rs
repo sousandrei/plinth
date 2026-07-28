@@ -41,6 +41,7 @@ use tokio::{
 };
 
 use crate::error::AppError;
+use crate::sync::trust_mode::TrustMode;
 
 const TOKEN_TTL_SECS: u64 = 90;
 const HANDSHAKE_DEADLINE_SECS: u64 = 300;
@@ -637,7 +638,7 @@ async fn upsert_device_and_grant(
         "queries/sync/upsert_space_device.sql",
         space_id,
         device_id,
-        1i64,
+        TrustMode::Active,
         ts
     )
     .execute(db)

@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "-- List every active or revoking device's certificate with the spaces\n-- they have a grant in. Used by resolve_peer to build a PeerIdentity\n-- from a TLS cert.\n--\n-- Step 30.4: a row in space_devices means the device has *some* grant\n-- (not necessarily 'active'). The session layer filters per-grant\n-- according to trust_mode. `revocation_only` grants are included so\n-- the peer is recognised at TLS time, but the session treats them as\n-- read-only per the per-space filter.\n--\n-- The cert that resolves a TLS connection comes from `devices`; the\n-- grant trust_mode here is what's checked at the session layer.\nSELECT\n    sd.space_id   AS \"space_id!: String\",\n    sd.device_id  AS \"device_id!: String\",\n    sd.trust_mode AS \"trust_mode!: String\",\n    d.cert_pem    AS \"cert_pem!: String\"\nFROM space_devices sd\nJOIN devices d ON d.device_id = sd.device_id\nINNER JOIN spaces s ON s.id = sd.space_id\nWHERE sd.trust_mode IN ('active', 'revoking', 'revocation_only')\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "device_id!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "trust_mode!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "trust_mode"
+          }
+        }
+      },
+      {
+        "name": "cert_pem!: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "cert_pem"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bcd26f6c1c1faaa5864b381f620c92bc2ef167a49f6d4828b9c3b6c5a342b84f"
+}
