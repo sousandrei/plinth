@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Revoke a device's access to a space.\nDELETE FROM space_devices WHERE space_id = ?1 AND device_id = ?2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "a6329e4e35210c84b08abe3c212f18eb0d49878ece683fe6a3fb034cf8483ef2"
+}

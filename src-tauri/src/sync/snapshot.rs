@@ -329,7 +329,7 @@ pub async fn apply_snapshot_frame(
             }
         }
         SnapshotFrame::End => {
-            upsert_trusted_device(
+            upsert_device_and_grant(
                 tx,
                 &snapshot.space.id,
                 &snapshot.host_device_id,
@@ -400,28 +400,34 @@ async fn upsert_space_member(
     Ok(())
 }
 
-async fn upsert_trusted_device(
+async fn upsert_device_and_grant(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space_id: &str,
     device_id: &str,
     display_name: &str,
     cert_pem: &str,
 ) -> Result<(), AppError> {
-    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query_file!(
+        "queries/sync/upsert_device.sql",
+        device_id,
+        cert_pem,
+        display_name
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device: {e}")))?;
+
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     sqlx::query_file!(
-        "queries/sync/apply/upsert_trusted_device.sql",
-        id,
+        "queries/sync/upsert_space_device.sql",
         space_id,
         device_id,
-        display_name,
-        cert_pem,
         1_i64,
         now
     )
     .execute(&mut **tx)
     .await
-    .map_err(|e| AppError::Db(format!("upsert_trusted_device: {e}")))?;
+    .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
     Ok(())
 }
 

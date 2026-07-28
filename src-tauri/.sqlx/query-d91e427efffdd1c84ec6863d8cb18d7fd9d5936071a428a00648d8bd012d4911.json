@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Grant a device access to a space. One row per (space_id, device_id).\nINSERT INTO space_devices (space_id, device_id, sync_enabled, paired_at)\nVALUES (?1, ?2, ?3, ?4)\nON CONFLICT (space_id, device_id) DO UPDATE\nSET sync_enabled = excluded.sync_enabled\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "d91e427efffdd1c84ec6863d8cb18d7fd9d5936071a428a00648d8bd012d4911"
+}

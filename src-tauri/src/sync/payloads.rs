@@ -96,12 +96,9 @@ pub struct SpaceSettingPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrustedDevicePayload {
-    pub id: String,
+pub struct SpaceDevicePayload {
     pub space_id: String,
     pub device_id: String,
-    pub display_name: String,
-    pub cert_pem: String,
     pub sync_enabled: i64,
     pub paired_at: String,
 }
@@ -135,7 +132,7 @@ pub enum TablePayload {
     Transaction(TransactionPayload),
     AccountSummary(AccountSummaryPayload),
     SpaceSetting(SpaceSettingPayload),
-    TrustedDevice(TrustedDevicePayload),
+    SpaceDevice(SpaceDevicePayload),
     ModelVersion(ModelVersionPayload),
 }
 
@@ -151,7 +148,7 @@ impl TablePayload {
             Self::Transaction(_) => "transactions",
             Self::AccountSummary(_) => "account_summaries",
             Self::SpaceSetting(_) => "space_settings",
-            Self::TrustedDevice(_) => "trusted_devices",
+            Self::SpaceDevice(_) => "space_devices",
             Self::ModelVersion(_) => "model_versions",
         }
     }
@@ -168,7 +165,7 @@ impl TablePayload {
             Self::Transaction(p) => serde_json::to_string(p),
             Self::AccountSummary(p) => serde_json::to_string(p),
             Self::SpaceSetting(p) => serde_json::to_string(p),
-            Self::TrustedDevice(p) => serde_json::to_string(p),
+            Self::SpaceDevice(p) => serde_json::to_string(p),
             Self::ModelVersion(p) => serde_json::to_string(p),
         }
     }
@@ -197,7 +194,7 @@ pub fn from_json(table_name: &str, json: &str) -> Result<TablePayload, PayloadEr
         "transactions" => decode!(Transaction, TransactionPayload),
         "account_summaries" => decode!(AccountSummary, AccountSummaryPayload),
         "space_settings" => decode!(SpaceSetting, SpaceSettingPayload),
-        "trusted_devices" => decode!(TrustedDevice, TrustedDevicePayload),
+        "space_devices" => decode!(SpaceDevice, SpaceDevicePayload),
         "model_versions" => decode!(ModelVersion, ModelVersionPayload),
         other => Err(PayloadError::UnknownTable(other.to_string())),
     }

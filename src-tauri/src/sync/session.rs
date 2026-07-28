@@ -30,7 +30,7 @@ pub struct SyncAppliedPayload {
 // ---------------------------------------------------------------------------
 
 /// Handle a freshly-accepted inbound mTLS session. The caller has already
-/// resolved `peer` from `trusted_devices`, so at least one shared space
+/// resolved `peer` from `space_devices`, so at least one shared space
 /// exists and the cert is trusted.
 ///
 /// Dispatches on the first frame. `Ping` is a presence-only heartbeat
@@ -237,7 +237,7 @@ where
     // --- Cursor exchange ---
     let mut cursor_entries = Vec::new();
     for space_id in &peer.shared_space_ids {
-        let devices = sqlx::query_file!("queries/sync/list_trusted_devices.sql", space_id)
+        let devices = sqlx::query_file!("queries/sync/list_space_devices.sql", space_id)
             .fetch_all(&db)
             .await
             .map_err(|e| AppError::Db(format!("session cursors query: {e}")))?;
@@ -288,7 +288,7 @@ where
         .collect();
     for space_id in &peer.shared_space_ids {
         if !mentioned.contains(space_id.as_str()) {
-            let devices = sqlx::query_file!("queries/sync/list_trusted_devices.sql", space_id)
+            let devices = sqlx::query_file!("queries/sync/list_space_devices.sql", space_id)
                 .fetch_all(&db)
                 .await
                 .map_err(|e| AppError::Db(format!("session fallback devices query: {e}")))?;
@@ -923,12 +923,13 @@ fn validate_payload_keys(row: &ChangeRow, payload: &TablePayload) -> Result<(), 
                 return Err(mismatch("setting.row_id", &expected, &row.row_id));
             }
         }
-        TablePayload::TrustedDevice(p) => {
-            if p.id != row.row_id {
-                return Err(mismatch("device.id", &p.id, &row.row_id));
-            }
+        TablePayload::SpaceDevice(p) => {
             if p.space_id != row.space_id {
                 return Err(mismatch("device.space_id", &p.space_id, &row.space_id));
+            }
+            let expected = format!("{}:{}", p.space_id, p.device_id);
+            if expected != row.row_id {
+                return Err(mismatch("device.row_id", &expected, &row.row_id));
             }
         }
         TablePayload::ModelVersion(p) => {
@@ -945,8 +946,8 @@ fn validate_payload_keys(row: &ChangeRow, payload: &TablePayload) -> Result<(), 
 }
 
 /// Verify composite delete keys are well-formed and scoped to the
-/// outer space. Single-PK tables (accounts, categories, transactions,
-/// trusted_devices) need no composite-key check.
+/// outer space. Single-PK tables (accounts, categories, transactions)
+/// need no composite-key check.
 fn validate_delete_key(row: &ChangeRow, batch_space_id: &str) -> Result<(), AppError> {
     match row.table_name.as_str() {
         "spaces" => {
@@ -957,7 +958,7 @@ fn validate_delete_key(row: &ChangeRow, batch_space_id: &str) -> Result<(), AppE
                 )));
             }
         }
-        "space_members" | "space_settings" | "model_versions" => {
+        "space_members" | "space_settings" | "model_versions" | "space_devices" => {
             let parts: Vec<&str> = row.row_id.splitn(2, ':').collect();
             if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
                 return Err(AppError::InvalidInput(format!(
@@ -1073,7 +1074,7 @@ pub(crate) async fn apply_remote_row(
 fn table_priority(table_name: &str) -> u8 {
     match table_name {
         "spaces" => 0,
-        "accounts" | "categories" | "space_settings" | "trusted_devices" | "model_versions" => 1,
+        "accounts" | "categories" | "space_settings" | "space_devices" | "model_versions" => 1,
         "space_members" => 2,
         "transactions" | "account_summaries" => 3,
         _ => 4,
@@ -1185,18 +1186,18 @@ async fn apply_batch(
     let batch_space_id = batch.space_id.clone();
 
     if evicted {
-        let deleted_ids: Vec<String> = batch
+        let deleted_device_ids: Vec<String> = batch
             .rows
             .iter()
-            .filter(|r| r.table_name == "trusted_devices" && r.operation == "delete")
-            .map(|r| r.row_id.clone())
+            .filter(|r| r.table_name == "space_devices" && r.operation == "delete")
+            .filter_map(|r| r.row_id.split(':').nth(1).map(String::from))
             .collect();
 
         let own_rows = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM trusted_devices WHERE device_id = ?1 AND id IN (\
-             SELECT value FROM json_each(?2))",
+            "SELECT COUNT(*) FROM space_devices WHERE device_id = ?1 \
+             AND device_id IN (SELECT value FROM json_each(?2))",
             local_device_id,
-            serde_json::to_string(&deleted_ids).unwrap_or_default()
+            serde_json::to_string(&deleted_device_ids).unwrap_or_default()
         )
         .fetch_one(db)
         .await
@@ -1269,7 +1270,7 @@ enum BatchKind {
 
 /// A batch containing a `spaces` delete is a space-deletion propagation.
 /// We suppress the eviction check for the whole batch in that case, since
-/// the `trusted_devices` deletes that ride along are cascade effects of the
+/// the `space_devices` deletes that ride along are cascade effects of the
 /// space deletion, not an explicit device revocation. The only way both
 /// could coexist in one batch is if a space deletion and an unrelated
 /// device revocation happened to share the same shipping window —
@@ -1284,9 +1285,7 @@ fn classify_batch(rows: &[ChangeRow], local_device_id: &str) -> BatchKind {
         return BatchKind::SpaceDeletion;
     }
     if rows.iter().any(|r| {
-        r.table_name == "trusted_devices"
-            && r.operation == "delete"
-            && r.device_id != local_device_id
+        r.table_name == "space_devices" && r.operation == "delete" && r.device_id != local_device_id
     }) {
         return BatchKind::PotentialEviction;
     }
@@ -1349,7 +1348,7 @@ mod tests {
         let rows = vec![
             change_row("space_members", "delete", "peer-1"),
             change_row("spaces", "delete", "peer-1"),
-            change_row("trusted_devices", "delete", "peer-1"),
+            change_row("space_devices", "delete", "peer-1"),
         ];
         assert!(matches!(
             classify_batch(&rows, "local"),
@@ -1359,18 +1358,18 @@ mod tests {
 
     #[test]
     fn classify_batch_detects_device_revocation() {
-        let rows = vec![change_row("trusted_devices", "delete", "peer-1")];
+        let rows = vec![change_row("space_devices", "delete", "peer-1")];
         assert!(matches!(
             classify_batch(&rows, "local"),
             BatchKind::PotentialEviction
         ));
     }
 
-    /// A trusted_devices delete authored by us is an echo of our own
+    /// A space_devices delete authored by us is an echo of our own
     /// change coming back — not an eviction.
     #[test]
     fn classify_batch_ignores_own_device_revocation() {
-        let rows = vec![change_row("trusted_devices", "delete", "local")];
+        let rows = vec![change_row("space_devices", "delete", "local")];
         assert!(matches!(classify_batch(&rows, "local"), BatchKind::Normal));
     }
 

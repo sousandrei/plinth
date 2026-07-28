@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT cert_pem FROM devices WHERE device_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "cert_pem",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "cert_pem"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ebc1d30c44772eba9a173032359093912b9d06d2f5138964cce3325789e88b2d"
+}

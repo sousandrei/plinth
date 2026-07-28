@@ -112,7 +112,7 @@ async fn read_advertised_space_ids(db: &SqlitePool) -> Result<Vec<String>, AppEr
         .fetch_all(db)
         .await
         .map_err(|e| AppError::Db(format!("list advertised spaces: {e}")))?;
-    Ok(rows.into_iter().map(|r| r.id).collect())
+    Ok(rows.into_iter().map(|r| r.space_id).collect())
 }
 
 /// Starts the mDNS discovery background task. Registers this device's

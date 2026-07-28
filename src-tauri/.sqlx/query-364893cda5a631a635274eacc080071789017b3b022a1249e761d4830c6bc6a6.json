@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT COUNT(*) FROM trusted_devices WHERE device_id = ?1 AND id IN (SELECT value FROM json_each(?2))",
+  "query": "SELECT COUNT(*) FROM space_devices WHERE device_id = ?1 AND device_id IN (SELECT value FROM json_each(?2))",
   "describe": {
     "columns": [
       {
@@ -17,5 +17,5 @@
       false
     ]
   },
-  "hash": "bd8fe0b4ecd223e01b9faf2ed363594fad2087181729f2008e71a1864f7d94da"
+  "hash": "364893cda5a631a635274eacc080071789017b3b022a1249e761d4830c6bc6a6"
 }

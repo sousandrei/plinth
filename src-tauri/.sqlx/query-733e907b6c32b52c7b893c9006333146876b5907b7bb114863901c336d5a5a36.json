@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "-- List every device_id that has at least one space grant. Used by the\n-- scheduler to know which peers to dial.\nSELECT DISTINCT device_id AS \"device_id!: String\"\nFROM space_devices\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "device_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "733e907b6c32b52c7b893c9006333146876b5907b7bb114863901c336d5a5a36"
+}

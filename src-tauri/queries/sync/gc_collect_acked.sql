@@ -13,14 +13,14 @@ WHERE origin_device_id IS NOT NULL
   AND origin_seq IS NOT NULL
   AND NOT EXISTS (
       SELECT 1
-      FROM trusted_devices td
-      WHERE td.space_id = change_log.space_id
-        AND td.device_id != change_log.origin_device_id
+      FROM space_devices sd
+      WHERE sd.space_id = change_log.space_id
+        AND sd.device_id != change_log.origin_device_id
         AND COALESCE(
             (SELECT pa.last_applied_seq
              FROM peer_acks pa
-             WHERE pa.space_id = td.space_id
-               AND pa.consuming_device_id = td.device_id
+             WHERE pa.space_id = sd.space_id
+               AND pa.consuming_device_id = sd.device_id
                AND pa.origin_device_id = change_log.origin_device_id),
             0
         ) < change_log.origin_seq

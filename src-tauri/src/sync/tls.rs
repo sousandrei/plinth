@@ -21,20 +21,20 @@ pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// Loads every active peer cert from `trusted_devices` (sync_enabled = 1).
-/// Each cert is parsed from PEM into DER form for rustls.
-async fn load_trusted_certs(db: &SqlitePool) -> Result<Vec<CertificateDer<'static>>, AppError> {
-    let rows = sqlx::query_file!("queries/sync/list_all_trusted_certs.sql")
+/// Loads every device cert from the `devices` table. Each cert is parsed
+/// from PEM into DER form for rustls.
+async fn load_device_certs(db: &SqlitePool) -> Result<Vec<CertificateDer<'static>>, AppError> {
+    let rows = sqlx::query_file!("queries/sync/list_device_certs.sql")
         .fetch_all(db)
         .await
-        .map_err(|e| AppError::Db(format!("load trusted certs: {e}")))?;
+        .map_err(|e| AppError::Db(format!("load device certs: {e}")))?;
 
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let mut reader = r.cert_pem.as_bytes();
         for item in rustls_pemfile::certs(&mut reader) {
             let der = item.map_err(|e| {
-                AppError::Internal(format!("parse trusted cert for {}: {e}", r.device_id))
+                AppError::Internal(format!("parse device cert for {}: {e}", r.device_id))
             })?;
             out.push(der);
         }
@@ -65,12 +65,12 @@ fn parse_identity(
 }
 
 /// Build a `TlsAcceptor` configured for mTLS: peers must present a
-/// certificate whose DER matches an entry in `trusted_devices`.
+/// certificate whose DER matches an entry in `devices`.
 pub async fn server_acceptor(
     db: &SqlitePool,
     identity: &DeviceIdentity,
 ) -> Result<TlsAcceptor, AppError> {
-    let trusted = load_trusted_certs(db).await?;
+    let trusted = load_device_certs(db).await?;
     let (certs, key) = parse_identity(identity)?;
 
     let verifier = Arc::new(TrustedDeviceVerifier::new(trusted));
@@ -83,12 +83,12 @@ pub async fn server_acceptor(
 }
 
 /// Build a `TlsConnector` configured for mTLS: the remote server must
-/// present a certificate whose DER matches an entry in `trusted_devices`.
+/// present a certificate whose DER matches an entry in `devices`.
 pub async fn client_connector(
     db: &SqlitePool,
     identity: &DeviceIdentity,
 ) -> Result<TlsConnector, AppError> {
-    let trusted = load_trusted_certs(db).await?;
+    let trusted = load_device_certs(db).await?;
     let (certs, key) = parse_identity(identity)?;
 
     let verifier = Arc::new(TrustedDeviceVerifier::new(trusted));

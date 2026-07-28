@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "-- List device IDs that have a grant (sync_enabled = 1) in a space.\n-- Used for mDNS service property advertisement.\nSELECT DISTINCT sd.space_id AS \"space_id!: String\"\nFROM space_devices sd\nWHERE sd.sync_enabled = 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "space_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e4bafe804a965464df5f02a98dedb497258cf0580dd93e52d49a4ae200259786"
+}

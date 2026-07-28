@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Delete space_devices rows whose space no longer exists.\nDELETE FROM space_devices\nWHERE space_id NOT IN (SELECT id FROM spaces)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "18d774a5ff363c7ea11dff045212b88327c7fcb4a3999e0f17e9d8a2c901a382"
+}

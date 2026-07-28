@@ -68,8 +68,7 @@ pub async fn force_sync_now(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TrustedDevice {
-    pub id: String,
+pub struct SpaceDevice {
     pub space_id: String,
     pub device_id: String,
     pub display_name: String,
@@ -77,20 +76,19 @@ pub struct TrustedDevice {
 }
 
 #[tauri::command]
-pub async fn list_trusted_devices(
+pub async fn list_space_devices(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-) -> Result<Vec<TrustedDevice>, AppError> {
+) -> Result<Vec<SpaceDevice>, AppError> {
     let active = session.require()?;
-    let rows = sqlx::query_file!("queries/sync/list_trusted_devices.sql", active.space_id)
+    let rows = sqlx::query_file!("queries/sync/list_space_devices.sql", active.space_id)
         .fetch_all(&*db)
         .await
-        .map_err(|e| AppError::Db(format!("list_trusted_devices: {e}")))?;
+        .map_err(|e| AppError::Db(format!("list_space_devices: {e}")))?;
 
     Ok(rows
         .into_iter()
-        .map(|r| TrustedDevice {
-            id: r.id,
+        .map(|r| SpaceDevice {
             space_id: r.space_id,
             device_id: r.device_id,
             display_name: r.display_name,
@@ -100,8 +98,8 @@ pub async fn list_trusted_devices(
 }
 
 #[tauri::command]
-pub async fn remove_trusted_device(
-    id: String,
+pub async fn remove_space_device(
+    device_id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
@@ -113,47 +111,44 @@ pub async fn remove_trusted_device(
         sqlx::query_file_scalar!("queries/settings/get_setting.sql", local_device_id_key)
             .fetch_optional(&*db)
             .await
-            .map_err(|e| AppError::Db(format!("remove_trusted_device read device_id: {e}")))?;
+            .map_err(|e| AppError::Db(format!("remove_space_device read device_id: {e}")))?;
 
-    let target = sqlx::query!(
-        "SELECT device_id, cert_pem FROM trusted_devices WHERE space_id = ?1 AND id = ?2",
-        active.space_id,
-        id
+    if let Some(ref local_id) = local_device_id
+        && local_id == &device_id
+    {
+        return Err(AppError::InvalidInput(
+            "cannot remove this device from itself".into(),
+        ));
+    }
+
+    let cert = sqlx::query!(
+        "SELECT cert_pem FROM devices WHERE device_id = ?1",
+        device_id
     )
     .fetch_optional(&*db)
     .await
-    .map_err(|e| AppError::Db(format!("remove_trusted_device fetch target: {e}")))?;
+    .map_err(|e| AppError::Db(format!("remove_space_device fetch cert: {e}")))?;
 
-    if let Some(ref t) = target {
-        if let Some(ref local_id) = local_device_id
-            && local_id == &t.device_id
-        {
-            return Err(AppError::InvalidInput(
-                "cannot remove this device from itself".into(),
-            ));
-        }
-
-        // Tombstone in evicted_devices
+    if let Some(c) = cert {
         sqlx::query_file!(
             "queries/sync/insert_evicted_device.sql",
             active.space_id,
-            t.device_id,
-            t.cert_pem
+            device_id,
+            c.cert_pem
         )
         .execute(&*db)
         .await
-        .map_err(|e| AppError::Db(format!("remove_trusted_device insert evicted: {e}")))?;
+        .map_err(|e| AppError::Db(format!("remove_space_device insert evicted: {e}")))?;
     }
 
-    // Delete from trusted_devices (triggers delete change_log row)
     sqlx::query_file!(
-        "queries/sync/delete_trusted_device.sql",
+        "queries/sync/delete_space_device.sql",
         active.space_id,
-        id
+        device_id
     )
     .execute(&*db)
     .await
-    .map_err(|e| AppError::Db(format!("remove_trusted_device delete: {e}")))?;
+    .map_err(|e| AppError::Db(format!("remove_space_device delete: {e}")))?;
 
     debounce.notify_mutation();
     Ok(())

@@ -11,20 +11,20 @@
 DELETE FROM change_log
 WHERE (
     SELECT COUNT(*)
-    FROM trusted_devices td
-    WHERE td.space_id  = change_log.space_id
-      AND td.sync_enabled = 1
+    FROM space_devices sd
+    WHERE sd.space_id  = change_log.space_id
+      AND sd.sync_enabled = 1
 ) > 0
 AND NOT EXISTS (
     SELECT 1
-    FROM trusted_devices td
-    WHERE td.space_id  = change_log.space_id
-      AND td.sync_enabled = 1
+    FROM space_devices sd
+    WHERE sd.space_id  = change_log.space_id
+      AND sd.sync_enabled = 1
       AND COALESCE(
               (SELECT sc.last_seq
                FROM sync_cursors sc
                WHERE sc.space_id       = change_log.space_id
-                 AND sc.peer_device_id = td.device_id),
+                 AND sc.peer_device_id = sd.device_id),
               -1
           ) < change_log.seq
 )

@@ -97,6 +97,31 @@ impl TestDevice {
         read_device_id(&self.pool).await
     }
 
+    /// Register a peer device and grant it access to a space. Inserts
+    /// into both `devices` and `space_devices` so the peer is recognized
+    /// for TLS and for sync GC's required-devices check.
+    pub async fn grant_peer(&self, space_id: &str, peer_device_id: &str, sync_enabled: i64) {
+        sqlx::query!(
+            "INSERT OR IGNORE INTO devices (device_id, cert_pem, display_name) \
+             VALUES (?1, 'CERT', ?1)",
+            peer_device_id
+        )
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO space_devices (space_id, device_id, sync_enabled, paired_at) \
+             VALUES (?1, ?2, ?3, '2024-01-01T00:00:00Z') \
+             ON CONFLICT(space_id, device_id) DO UPDATE SET sync_enabled = excluded.sync_enabled",
+            space_id,
+            peer_device_id,
+            sync_enabled
+        )
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
     /// Current cursor this device holds for `origin_device_id`'s stream
     /// in `space_id`.
     pub async fn cursor_for(&self, space_id: &str, origin_device_id: &str) -> i64 {
@@ -383,19 +408,8 @@ async fn gc_preserves_change_when_third_peer_offline() {
 
     // Register B and C as trusted peers in space s1 on A so the old
     // all_peers_consumed query has peers to check against.
-    for peer in &["device-B", "device-C"] {
-        sqlx::query!(
-            "INSERT INTO trusted_devices \
-             (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
-             VALUES (?1, 's1', ?2, ?2, 'CERT', 1, ?3)",
-            format!("{peer}-td"),
-            peer,
-            ts
-        )
-        .execute(&a.pool)
-        .await
-        .unwrap();
-    }
+    a.grant_peer("s1", "device-B", 1).await;
+    a.grant_peer("s1", "device-C", 1).await;
 
     // A's change_log for s1 now has rows from three origins:
     //   seq=1, device-A  (original insert)
@@ -461,14 +475,7 @@ async fn gc_never_compacts_across_origins() {
     // and delete seq=1 — losing device-B's origin entirely.
     // Register C as a trusted device that hasn't acknowledged so
     // collect_acked preserves device-A's relayed rows on B.
-    sqlx::query!(
-        "INSERT INTO trusted_devices \
-         (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
-         VALUES ('c-td', 's1', 'device-C', 'C', 'CERT', 1, '2024-01-01T00:00:00Z')"
-    )
-    .execute(&b.pool)
-    .await
-    .unwrap();
+    b.grant_peer("s1", "device-C", 1).await;
 
     crate::sync::gc::run(&b.pool).await.unwrap();
 
@@ -1803,19 +1810,8 @@ async fn gc_preserves_changes_for_pending_revocation() {
     // Register B and C as trusted devices BEFORE syncing. C has
     // sync_enabled=0 (pending revocation). The inserts create
     // change_log rows that B and C need to receive and acknowledge.
-    for (peer, enabled) in &[("device-B", 1), ("device-C", 0)] {
-        sqlx::query!(
-            "INSERT INTO trusted_devices \
-             (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
-             VALUES (?1, 's1', ?2, ?2, 'CERT', ?3, ?4)",
-            format!("{peer}-td"),
-            peer,
-            enabled,
-            ts
-        )
-        .execute(&a.pool)
-        .await
-        .unwrap();
+    for (peer, enabled) in &[("device-B", 1i64), ("device-C", 0)] {
+        a.grant_peer("s1", peer, *enabled).await;
     }
 
     // Sync A→B and A→C so both receive all changes (space + trusted_devices).
@@ -1892,15 +1888,7 @@ async fn peer_below_retained_floor_routes_to_snapshot() {
     a.insert_space("s1", "test").await;
 
     // Register B as trusted so GC has a required device to check.
-    sqlx::query!(
-        "INSERT INTO trusted_devices \
-         (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
-         VALUES ('b-td', 's1', 'device-B', 'B', 'CERT', 1, ?1)",
-        ts
-    )
-    .execute(&a.pool)
-    .await
-    .unwrap();
+    a.grant_peer("s1", "device-B", 1).await;
 
     // Create multiple change_log rows by updating the space name.
     for i in 2..=5 {
@@ -2007,15 +1995,7 @@ async fn cursor_zero_empty_history_nonzero_high_water_requires_recon() {
     a.insert_space("s1", "test").await;
 
     // Register B as trusted + acknowledge to allow GC collection.
-    sqlx::query!(
-        "INSERT INTO trusted_devices \
-         (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
-         VALUES ('b-td', 's1', 'device-B', 'B', 'CERT', 1, ?1)",
-        ts
-    )
-    .execute(&a.pool)
-    .await
-    .unwrap();
+    a.grant_peer("s1", "device-B", 1).await;
 
     sync_direct(&a, &b).await;
 
@@ -2067,15 +2047,7 @@ async fn cursor_below_retained_floor_requires_recon() {
         .unwrap();
     }
 
-    sqlx::query!(
-        "INSERT INTO trusted_devices \
-         (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
-         VALUES ('b-td', 's1', 'device-B', 'B', 'CERT', 1, ?1)",
-        ts
-    )
-    .execute(&a.pool)
-    .await
-    .unwrap();
+    a.grant_peer("s1", "device-B", 1).await;
 
     sync_direct(&a, &b).await;
 
@@ -2175,4 +2147,116 @@ async fn v2_reconciliation_flag_forces_snapshot() {
         || (lmax > 0 && lmax < lmin)
         || (hw.max(lmax) > 0 && hw.max(lmax) < hw.max(lmax));
     assert!(needs, "V2 reconciliation flag must force snapshot");
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 30.1 — normalize installation identity
+// ---------------------------------------------------------------------------
+
+/// Existing peers with different legacy row IDs converge to one
+/// logical grant. The new `space_devices` table is keyed by
+/// `(space_id, device_id)` — no random id column. Two `ChangeBatch`
+/// rows for the same `(space_id, device_id)` upsert into one row.
+#[tokio::test]
+async fn space_devices_converge_to_one_logical_grant() {
+    use crate::sync::payloads::SpaceDevicePayload;
+    use crate::sync::wire::ChangeRow;
+
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+
+    a.insert_space("s1", "test").await;
+    a.grant_peer("s1", "peer-1", 1).await;
+
+    // Apply a changelog row from the peer for the same (space_id, device_id).
+    let mut tx = a.pool.begin().await.unwrap();
+    let row = ChangeRow {
+        id: "cl-1".into(),
+        space_id: "s1".into(),
+        table_name: "space_devices".into(),
+        row_id: "s1:peer-1".into(),
+        operation: "insert".into(),
+        payload: Some(TablePayload::SpaceDevice(SpaceDevicePayload {
+            space_id: "s1".into(),
+            device_id: "peer-1".into(),
+            sync_enabled: 0, // even with different sync_enabled
+            paired_at: ts.into(),
+        })),
+        seq: 1,
+        device_id: "peer-1".into(),
+        changed_at: ts.into(),
+    };
+    crate::sync::apply::apply_change(&mut tx, &row)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM space_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "converge to one logical grant");
+
+    let sync_enabled: i64 = sqlx::query_scalar!(
+        "SELECT sync_enabled FROM space_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(sync_enabled, 0, "latest value wins on conflict");
+}
+
+/// Removing one space grant does not remove the same installation
+/// from another space. The `devices` table is separate from
+/// `space_devices` — revoking access in one space only deletes the
+/// `space_devices` row, leaving the `devices` row intact.
+#[tokio::test]
+async fn space_grant_revoke_preserves_installation() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+
+    a.insert_space("s1", "test").await;
+    a.insert_space("s2", "other").await;
+    a.grant_peer("s1", "peer-1", 1).await;
+    a.grant_peer("s2", "peer-1", 1).await;
+
+    let count_before: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM space_devices WHERE device_id = 'peer-1'")
+            .fetch_one(&a.pool)
+            .await
+            .unwrap();
+    assert_eq!(count_before, 2);
+
+    // Revoke from s1 only.
+    sqlx::query_file!("queries/sync/delete_space_device.sql", "s1", "peer-1")
+        .execute(&a.pool)
+        .await
+        .unwrap();
+
+    let count_after: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM space_devices WHERE device_id = 'peer-1'")
+            .fetch_one(&a.pool)
+            .await
+            .unwrap();
+    assert_eq!(count_after, 1, "only s1 grant removed");
+
+    let s2_grant: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM space_devices WHERE space_id = 's2' AND device_id = 'peer-1'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(s2_grant, 1, "s2 grant preserved");
+
+    // The devices row must still exist.
+    let device_exists: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM devices WHERE device_id = 'peer-1'")
+            .fetch_one(&a.pool)
+            .await
+            .unwrap();
+    assert_eq!(device_exists, 1, "installation identity preserved");
 }

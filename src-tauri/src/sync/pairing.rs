@@ -365,8 +365,8 @@ async fn run_host_session(
 
     write_encrypted(&mut stream, &cipher, &PairFrame::End).await?;
 
-    // Persist the joiner as a trusted device of this space.
-    upsert_trusted_device(
+    // Persist the joiner as a device and grant it access to this space.
+    upsert_device_and_grant(
         &db,
         &space_id,
         &join.device_id,
@@ -560,25 +560,34 @@ async fn upsert_space_member(
     Ok(())
 }
 
-async fn upsert_trusted_device(
+async fn upsert_device_and_grant(
     db: &SqlitePool,
     space_id: &str,
     device_id: &str,
     display_name: &str,
     cert_pem: &str,
 ) -> Result<(), AppError> {
-    let id = uuid::Uuid::new_v4().to_string();
     sqlx::query_file!(
-        "queries/sync/upsert_trusted_device.sql",
-        id,
-        space_id,
+        "queries/sync/upsert_device.sql",
         device_id,
-        display_name,
         cert_pem,
+        display_name
     )
     .execute(db)
     .await
-    .map_err(|e| AppError::Db(format!("upsert_trusted_device: {e}")))?;
+    .map_err(|e| AppError::Db(format!("upsert_device: {e}")))?;
+
+    let ts = "2024-01-01T00:00:00Z";
+    sqlx::query_file!(
+        "queries/sync/upsert_space_device.sql",
+        space_id,
+        device_id,
+        1i64,
+        ts
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
     Ok(())
 }
 

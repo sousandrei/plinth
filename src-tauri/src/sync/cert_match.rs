@@ -11,7 +11,7 @@ pub struct PeerIdentity {
 }
 
 /// Resolve a TLS-presented certificate to a trusted peer by comparing its
-/// DER bytes against every active `trusted_devices` row. Returns `None`
+/// DER bytes against every device cert in the `devices` table. Returns `None`
 /// if the cert is not in the trusted set for any space.
 ///
 /// Equality is on DER, not PEM: PEM formatting (line widths, trailing
@@ -20,7 +20,7 @@ pub async fn resolve_peer(
     db: &SqlitePool,
     presented: &CertificateDer<'_>,
 ) -> Result<Option<PeerIdentity>, AppError> {
-    let rows = sqlx::query_file!("queries/sync/list_all_trusted_certs_with_space.sql")
+    let rows = sqlx::query_file!("queries/sync/list_device_certs_with_space.sql")
         .fetch_all(db)
         .await
         .map_err(|e| AppError::Db(format!("resolve peer: {e}")))?;
