@@ -626,6 +626,14 @@ async fn snapshot_applies_users_before_memberships() {
 
     // Build a snapshot skeleton (as the host would send it).
     let snapshot = SpaceSnapshot {
+        snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+        snapshot_id: "snap-test-1".into(),
+        host_device_id: "device-A".into(),
+        host_device_name: "host".into(),
+        host_cert_pem: test_cert_pem("device-A"),
+        high_water_vector: vec![],
+        row_winners: vec![],
         space: WireSpace {
             id: "s1".into(),
             name: "shared".into(),
@@ -668,9 +676,8 @@ async fn snapshot_applies_users_before_memberships() {
         account_summaries: vec![],
         space_settings: vec![],
         model_versions: vec![],
-        host_device_id: "device-A".into(),
-        host_device_name: "host".into(),
-        host_cert_pem: test_cert_pem("device-A"),
+        devices: vec![],
+        space_devices: vec![],
     };
 
     // Apply on B with FKs enabled, using the production dependency order:
@@ -2646,4 +2653,100 @@ async fn sql_check_constraint_rejects_unknown_trust_mode() {
         err.to_string().contains("CHECK constraint failed"),
         "expected CHECK constraint error, got: {err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 31.1 — capture a consistent snapshot
+// ---------------------------------------------------------------------------
+
+/// Step 31.1: `collect_snapshot` executes inside a single read transaction and
+/// captures the complete, consistent space state:
+/// - Header versions (snapshot schema version, protocol version, snapshot ID)
+/// - High-water vector and row winners/tombstones
+/// - Space metadata, members, and sanitized users (without local credentials / pin_hash)
+/// - Device roster and space grants (including trust modes)
+/// - Explicit empty sections (categories, accounts, etc. as empty Vecs)
+#[tokio::test]
+async fn collect_snapshot_captures_complete_consistent_state() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+
+    a.insert_space("s1", "Main Space").await;
+
+    // Create a user with a local credential (pin_hash)
+    sqlx::query!(
+        "INSERT INTO users (id, name, pin_hash, created_at, updated_at) \
+         VALUES ('u1', 'Alice', 'argon2_secret_hash', ?1, ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO space_members (space_id, user_id, role, joined_at) \
+         VALUES ('s1', 'u1', 'owner', ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    // Register a peer device and grant
+    a.grant_peer("s1", "peer-B", TrustMode::Revoking).await;
+
+    let snap = crate::sync::snapshot::collect_snapshot(
+        &a.pool,
+        None,
+        "s1",
+        "device-A".into(),
+        "Host A".into(),
+        test_cert_pem("device-A"),
+    )
+    .await
+    .expect("collect_snapshot must succeed");
+
+    // 1. Header and metadata verification
+    assert_eq!(
+        snap.snapshot_schema_version,
+        crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION
+    );
+    assert_eq!(snap.protocol_version, crate::sync::wire::PROTOCOL_VERSION);
+    assert!(snap.snapshot_id.starts_with("snap_"));
+    assert_eq!(snap.host_device_id, "device-A");
+
+    // 2. High water vector & row winners (explicitly represented as Vec)
+    assert!(
+        snap.high_water_vector.is_empty(),
+        "high_water_vector is explicitly [] when no origin_state exists"
+    );
+    assert!(
+        !snap.row_winners.is_empty(),
+        "row_winners contains entry for the space"
+    );
+
+    // 3. User sanitization (local credentials stripped)
+    let alice = snap
+        .users
+        .iter()
+        .find(|u| u.id == "u1")
+        .expect("Alice must be in users");
+    assert_eq!(alice.name, "Alice");
+    assert_eq!(alice.pin_hash, None, "PIN hash must NOT leak in snapshot");
+
+    // 4. Device and space grants
+    assert!(snap.devices.iter().any(|d| d.device_id == "peer-B"));
+    let b_grant = snap
+        .space_devices
+        .iter()
+        .find(|sd| sd.device_id == "peer-B")
+        .expect("peer-B grant present");
+    assert_eq!(b_grant.trust_mode, TrustMode::Revoking);
+
+    // 5. Explicit empty sections
+    assert!(snap.categories.is_empty());
+    assert!(snap.accounts.is_empty());
+    assert!(snap.transactions.is_empty());
+    assert!(snap.account_summaries.is_empty());
 }

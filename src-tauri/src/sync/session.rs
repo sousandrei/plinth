@@ -503,7 +503,7 @@ where
     let display_name = gethostname::gethostname().to_string_lossy().into_owned();
     let snapshot = crate::sync::snapshot::collect_snapshot(
         db,
-        app,
+        Some(app),
         space_id,
         identity.device_id.clone(),
         display_name,
@@ -542,6 +542,14 @@ where
     )
     .await?;
 
+    stream_chunked(wr, &space_id_owned, snapshot.devices, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::Devices(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.space_devices, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::SpaceDevices(chunk)
+    })
+    .await?;
     stream_chunked(wr, &space_id_owned, snapshot.categories, |chunk| {
         crate::sync::snapshot::SnapshotFrame::Categories(chunk)
     })
@@ -564,6 +572,14 @@ where
     .await?;
     stream_chunked(wr, &space_id_owned, snapshot.model_versions, |chunk| {
         crate::sync::snapshot::SnapshotFrame::ModelVersions(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.high_water_vector, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::HighWaterVector(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.row_winners, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::RowWinners(chunk)
     })
     .await?;
 
@@ -675,6 +691,14 @@ where
                     let identity = crate::sync::identity::ensure_identity(&db).await?;
                     let display_name = gethostname::gethostname().to_string_lossy().into_owned();
                     snapshot_host = Some(crate::sync::snapshot::SpaceSnapshot {
+                        snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+                        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+                        snapshot_id: String::new(),
+                        host_device_id: identity.device_id.clone(),
+                        host_device_name: display_name,
+                        host_cert_pem: identity.cert_pem.clone(),
+                        high_water_vector: vec![],
+                        row_winners: vec![],
                         space: crate::sync::snapshot::WireSpace {
                             id: String::new(),
                             name: String::new(),
@@ -689,9 +713,8 @@ where
                         account_summaries: vec![],
                         space_settings: vec![],
                         model_versions: vec![],
-                        host_device_id: identity.device_id.clone(),
-                        host_device_name: display_name,
-                        host_cert_pem: identity.cert_pem.clone(),
+                        devices: vec![],
+                        space_devices: vec![],
                     });
                 }
                 snapshot_buf.push(chunk);

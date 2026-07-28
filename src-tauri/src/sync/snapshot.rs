@@ -3,13 +3,48 @@ use sqlx::SqlitePool;
 use tauri::AppHandle;
 
 use crate::error::AppError;
+use crate::sync::trust_mode::TrustMode;
+
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------------------
-// Wire types — one shape per synced table. Used by both the pairing
-// transfer (encrypted TCP) and the sync-session snapshot transfer
-// (`Frame::Snapshot` chunks). The on-the-wire format is identical in both
-// transports.
+// Wire types — one shape per synced table and snapshot section. Used by
+// both the pairing transfer (encrypted TCP) and the sync-session snapshot
+// transfer (`Frame::Snapshot` chunks). The on-the-wire format is identical
+// in both transports.
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireOriginState {
+    pub origin_device_id: String,
+    pub high_water: i64,
+    pub retained_floor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireRowWinner {
+    pub space_id: String,
+    pub table_name: String,
+    pub row_id: String,
+    pub winning_seq: i64,
+    pub winning_origin: String,
+    pub deleted: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireDevice {
+    pub device_id: String,
+    pub cert_pem: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireSpaceDevice {
+    pub space_id: String,
+    pub device_id: String,
+    pub trust_mode: TrustMode,
+    pub paired_at: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireUser {
@@ -99,10 +134,20 @@ pub struct WireModelVersion {
 }
 
 /// Full snapshot of one space: identity, members, users, every synced
-/// table's rows, and the host's device identity (for `trusted_devices`).
-/// Constructed via `collect_snapshot`, applied via `apply_snapshot`.
+/// table's rows, devices & space grants, high-water vector, row winners/tombstones.
+/// Constructed via `collect_snapshot`, applied via `apply_snapshot_frame`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpaceSnapshot {
+    pub snapshot_schema_version: u32,
+    pub protocol_version: u16,
+    pub snapshot_id: String,
+    pub host_device_id: String,
+    pub host_device_name: String,
+    pub host_cert_pem: String,
+
+    pub high_water_vector: Vec<WireOriginState>,
+    pub row_winners: Vec<WireRowWinner>,
+
     pub space: WireSpace,
     pub members: Vec<WireMember>,
     pub users: Vec<WireUser>,
@@ -112,9 +157,8 @@ pub struct SpaceSnapshot {
     pub account_summaries: Vec<WireAccountSummary>,
     pub space_settings: Vec<WireSpaceSetting>,
     pub model_versions: Vec<WireModelVersion>,
-    pub host_device_id: String,
-    pub host_device_name: String,
-    pub host_cert_pem: String,
+    pub devices: Vec<WireDevice>,
+    pub space_devices: Vec<WireSpaceDevice>,
 }
 
 /// Tagged envelope sent over both the pairing transport (encrypted TCP)
@@ -124,6 +168,10 @@ pub struct SpaceSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SnapshotFrame {
     Space(WireSpace),
+    HighWaterVector(Vec<WireOriginState>),
+    RowWinners(Vec<WireRowWinner>),
+    Devices(Vec<WireDevice>),
+    SpaceDevices(Vec<WireSpaceDevice>),
     Members(Vec<WireMember>),
     Users(Vec<WireUser>),
     Categories(Vec<WireCategory>),
@@ -139,45 +187,76 @@ pub enum SnapshotFrame {
 // Collect: gather a snapshot from the local DB
 // ---------------------------------------------------------------------------
 
-/// Gather every row needed to reconstruct `space_id` on a fresh device.
+/// Gather every row needed to reconstruct `space_id` on a fresh device inside
+/// a single read transaction to guarantee snapshot consistency.
 /// Includes the active finetuned-model version (read from
 /// `space_settings`), so receivers that already have a finetuned model
 /// can advance their active version after a successful snapshot.
 pub async fn collect_snapshot(
     db: &SqlitePool,
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     space_id: &str,
     host_device_id: String,
     host_device_name: String,
     host_cert_pem: String,
 ) -> Result<SpaceSnapshot, AppError> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("collect_snapshot begin tx: {e}")))?;
+
+    let snapshot_id = format!("snap_{}", uuid::Uuid::new_v4().simple());
+
+    let high_water_vector: Vec<WireOriginState> = sqlx::query_file_as!(
+        WireOriginState,
+        "queries/snapshots/list_origin_states.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot origin_states: {e}")))?;
+
+    let row_winners: Vec<WireRowWinner> = sqlx::query_file_as!(
+        WireRowWinner,
+        "queries/snapshots/list_row_winners.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot row_winners: {e}")))?;
+
     let space = sqlx::query_file_as!(WireSpace, "queries/snapshots/list_space.sql", space_id)
-        .fetch_optional(db)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| AppError::Db(format!("collect_snapshot space: {e}")))?
         .ok_or_else(|| AppError::NotFound(format!("space {space_id}")))?;
 
     let members: Vec<WireMember> =
         sqlx::query_file_as!(WireMember, "queries/snapshots/list_members.sql", space_id)
-            .fetch_all(db)
+            .fetch_all(&mut *tx)
             .await
             .map_err(|e| AppError::Db(format!("collect_snapshot members: {e}")))?;
 
-    let users: Vec<WireUser> = sqlx::query_file_as!(
+    let mut users: Vec<WireUser> = sqlx::query_file_as!(
         WireUser,
         "queries/snapshots/list_users_for_space.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot users: {e}")))?;
+
+    // Step 31.1: Users without local credentials (PIN hash must not leak)
+    for u in &mut users {
+        u.pin_hash = None;
+    }
 
     let categories: Vec<WireCategory> = sqlx::query_file_as!(
         WireCategory,
         "queries/sync/list_pairing_categories.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot categories: {e}")))?;
 
@@ -186,7 +265,7 @@ pub async fn collect_snapshot(
         "queries/sync/list_pairing_accounts.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot accounts: {e}")))?;
 
@@ -195,7 +274,7 @@ pub async fn collect_snapshot(
         "queries/snapshots/list_transactions.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot transactions: {e}")))?;
 
@@ -204,7 +283,7 @@ pub async fn collect_snapshot(
         "queries/snapshots/list_account_summaries.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot account_summaries: {e}")))?;
 
@@ -213,20 +292,16 @@ pub async fn collect_snapshot(
         "queries/sync/list_space_settings.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot space_settings: {e}")))?;
 
-    // Make sure the active model version is included in the snapshot even
-    // if no other settings exist for this space — a fresh joiner that
-    // hasn't trained yet still needs to know the host's version so it can
-    // pull the weights in the model-sync phase.
     let active_model_version: Option<String> = sqlx::query_file!(
         "queries/training/get_setting.sql",
         space_id,
         "active_model_version"
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot model_version: {e}")))?
     .map(|r| r.value);
@@ -249,13 +324,58 @@ pub async fn collect_snapshot(
         "queries/snapshots/list_model_versions.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot model_versions: {e}")))?;
+
+    let devices: Vec<WireDevice> = sqlx::query_file_as!(
+        WireDevice,
+        "queries/snapshots/list_devices_for_space.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot devices: {e}")))?;
+
+    let space_devices_raw = sqlx::query_file!(
+        "queries/snapshots/list_space_devices_for_space.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot space_devices: {e}")))?;
+
+    let mut space_devices = Vec::with_capacity(space_devices_raw.len());
+    for r in space_devices_raw {
+        let mode = TrustMode::parse(&r.trust_mode).ok_or_else(|| {
+            AppError::Internal(format!(
+                "collect_snapshot: unknown trust_mode {:?} for device {}",
+                r.trust_mode, r.device_id
+            ))
+        })?;
+        space_devices.push(WireSpaceDevice {
+            space_id: r.space_id,
+            device_id: r.device_id,
+            trust_mode: mode,
+            paired_at: r.paired_at,
+        });
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("collect_snapshot commit: {e}")))?;
 
     let _ = app; // reserved for future "include model files in snapshot"
 
     Ok(SpaceSnapshot {
+        snapshot_schema_version: SNAPSHOT_SCHEMA_VERSION,
+        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+        snapshot_id,
+        host_device_id,
+        host_device_name,
+        host_cert_pem,
+        high_water_vector,
+        row_winners,
         space,
         members,
         users,
@@ -265,9 +385,8 @@ pub async fn collect_snapshot(
         account_summaries,
         space_settings,
         model_versions,
-        host_device_id,
-        host_device_name,
-        host_cert_pem,
+        devices,
+        space_devices,
     })
 }
 
@@ -287,6 +406,26 @@ pub async fn apply_snapshot_frame(
     match frame {
         SnapshotFrame::Space(s) => {
             upsert_space(tx, s).await?;
+        }
+        SnapshotFrame::HighWaterVector(chunk) => {
+            for os in chunk {
+                upsert_origin_state(tx, &snapshot.space.id, os).await?;
+            }
+        }
+        SnapshotFrame::RowWinners(chunk) => {
+            for rw in chunk {
+                upsert_row_winner(tx, rw).await?;
+            }
+        }
+        SnapshotFrame::Devices(chunk) => {
+            for d in chunk {
+                upsert_device(tx, d).await?;
+            }
+        }
+        SnapshotFrame::SpaceDevices(chunk) => {
+            for sd in chunk {
+                upsert_space_device(tx, sd).await?;
+            }
         }
         SnapshotFrame::Members(chunk) => {
             for m in chunk {
@@ -347,6 +486,82 @@ pub async fn apply_snapshot_frame(
 // apply/* SQL files used during normal sync — same conflict policy, same
 // `ON CONFLICT` clauses.
 // ---------------------------------------------------------------------------
+
+async fn upsert_origin_state(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space_id: &str,
+    os: &WireOriginState,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_origin_state.sql",
+        space_id,
+        os.origin_device_id,
+        os.high_water,
+        os.retained_floor
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_origin_state: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_row_winner(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    rw: &WireRowWinner,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/upsert_row_winner.sql",
+        rw.space_id,
+        rw.table_name,
+        rw.row_id,
+        rw.winning_seq,
+        rw.winning_origin,
+        rw.deleted
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_row_winner: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_device(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    d: &WireDevice,
+) -> Result<(), AppError> {
+    let (der, fp) = match crate::sync::cert_validation::parse_and_canonicalize(&d.cert_pem) {
+        Ok(v) => (Some(v.der), v.fingerprint),
+        Err(_) => (None, String::new()),
+    };
+    sqlx::query_file!(
+        "queries/sync/upsert_device.sql",
+        d.device_id,
+        d.cert_pem,
+        der,
+        fp,
+        d.display_name
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_space_device(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sd: &WireSpaceDevice,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_space_device.sql",
+        sd.space_id,
+        sd.device_id,
+        sd.trust_mode,
+        sd.paired_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
+    Ok(())
+}
 
 async fn upsert_user(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,

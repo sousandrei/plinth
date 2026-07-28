@@ -70,10 +70,7 @@ pub struct PairToken {
 
 // Wire types live in `snapshot` so they can be reused by the sync
 // session fallback. Re-exported here for backwards-compat callers.
-pub use crate::sync::snapshot::{
-    SnapshotFrame, SpaceSnapshot, WireAccount, WireAccountSummary, WireCategory, WireMember,
-    WireSpace, WireSpaceSetting, WireTransaction, WireUser,
-};
+pub use crate::sync::snapshot::{SnapshotFrame, SpaceSnapshot, WireMember, WireSpace, WireUser};
 
 /// Sent by the joiner. Tells the host who is joining and how to reach
 /// this device later.
@@ -86,27 +83,6 @@ pub struct JoinPayload {
     pub device_id: String,
     pub device_name: String,
     pub cert_pem: String,
-}
-
-/// Sent by the host. Carries the full space context so the joiner can
-/// materialize the space on its end.
-///
-/// Thin wrapper over `SpaceSnapshot` that adds the member list and
-/// member users (which the host gathers separately for the pairing
-/// handshake and aren't part of the reusable snapshot structure).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpaceBundle {
-    pub space: WireSpace,
-    pub members: Vec<WireMember>,
-    pub users: Vec<WireUser>,
-    pub categories: Vec<WireCategory>,
-    pub accounts: Vec<WireAccount>,
-    pub transactions: Vec<WireTransaction>,
-    pub account_summaries: Vec<WireAccountSummary>,
-    pub space_settings: Vec<WireSpaceSetting>,
-    pub host_device_id: String,
-    pub host_device_name: String,
-    pub host_cert_pem: String,
 }
 
 /// Small, always-fits-in-1MB header sent first in the host→joiner
@@ -206,33 +182,15 @@ impl PairingState {
 // Host side — listen for an incoming pairing
 // ---------------------------------------------------------------------------
 
-/// Inputs the host side needs to pre-package the space context before
-/// any peer connects. Owner of the space gathers these from the DB,
-/// hands them to `start_host_session`, and the session task does the
-/// rest.
-pub struct HostInputs {
-    pub space: WireSpace,
-    pub members: Vec<WireMember>,
-    pub member_users: Vec<WireUser>,
-    pub owner_user: WireUser,
-    pub host_display_name: String,
-    pub categories: Vec<WireCategory>,
-    pub accounts: Vec<WireAccount>,
-    pub transactions: Vec<WireTransaction>,
-    pub account_summaries: Vec<WireAccountSummary>,
-    pub space_settings: Vec<WireSpaceSetting>,
-}
-
 /// Generates a fresh 6-digit token, starts a single-shot listener on an
 /// ephemeral port, and registers the token in the in-memory pairing
 /// state. The listener auto-times-out after `HANDSHAKE_DEADLINE_SECS`.
 pub async fn start_host_session(
     db: SqlitePool,
     state: Arc<PairingState>,
-    inputs: HostInputs,
+    snapshot: SpaceSnapshot,
 ) -> Result<PairToken, AppError> {
-    let identity = crate::sync::identity::ensure_identity(&db).await?;
-    let space_id = inputs.space.id.clone();
+    let space_id = snapshot.space.id.clone();
 
     let token = {
         let mut buf = [0u8; 4];
@@ -254,32 +212,12 @@ pub async fn start_host_session(
         Duration::from_secs(TOKEN_TTL_SECS),
     )?;
 
-    let bundle = SpaceBundle {
-        space: inputs.space,
-        members: inputs.members,
-        users: {
-            let mut u = inputs.member_users;
-            if !u.iter().any(|x| x.id == inputs.owner_user.id) {
-                u.push(inputs.owner_user);
-            }
-            u
-        },
-        categories: inputs.categories,
-        accounts: inputs.accounts,
-        transactions: inputs.transactions,
-        account_summaries: inputs.account_summaries,
-        space_settings: inputs.space_settings,
-        host_device_id: identity.device_id.clone(),
-        host_device_name: inputs.host_display_name,
-        host_cert_pem: identity.cert_pem.clone(),
-    };
-
     let token_for_session = token.clone();
     let state_for_session = state.clone();
     tokio::spawn(async move {
         let result = tokio::time::timeout(
             Duration::from_secs(HANDSHAKE_DEADLINE_SECS),
-            run_host_session(listener, token_for_session.clone(), space_id, bundle, db),
+            run_host_session(listener, token_for_session.clone(), space_id, snapshot, db),
         )
         .await;
         // Always drop the token after the session ends or times out.
@@ -306,7 +244,7 @@ async fn run_host_session(
     listener: TcpListener,
     token: String,
     space_id: String,
-    bundle: SpaceBundle,
+    snapshot: SpaceSnapshot,
     db: SqlitePool,
 ) -> Result<(), AppError> {
     let (mut stream, _peer) = listener
@@ -334,33 +272,53 @@ async fn run_host_session(
     // an End marker. Each frame is independently encrypted and stays
     // under the 1 MB cap regardless of space size.
     let header = PairHeader {
-        space: bundle.space.clone(),
-        members: bundle.members.clone(),
-        users: bundle.users.clone(),
-        host_device_id: bundle.host_device_id.clone(),
-        host_device_name: bundle.host_device_name.clone(),
-        host_cert_pem: bundle.host_cert_pem.clone(),
+        space: snapshot.space.clone(),
+        members: snapshot.members.clone(),
+        users: snapshot.users.clone(),
+        host_device_id: snapshot.host_device_id.clone(),
+        host_device_name: snapshot.host_device_name.clone(),
+        host_cert_pem: snapshot.host_cert_pem.clone(),
     };
     write_encrypted(&mut stream, &cipher, &PairFrame::Header(header)).await?;
 
-    stream_pair_chunks(&mut stream, &cipher, &bundle.categories, |c| {
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.devices, |c| {
+        SnapshotFrame::Devices(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.space_devices, |c| {
+        SnapshotFrame::SpaceDevices(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.categories, |c| {
         SnapshotFrame::Categories(c)
     })
     .await?;
-    stream_pair_chunks(&mut stream, &cipher, &bundle.accounts, |c| {
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.accounts, |c| {
         SnapshotFrame::Accounts(c)
     })
     .await?;
-    stream_pair_chunks(&mut stream, &cipher, &bundle.transactions, |c| {
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.transactions, |c| {
         SnapshotFrame::Transactions(c)
     })
     .await?;
-    stream_pair_chunks(&mut stream, &cipher, &bundle.account_summaries, |c| {
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.account_summaries, |c| {
         SnapshotFrame::AccountSummaries(c)
     })
     .await?;
-    stream_pair_chunks(&mut stream, &cipher, &bundle.space_settings, |c| {
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.space_settings, |c| {
         SnapshotFrame::SpaceSettings(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.model_versions, |c| {
+        SnapshotFrame::ModelVersions(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.high_water_vector, |c| {
+        SnapshotFrame::HighWaterVector(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.row_winners, |c| {
+        SnapshotFrame::RowWinners(c)
     })
     .await?;
 
@@ -475,6 +433,14 @@ pub async fn run_joiner(
             // The space row gets filled in from the first Space chunk
             // (or we already have it from the header).
             let mut snapshot = SpaceSnapshot {
+                snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+                protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+                snapshot_id: String::new(),
+                host_device_id: header.host_device_id.clone(),
+                host_device_name: header.host_device_name.clone(),
+                host_cert_pem: header.host_cert_pem.clone(),
+                high_water_vector: Vec::new(),
+                row_winners: Vec::new(),
                 space: header.space.clone(),
                 members: header.members.clone(),
                 users: header.users.clone(),
@@ -484,9 +450,8 @@ pub async fn run_joiner(
                 account_summaries: Vec::new(),
                 space_settings: Vec::new(),
                 model_versions: Vec::new(),
-                host_device_id: header.host_device_id.clone(),
-                host_device_name: header.host_device_name.clone(),
-                host_cert_pem: header.host_cert_pem.clone(),
+                devices: Vec::new(),
+                space_devices: Vec::new(),
             };
             apply_header(tx, &header).await?;
             loop {
@@ -772,6 +737,14 @@ async fn apply_header(
     header: &PairHeader,
 ) -> Result<(), AppError> {
     let skeleton = SpaceSnapshot {
+        snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+        snapshot_id: String::new(),
+        host_device_id: header.host_device_id.clone(),
+        host_device_name: header.host_device_name.clone(),
+        host_cert_pem: header.host_cert_pem.clone(),
+        high_water_vector: Vec::new(),
+        row_winners: Vec::new(),
         space: header.space.clone(),
         members: header.members.clone(),
         users: header.users.clone(),
@@ -781,9 +754,8 @@ async fn apply_header(
         account_summaries: Vec::new(),
         space_settings: Vec::new(),
         model_versions: Vec::new(),
-        host_device_id: header.host_device_id.clone(),
-        host_device_name: header.host_device_name.clone(),
-        host_cert_pem: header.host_cert_pem.clone(),
+        devices: Vec::new(),
+        space_devices: Vec::new(),
     };
     crate::sync::snapshot::apply_snapshot_frame(
         tx,

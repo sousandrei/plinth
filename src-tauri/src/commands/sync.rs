@@ -10,10 +10,7 @@ use crate::{
     sync::{
         PeerInfo, PeerRegistry, SyncSummary,
         debounce::DebounceSender,
-        pairing::{
-            self, PAIRING_PORT, PairToken, PairingState, WireAccount, WireAccountSummary,
-            WireCategory, WireMember, WireSpace, WireSpaceSetting, WireTransaction, WireUser,
-        },
+        pairing::{self, PAIRING_PORT, PairToken, PairingState, WireUser},
         trust_mode::TrustMode,
     },
 };
@@ -213,163 +210,22 @@ pub async fn generate_pair_token(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     pairing: State<'_, Arc<PairingState>>,
+    app: AppHandle,
 ) -> Result<PairToken, AppError> {
     let active = session.require()?;
+    let identity = crate::sync::identity::ensure_identity(&db).await?;
 
-    let space = sqlx::query_file!("queries/sync/get_space.sql", active.space_id)
-        .fetch_optional(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("get_space: {e}")))?
-        .ok_or_else(|| AppError::NotFound(format!("space {}", active.space_id)))?;
-    let space = WireSpace {
-        id: space.id,
-        name: space.name,
-        created_at: space.created_at,
-        updated_at: space.updated_at,
-    };
-
-    let owner_user_row = sqlx::query_file!("queries/sync/get_user.sql", active.user_id)
-        .fetch_optional(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("get_user: {e}")))?
-        .ok_or_else(|| AppError::NotFound(format!("user {}", active.user_id)))?;
-    let owner_user = WireUser {
-        id: owner_user_row.id,
-        name: owner_user_row.name,
-        pin_hash: owner_user_row.pin_hash,
-        created_at: owner_user_row.created_at,
-        updated_at: owner_user_row.updated_at,
-    };
-
-    let members = sqlx::query_file!(
-        "queries/sync/list_space_members_for_pairing.sql",
-        active.space_id,
+    let snapshot = crate::sync::snapshot::collect_snapshot(
+        &db,
+        Some(&app),
+        &active.space_id,
+        identity.device_id,
+        host_display_name,
+        identity.cert_pem,
     )
-    .fetch_all(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("list members: {e}")))?
-    .into_iter()
-    .map(|r| WireMember {
-        space_id: r.space_id,
-        user_id: r.user_id,
-        role: r.role,
-        joined_at: r.joined_at,
-    })
-    .collect();
+    .await?;
 
-    let member_users =
-        sqlx::query_file!("queries/sync/list_space_member_users.sql", active.space_id,)
-            .fetch_all(&*db)
-            .await
-            .map_err(|e| AppError::Db(format!("list member users: {e}")))?
-            .into_iter()
-            .map(|r| WireUser {
-                id: r.id,
-                name: r.name,
-                pin_hash: r.pin_hash,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-            })
-            .collect();
-
-    let categories = sqlx::query_file!("queries/sync/list_pairing_categories.sql", active.space_id)
-        .fetch_all(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("list pairing categories: {e}")))?
-        .into_iter()
-        .map(|r| WireCategory {
-            id: r.id,
-            name: r.name,
-            color: r.color,
-            space_id: r.space_id,
-        })
-        .collect();
-
-    let accounts = sqlx::query_file!("queries/sync/list_pairing_accounts.sql", active.space_id)
-        .fetch_all(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("list pairing accounts: {e}")))?
-        .into_iter()
-        .map(|r| WireAccount {
-            id: r.id,
-            name: r.name,
-            currency: r.currency,
-            account_type: r.account_type,
-            account_source: r.account_source,
-            color: r.color,
-            space_id: r.space_id,
-        })
-        .collect();
-
-    let transactions = sqlx::query_file!("queries/spaces/export_transactions.sql", active.space_id)
-        .fetch_all(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("list pairing transactions: {e}")))?
-        .into_iter()
-        .map(|r| WireTransaction {
-            id: r.id,
-            booking_date: r.booking_date,
-            value_date: r.value_date,
-            reference: r.reference,
-            text: r.text,
-            currency: r.currency,
-            amount: r.amount,
-            balance: r.balance,
-            approved: r.approved,
-            note: r.note,
-            category: if r.category.is_empty() {
-                None
-            } else {
-                Some(r.category)
-            },
-            account_id: r.account_id,
-        })
-        .collect();
-
-    let account_summaries = sqlx::query_file!(
-        "queries/spaces/export_account_summaries.sql",
-        active.space_id
-    )
-    .fetch_all(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("list pairing account summaries: {e}")))?
-    .into_iter()
-    .map(|r| WireAccountSummary {
-        month: r.month,
-        account_id: r.account_id,
-        balance: r.balance,
-    })
-    .collect();
-
-    let space_settings = sqlx::query_file!("queries/sync/list_space_settings.sql", active.space_id)
-        .fetch_all(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("list pairing space settings: {e}")))?
-        .into_iter()
-        .map(|r| WireSpaceSetting {
-            space_id: r.space_id,
-            key: r.key,
-            value: r.value,
-        })
-        .collect();
-
-    pairing::start_host_session(
-        (*db).clone(),
-        pairing.inner().clone(),
-        pairing::HostInputs {
-            space,
-            members,
-            member_users,
-            owner_user,
-            host_display_name,
-            categories,
-            accounts,
-            transactions,
-            account_summaries,
-            space_settings,
-        },
-    )
-    .await
+    pairing::start_host_session((*db).clone(), pairing.inner().clone(), snapshot).await
 }
 
 #[tauri::command]
