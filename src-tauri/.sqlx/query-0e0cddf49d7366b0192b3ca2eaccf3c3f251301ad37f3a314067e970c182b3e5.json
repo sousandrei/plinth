@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Delete change_log rows that have been acknowledged by every\n-- required device. A required device is any trusted_devices entry\n-- (active or pending revocation), excluding the origin device itself,\n-- plus the local device (if it's not the origin).\n--\n-- Remote device acknowledgment: peer_acks.last_applied_seq >= origin_seq.\n-- Local device acknowledgment: sync_cursors.last_seq >= origin_seq.\n--\n-- A row is collectible only when NO required device is missing the\n-- acknowledgment. See data/PLAN.md Step 29.7.\nDELETE FROM change_log\nWHERE origin_device_id IS NOT NULL\n  AND origin_seq IS NOT NULL\n  AND NOT EXISTS (\n      SELECT 1\n      FROM trusted_devices td\n      WHERE td.space_id = change_log.space_id\n        AND td.device_id != change_log.origin_device_id\n        AND COALESCE(\n            (SELECT pa.last_applied_seq\n             FROM peer_acks pa\n             WHERE pa.space_id = td.space_id\n               AND pa.consuming_device_id = td.device_id\n               AND pa.origin_device_id = change_log.origin_device_id),\n            0\n        ) < change_log.origin_seq\n  )\n  AND NOT EXISTS (\n      SELECT 1\n      WHERE change_log.origin_device_id !=\n            (SELECT value FROM app_settings WHERE key = 'device_id')\n        AND COALESCE(\n            (SELECT sc.last_seq\n             FROM sync_cursors sc\n             WHERE sc.space_id = change_log.space_id\n               AND sc.peer_device_id = change_log.origin_device_id),\n            0\n        ) < change_log.origin_seq\n  )\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "0e0cddf49d7366b0192b3ca2eaccf3c3f251301ad37f3a314067e970c182b3e5"
+}

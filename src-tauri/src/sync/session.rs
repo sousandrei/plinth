@@ -647,9 +647,8 @@ where
                     })?;
                 }
             }
-            Frame::AppliedCursors(_) => {
-                // Peer's proof of commit — received but no action needed;
-                // cursor state was already advanced on the peer side.
+            Frame::AppliedCursors(cursors) => {
+                store_peer_acks(&db, &peer.device_id, &cursors.entries).await?;
             }
             Frame::Snapshot(chunk) => {
                 if snapshot_space.is_none() {
@@ -1110,6 +1109,31 @@ pub(crate) async fn apply_round_core(
     .map_err(|e| AppError::Db(format!("apply_round_core: {e}")))?;
 
     Ok(cursor_entries)
+}
+
+/// Persist a peer's `AppliedCursors` entries as real acknowledgments.
+/// Each entry says "peer `consuming_device_id` consumed changes from
+/// `origin_device_id` up to `last_seq`." This is the only source of
+/// truth for what a peer has acknowledged — never infer it from local
+/// receive cursors. See data/PLAN.md Step 29.6.
+pub(crate) async fn store_peer_acks(
+    db: &SqlitePool,
+    peer_device_id: &str,
+    entries: &[CursorEntry],
+) -> Result<(), AppError> {
+    for entry in entries {
+        sqlx::query_file!(
+            "queries/sync/upsert_peer_ack.sql",
+            entry.space_id,
+            peer_device_id,
+            entry.device_id,
+            entry.last_seq,
+        )
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("store_peer_acks: {e}")))?;
+    }
+    Ok(())
 }
 
 /// Apply one `ChangeBatch` atomically with its cursor advance, and emit

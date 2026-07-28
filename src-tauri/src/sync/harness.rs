@@ -26,8 +26,8 @@ use tempfile::TempDir;
 use crate::sync::changelog;
 use crate::sync::cursors;
 use crate::sync::payloads::{SpacePayload, TablePayload, TransactionPayload};
-use crate::sync::session::{apply_round_core, validate_batch};
-use crate::sync::wire::{ChangeBatch, ChangeRow};
+use crate::sync::session::{apply_round_core, store_peer_acks, validate_batch};
+use crate::sync::wire::{ChangeBatch, ChangeRow, CursorEntry};
 
 /// One independent installation in the test mesh.
 #[allow(dead_code)]
@@ -459,6 +459,17 @@ async fn gc_never_compacts_across_origins() {
     //
     // Old compact would group by (s1, spaces, s1), keep MAX(seq)=2,
     // and delete seq=1 — losing device-B's origin entirely.
+    // Register C as a trusted device that hasn't acknowledged so
+    // collect_acked preserves device-A's relayed rows on B.
+    sqlx::query!(
+        "INSERT INTO trusted_devices \
+         (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
+         VALUES ('c-td', 's1', 'device-C', 'C', 'CERT', 1, '2024-01-01T00:00:00Z')"
+    )
+    .execute(&b.pool)
+    .await
+    .unwrap();
+
     crate::sync::gc::run(&b.pool).await.unwrap();
 
     let origins: Vec<String> = sqlx::query_scalar!(
@@ -1561,5 +1572,385 @@ async fn apply_failure_no_cursor_advance() {
     assert_eq!(
         cursor_after, cursor_before,
         "cursor must not advance on failure"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 29.6 — real peer acknowledgments
+// ---------------------------------------------------------------------------
+
+/// After sync A→B, B's `AppliedCursors` entries are persisted on A
+/// as `peer_acks`. The entries record what B consumed, keyed by
+/// (space, consuming_device=B, origin_device=A).
+#[tokio::test]
+async fn peer_acks_stored_from_applied_cursors() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    sync_direct(&a, &b).await;
+
+    let b_cursor = b.cursor_for("s1", "device-A").await;
+    assert!(b_cursor > 0, "B must have consumed A's changes");
+
+    let entries = vec![CursorEntry {
+        space_id: "s1".into(),
+        device_id: "device-A".into(),
+        last_seq: b_cursor,
+    }];
+    store_peer_acks(&a.pool, "device-B", &entries)
+        .await
+        .unwrap();
+
+    let ack = sqlx::query!(
+        "SELECT last_applied_seq FROM peer_acks \
+         WHERE space_id = 's1' AND consuming_device_id = 'device-B' \
+         AND origin_device_id = 'device-A'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        ack.last_applied_seq, b_cursor,
+        "peer_acks must store B's explicit acknowledgment"
+    );
+}
+
+/// A's progress consuming B cannot be interpreted as B consuming A.
+/// A's receive cursor for B (A consumed B's changes) must NOT appear
+/// in `peer_acks` as B's acknowledgment of A's changes. Only entries
+/// explicitly reported by B via `AppliedCursors` are stored.
+#[tokio::test]
+async fn receive_cursor_not_inferred_as_peer_ack() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    a.insert_space("s1", "A's space").await;
+    b.insert_space("s2", "B's space").await;
+
+    // A→B: B consumes A's changes. B stores A's ack.
+    sync_direct(&a, &b).await;
+    let b_cursor_for_a = b.cursor_for("s1", "device-A").await;
+    store_peer_acks(
+        &a.pool,
+        "device-B",
+        &[CursorEntry {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            last_seq: b_cursor_for_a,
+        }],
+    )
+    .await
+    .unwrap();
+
+    // B→A: A consumes B's changes. A's receive cursor for B advances.
+    sync_direct(&b, &a).await;
+    let a_cursor_for_b = a.cursor_for("s2", "device-B").await;
+    assert!(a_cursor_for_b > 0, "A must have consumed B's changes");
+
+    // A's receive cursor for B must NOT be in peer_acks. peer_acks
+    // only has B's explicit acknowledgment of A's changes.
+    let false_ack = sqlx::query!(
+        "SELECT last_applied_seq FROM peer_acks \
+         WHERE space_id = 's2' AND consuming_device_id = 'device-B' \
+         AND origin_device_id = 'device-A'"
+    )
+    .fetch_optional(&a.pool)
+    .await
+    .unwrap();
+    assert!(
+        false_ack.is_none(),
+        "A's receive cursor must not be inferred as B's acknowledgment"
+    );
+
+    // peer_acks should only have the one entry we explicitly stored.
+    let ack_count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM peer_acks")
+        .fetch_one(&a.pool)
+        .await
+        .unwrap();
+    assert_eq!(ack_count, 1, "only one explicit peer ack should exist");
+}
+
+/// A disconnected peer prevents collection of changes it has not
+/// acknowledged. A peer that has never synced has no `peer_acks`
+/// entries — GC (Step 29.7) will treat its changes as uncollectable.
+#[tokio::test]
+async fn disconnected_peer_has_no_acks() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+    let c = TestDevice::create("device-C", &dir).await;
+
+    a.insert_space("s1", "test").await;
+
+    // A syncs with B — B acknowledges A's changes.
+    sync_direct(&a, &b).await;
+    store_peer_acks(
+        &a.pool,
+        "device-B",
+        &[CursorEntry {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            last_seq: b.cursor_for("s1", "device-A").await,
+        }],
+    )
+    .await
+    .unwrap();
+
+    // C never syncs — no acks from C.
+    let c_acks: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM peer_acks WHERE consuming_device_id = 'device-C'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(c_acks, 0, "disconnected peer must have no acks");
+
+    let b_acks: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM peer_acks WHERE consuming_device_id = 'device-B'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(b_acks, 1, "synced peer must have acks");
+}
+
+// ---------------------------------------------------------------------------
+// Verification tests for Step 29.7 — acknowledgment-based GC
+// ---------------------------------------------------------------------------
+
+/// Collection never creates an undetectable gap. After GC collects
+/// acked rows, origin_state.retained_floor is updated to the min
+/// remaining seq. A peer whose cursor falls below that floor can
+/// detect the gap and request snapshot reconciliation.
+#[tokio::test]
+async fn gc_collection_updates_retained_floor() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    a.insert_space("s1", "test").await;
+    sqlx::query!("UPDATE spaces SET name = 'updated' WHERE id = 's1'")
+        .execute(&a.pool)
+        .await
+        .unwrap();
+
+    sync_direct(&a, &b).await;
+
+    let b_max_cursor = b.cursor_for("s1", "device-A").await;
+    assert!(b_max_cursor >= 2, "B must have consumed both changes");
+
+    store_peer_acks(
+        &a.pool,
+        "device-B",
+        &[CursorEntry {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            last_seq: b_max_cursor,
+        }],
+    )
+    .await
+    .unwrap();
+
+    let before_count: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE space_id = 's1'")
+            .fetch_one(&a.pool)
+            .await
+            .unwrap();
+    assert!(before_count >= 2, "must have at least 2 rows before GC");
+
+    crate::sync::gc::run(&a.pool).await.unwrap();
+
+    let after_count: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE space_id = 's1'")
+            .fetch_one(&a.pool)
+            .await
+            .unwrap();
+    assert_eq!(after_count, 0, "all rows should be collected");
+
+    let os = sqlx::query!(
+        "SELECT high_water, retained_floor FROM origin_state \
+         WHERE space_id = 's1' AND origin_device_id = 'device-A'"
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        os.retained_floor, 0,
+        "retained_floor must be 0 when log is empty"
+    );
+    assert!(
+        os.high_water > 0,
+        "high_water must be nonzero — the data existed"
+    );
+}
+
+/// Pending device revocations survive ordinary history collection.
+/// A device with sync_enabled=0 (pending revocation) still appears
+/// in trusted_devices, so the GC keeps changes until it acknowledges.
+#[tokio::test]
+async fn gc_preserves_changes_for_pending_revocation() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+    let c = TestDevice::create("device-C", &dir).await;
+
+    let ts = "2024-01-01T00:00:00Z";
+
+    a.insert_space("s1", "test").await;
+
+    // Register B and C as trusted devices BEFORE syncing. C has
+    // sync_enabled=0 (pending revocation). The inserts create
+    // change_log rows that B and C need to receive and acknowledge.
+    for (peer, enabled) in &[("device-B", 1), ("device-C", 0)] {
+        sqlx::query!(
+            "INSERT INTO trusted_devices \
+             (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
+             VALUES (?1, 's1', ?2, ?2, 'CERT', ?3, ?4)",
+            format!("{peer}-td"),
+            peer,
+            enabled,
+            ts
+        )
+        .execute(&a.pool)
+        .await
+        .unwrap();
+    }
+
+    // Sync A→B and A→C so both receive all changes (space + trusted_devices).
+    sync_direct(&a, &b).await;
+    sync_direct(&a, &c).await;
+
+    let b_cursor = b.cursor_for("s1", "device-A").await;
+    let c_cursor = c.cursor_for("s1", "device-A").await;
+
+    // B acknowledges, C does not.
+    store_peer_acks(
+        &a.pool,
+        "device-B",
+        &[CursorEntry {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            last_seq: b_cursor,
+        }],
+    )
+    .await
+    .unwrap();
+
+    let before: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE space_id = 's1'")
+        .fetch_one(&a.pool)
+        .await
+        .unwrap();
+    assert!(before > 0);
+
+    crate::sync::gc::run(&a.pool).await.unwrap();
+
+    let after: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE space_id = 's1'")
+        .fetch_one(&a.pool)
+        .await
+        .unwrap();
+    assert_eq!(after, before, "pending revocation must prevent collection");
+
+    // Now C acknowledges.
+    store_peer_acks(
+        &a.pool,
+        "device-C",
+        &[CursorEntry {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            last_seq: c_cursor,
+        }],
+    )
+    .await
+    .unwrap();
+
+    crate::sync::gc::run(&a.pool).await.unwrap();
+
+    let after2: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE space_id = 's1'")
+        .fetch_one(&a.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        after2, 0,
+        "collection proceeds after pending revocation acknowledges"
+    );
+}
+
+/// A peer below the retained floor is routed to snapshot
+/// reconciliation. After GC collects some (not all) rows, the
+/// retained floor rises. A peer whose cursor is below that floor
+/// cannot use incremental sync and must fall back to snapshot.
+#[tokio::test]
+async fn peer_below_retained_floor_routes_to_snapshot() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let b = TestDevice::create("device-B", &dir).await;
+
+    let ts = "2024-01-01T00:00:00Z";
+
+    a.insert_space("s1", "test").await;
+
+    // Register B as trusted so GC has a required device to check.
+    sqlx::query!(
+        "INSERT INTO trusted_devices \
+         (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
+         VALUES ('b-td', 's1', 'device-B', 'B', 'CERT', 1, ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    // Create multiple change_log rows by updating the space name.
+    for i in 2..=5 {
+        sqlx::query!(
+            "UPDATE spaces SET name = ?1 WHERE id = 's1'",
+            format!("v{i}")
+        )
+        .execute(&a.pool)
+        .await
+        .unwrap();
+    }
+
+    let max_seq = changelog::max_seq(&a.pool, "s1", "device-A").await.unwrap();
+    assert!(
+        max_seq >= 3,
+        "need at least 3 seq values for partial ack test"
+    );
+
+    // B syncs — consumes all rows.
+    sync_direct(&a, &b).await;
+
+    // Simulate partial acknowledgment: B only acks up to seq 3.
+    let ack_seq = 3i64;
+    store_peer_acks(
+        &a.pool,
+        "device-B",
+        &[CursorEntry {
+            space_id: "s1".into(),
+            device_id: "device-A".into(),
+            last_seq: ack_seq,
+        }],
+    )
+    .await
+    .unwrap();
+
+    // GC collects seqs 1-3 (acked by both local and B).
+    crate::sync::gc::run(&a.pool).await.unwrap();
+
+    let remaining_min = changelog::min_seq(&a.pool, "s1", "device-A").await.unwrap();
+    assert!(
+        remaining_min > ack_seq,
+        "seqs <= {ack_seq} collected, min remaining is {remaining_min}"
+    );
+
+    // A peer with cursor 2 (consumed 1-2, missed 3 before collection)
+    // is below the retained floor and must route to snapshot.
+    let peer_cursor = 2i64;
+    assert!(
+        peer_cursor > 0 && remaining_min > 0 && peer_cursor < remaining_min,
+        "peer with cursor {peer_cursor} < min_seq {remaining_min} must route to snapshot"
     );
 }

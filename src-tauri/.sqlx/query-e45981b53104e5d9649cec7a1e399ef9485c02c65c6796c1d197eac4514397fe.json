@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Ensure origin_state entries exist for all origins currently in\n-- change_log, before GC collection. This must run BEFORE the DELETE\n-- so that origins whose rows are all collected still have an\n-- origin_state entry to update retained_floor to 0.\n-- high_water is MAX'd to ensure it never decreases.\nINSERT INTO origin_state (space_id, origin_device_id, high_water, retained_floor)\nSELECT\n    space_id,\n    origin_device_id,\n    COALESCE(MAX(origin_seq), 0),\n    COALESCE(MIN(origin_seq), 0)\nFROM change_log\nWHERE origin_device_id IS NOT NULL AND origin_seq IS NOT NULL\nGROUP BY space_id, origin_device_id\nON CONFLICT (space_id, origin_device_id) DO UPDATE\nSET high_water = MAX(excluded.high_water, origin_state.high_water)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e45981b53104e5d9649cec7a1e399ef9485c02c65c6796c1d197eac4514397fe"
+}

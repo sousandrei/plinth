@@ -8,20 +8,21 @@ use crate::error::AppError;
 /// Disabled passes:
 ///   - `compact`, `all_peers_consumed`, `cap_90_days` — can discard
 ///     changes that offline peers have not yet consumed. Replaced by
-///     acknowledgment-based collection in Phase 29. See `data/PLAN.md`
-///     Step 28.2.
+///     acknowledgment-based collection in Step 29.7.
 ///   - `orphan_users` — deleting a local profile solely because it has
 ///     no current `space_members` row is a user-facing policy decision,
 ///     not automatic cleanup. Explicit local profile deletion is
 ///     defined in Phase 32. See `data/PLAN.md` Step 28.3.
 ///
 /// Safe passes:
-///   1. Deleted spaces    — hard-delete soft-deleted space skeletons with no
-///      remaining change_log entries
-///   2. Orphan cleanup    — remove trusted_devices / evicted_devices for deleted spaces
+///   1. Deleted spaces       — hard-delete soft-deleted space skeletons
+///   2. Orphan cleanup       — remove trusted_devices for deleted spaces
+///   3. Collect acked        — delete change_log rows acknowledged by
+///      all required devices; update origin_state.retained_floor
 pub async fn run(db: &SqlitePool) -> Result<(), AppError> {
     deleted_spaces(db).await?;
     orphan_trusted_devices(db).await?;
+    collect_acked(db).await?;
     Ok(())
 }
 
@@ -65,6 +66,37 @@ async fn orphan_trusted_devices(db: &SqlitePool) -> Result<(), AppError> {
         .execute(db)
         .await
         .map_err(|e| AppError::Db(format!("gc_orphan_trusted_devices: {e}")))?;
+    Ok(())
+}
+
+/// Delete change_log rows acknowledged by every required active
+/// device (plus any pending-revocation target), and update
+/// origin_state.retained_floor in the same transaction. See
+/// data/PLAN.md Step 29.7.
+async fn collect_acked(db: &SqlitePool) -> Result<(), AppError> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("gc_collect begin: {e}")))?;
+
+    sqlx::query_file!("queries/sync/gc_ensure_origin_state.sql")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("gc_ensure_origin_state: {e}")))?;
+
+    sqlx::query_file!("queries/sync/gc_collect_acked.sql")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("gc_collect_acked: {e}")))?;
+
+    sqlx::query_file!("queries/sync/gc_update_origin_state.sql")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("gc_update_origin_state: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("gc_collect commit: {e}")))?;
     Ok(())
 }
 

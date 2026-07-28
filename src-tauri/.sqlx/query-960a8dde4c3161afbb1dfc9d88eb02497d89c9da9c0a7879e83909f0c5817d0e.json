@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Update origin_state.retained_floor after GC collection.\n-- retained_floor = MIN(origin_seq) of remaining rows, or 0 if empty.\n-- high_water is never decreased (it was already set by gc_ensure_origin_state).\n-- See data/PLAN.md Step 29.7.\nUPDATE origin_state\nSET retained_floor = COALESCE(\n    (SELECT MIN(cl.origin_seq) FROM change_log cl\n     WHERE cl.space_id = origin_state.space_id\n       AND cl.origin_device_id = origin_state.origin_device_id),\n    0\n)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "960a8dde4c3161afbb1dfc9d88eb02497d89c9da9c0a7879e83909f0c5817d0e"
+}
