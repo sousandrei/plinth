@@ -35,6 +35,11 @@ export const addSpaceMember = (userId: string): Promise<void> =>
 export const removeSpaceMember = (userId: string): Promise<void> =>
   invoke<void>('remove_space_member', { userId });
 
+export const removePersonAndExclusiveDevices = (
+  userId: string,
+): Promise<void> =>
+  invoke<void>('remove_person_and_exclusive_devices', { userId });
+
 export const leaveSpace = (): Promise<void> => invoke<void>('leave_space');
 
 export const deleteSpace = (): Promise<void> => invoke<void>('delete_space');

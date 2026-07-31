@@ -352,6 +352,72 @@ pub async fn remove_space_member(
 }
 
 #[tauri::command]
+pub async fn remove_person_and_exclusive_devices(
+    user_id: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
+) -> Result<(), AppError> {
+    let data = session.require()?;
+    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+
+    if user_id == data.user_id {
+        return Err(AppError::InvalidInput(
+            "use leave_space to remove yourself".into(),
+        ));
+    }
+
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("remove_person_and_exclusive_devices begin: {e}")))?;
+
+    let exclusive_devices = sqlx::query_file!(
+        "queries/spaces/list_exclusive_device_ids_for_user.sql",
+        data.space_id,
+        user_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("remove_person_and_exclusive_devices devices: {e}")))?;
+
+    for device in exclusive_devices {
+        sqlx::query_file!(
+            "queries/sync/delete_space_device.sql",
+            data.space_id,
+            device.device_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("remove_person_and_exclusive_devices device: {e}")))?;
+    }
+
+    let rows = sqlx::query_file!(
+        "queries/spaces/remove_space_member.sql",
+        data.space_id,
+        user_id
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("remove_person_and_exclusive_devices member: {e}")))?
+    .rows_affected();
+
+    if rows == 0 {
+        return Err(AppError::NotFound(format!(
+            "user {user_id} is not a member of space {}",
+            data.space_id
+        )));
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("remove_person_and_exclusive_devices commit: {e}")))?;
+    debounce.notify_mutation();
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn leave_space(
     session: State<'_, Session>,
     db: State<'_, DbPool>,

@@ -248,45 +248,52 @@ pub async fn create_user_in_space(
 }
 
 #[tauri::command]
-pub async fn remove_user(user_id: String, db: State<'_, DbPool>) -> Result<(), AppError> {
-    let user_count = sqlx::query_file!("queries/users/count_all_users.sql")
-        .fetch_one(db.inner())
+pub async fn delete_local_profile(
+    user_id: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
+) -> Result<(), AppError> {
+    let mut tx = db
+        .inner()
+        .begin()
         .await
-        .map_err(|e| AppError::Db(format!("remove_user count: {e}")))?
+        .map_err(|e| AppError::Db(format!("delete_local_profile begin: {e}")))?;
+
+    let membership_count = sqlx::query_file!("queries/users/count_user_memberships.sql", user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_local_profile memberships: {e}")))?
         .count;
 
-    if user_count <= 1 {
+    if membership_count > 0 {
         return Err(AppError::InvalidInput(
-            "cannot remove the only user in the app".into(),
+            "remove the profile from every space before deleting it locally".into(),
         ));
     }
 
-    let sole_owner_spaces = sqlx::query_file!("queries/users/count_sole_owner_spaces.sql", user_id)
-        .fetch_all(db.inner())
+    let rows = sqlx::query_file!("queries/users/delete_local_profile.sql", user_id)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| AppError::Db(format!("remove_user sole owner check: {e}")))?;
-
-    if !sole_owner_spaces.is_empty() {
-        let space_names: Vec<String> = sole_owner_spaces
-            .iter()
-            .map(|r| r.space_name.clone())
-            .collect();
-        return Err(AppError::InvalidInput(format!(
-            "user is the sole owner of: {}",
-            space_names.join(", ")
-        )));
-    }
-
-    let rows = sqlx::query_file!("queries/users/remove_user.sql", user_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("remove_user: {e}")))?
+        .map_err(|e| AppError::Db(format!("delete_local_profile: {e}")))?
         .rows_affected();
 
     if rows == 0 {
         return Err(AppError::NotFound(format!("user {user_id}")));
     }
 
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("delete_local_profile commit: {e}")))?;
+
+    let is_active = session
+        .require_user()
+        .map(|active| active.user_id == user_id)
+        .unwrap_or(false);
+    if is_active {
+        session.clear()?;
+    }
+    debounce.notify_mutation();
     Ok(())
 }
 

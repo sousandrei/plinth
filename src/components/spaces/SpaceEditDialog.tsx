@@ -5,12 +5,13 @@ import {
   deleteSpace,
   leaveSpace,
   listSpaceMembers,
+  removePersonAndExclusiveDevices,
   removeSpaceMember,
   renameSpace,
   updateMemberRole,
 } from '@/api/spaces';
 import { forceSyncNow } from '@/api/sync';
-import { addAppUser, listUsers, removeUser } from '@/api/users';
+import { addAppUser, listUsers } from '@/api/users';
 import { Button } from '@/components/ui/Button';
 import {
   Dialog,
@@ -55,14 +56,6 @@ export const SpaceEditDialog = ({
     queryFn: listUsers,
   });
 
-  const { data: userCount = 0 } = useQuery({
-    queryKey: ['user-count'],
-    queryFn: async () => {
-      const users = await listUsers();
-      return users.length;
-    },
-  });
-
   const isOwner = space.role === 'owner';
   const memberIds = new Set(members.map((m) => m.user_id));
   const addableUsers = allUsers.filter((u) => !memberIds.has(u.id));
@@ -88,13 +81,11 @@ export const SpaceEditDialog = ({
       queryClient.invalidateQueries({ queryKey: ['space-members', space.id] }),
   });
 
-  const removeFromAppMutation = useMutation({
-    mutationFn: (userId: string) => removeUser(userId),
+  const removePersonMutation = useMutation({
+    mutationFn: (userId: string) => removePersonAndExclusiveDevices(userId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['space-members', space.id] });
-      queryClient.invalidateQueries({ queryKey: ['users'] });
-      queryClient.invalidateQueries({ queryKey: ['user-count'] });
-      queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
+      queryClient.invalidateQueries({ queryKey: ['space-devices', space.id] });
     },
   });
 
@@ -258,15 +249,11 @@ export const SpaceEditDialog = ({
                   </Button>
                   <Button
                     variant="ghost"
-                    onClick={() => removeFromAppMutation.mutate(member.user_id)}
-                    disabled={
-                      removeFromAppMutation.isPending ||
-                      userCount <= 1 ||
-                      member.user_id === currentUserId
-                    }
+                    onClick={() => removePersonMutation.mutate(member.user_id)}
+                    disabled={removePersonMutation.isPending}
                     className="px-2 h-8 text-xs text-muted-foreground hover:text-expense rounded-none shrink-0 opacity-60 hover:opacity-100"
                   >
-                    Remove from app
+                    Remove person & devices
                   </Button>
                 </>
               ) : (

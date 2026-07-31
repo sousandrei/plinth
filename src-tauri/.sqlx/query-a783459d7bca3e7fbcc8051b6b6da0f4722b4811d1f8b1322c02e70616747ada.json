@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT COUNT(*) AS \"count!: i64\" FROM users\n",
+  "query": "SELECT COUNT(*) AS \"count!: i64\"\nFROM space_members\nWHERE user_id = ?\n",
   "describe": {
     "columns": [
       {
@@ -11,11 +11,11 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       false
     ]
   },
-  "hash": "010a0fdf1efd4879c033f945e2d66b93b615fe60223d4025eaa860df6c1366a6"
+  "hash": "a783459d7bca3e7fbcc8051b6b6da0f4722b4811d1f8b1322c02e70616747ada"
 }

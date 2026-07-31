@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT dug.device_id AS \"device_id!: String\"\nFROM device_user_grants dug\nWHERE dug.space_id = ?1\n  AND dug.user_id = ?2\n  AND NOT EXISTS (\n      SELECT 1\n      FROM device_user_grants other\n      WHERE other.space_id = dug.space_id\n        AND other.device_id = dug.device_id\n        AND other.user_id != dug.user_id\n  )\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_user_grants",
+            "name": "device_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0453ecb4894d952715fe7923661c590edded3b220c542c97f2c96c75b601e481"
+}

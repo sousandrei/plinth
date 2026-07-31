@@ -23,7 +23,7 @@ export const updateUserName = (userId: string, name: string): Promise<User> =>
 export const addAppUser = (name: string): Promise<User> =>
   invoke<User>('add_app_user', { name });
 
-export const removeUser = (userId: string): Promise<void> =>
-  invoke<void>('remove_user', { userId });
+export const deleteLocalProfile = (userId: string): Promise<void> =>
+  invoke<void>('delete_local_profile', { userId });
 
 export const factoryReset = (): Promise<void> => invoke<void>('factory_reset');

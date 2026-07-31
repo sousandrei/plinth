@@ -2818,6 +2818,114 @@ async fn remote_user_upsert_cannot_replace_local_credential() {
     assert!(!has_local_credential);
 }
 
+#[tokio::test]
+async fn removing_person_retires_only_exclusive_devices() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+
+    a.insert_space("s1", "Main").await;
+    sqlx::query!(
+        "INSERT INTO users (id, name, created_at, updated_at) VALUES ('u1', 'Alice', ?1, ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO space_members (space_id, user_id, role, joined_at) \
+         VALUES ('s1', 'u1', 'owner', ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO users (id, name, created_at, updated_at) VALUES ('u2', 'Bob', ?1, ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO space_members (space_id, user_id, role, joined_at) \
+         VALUES ('s1', 'u2', 'member', ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    for device_id in ["exclusive-device", "shared-device"] {
+        sqlx::query!(
+            "INSERT INTO devices (device_id, cert_pem, display_name) VALUES (?1, 'CERT', ?1)",
+            device_id
+        )
+        .execute(&a.pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO space_devices (space_id, device_id, paired_at) VALUES ('s1', ?1, ?2)",
+            device_id,
+            ts
+        )
+        .execute(&a.pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::query!(
+        "INSERT INTO device_user_grants (space_id, device_id, user_id, granted_at) \
+         VALUES ('s1', 'exclusive-device', 'u2', ?1), \
+                ('s1', 'shared-device', 'u2', ?1), \
+                ('s1', 'shared-device', 'u1', ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    let exclusive = sqlx::query_file!(
+        "queries/spaces/list_exclusive_device_ids_for_user.sql",
+        "s1",
+        "u2"
+    )
+    .fetch_all(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(exclusive.len(), 1);
+    assert_eq!(exclusive[0].device_id, "exclusive-device");
+
+    sqlx::query_file!(
+        "queries/sync/delete_space_device.sql",
+        "s1",
+        "exclusive-device"
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+    sqlx::query_file!("queries/spaces/remove_space_member.sql", "s1", "u2")
+        .execute(&a.pool)
+        .await
+        .unwrap();
+
+    let remaining_devices: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM space_devices WHERE space_id = 's1' AND device_id IN ('exclusive-device', 'shared-device')",
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(remaining_devices, 1);
+
+    let remaining_shared_grants: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM device_user_grants WHERE space_id = 's1' AND device_id = 'shared-device'",
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert_eq!(remaining_shared_grants, 1);
+}
+
 // ---------------------------------------------------------------------------
 // Verification tests for Step 31.2 — merge without echoes (tombstone honoring)
 // ---------------------------------------------------------------------------
