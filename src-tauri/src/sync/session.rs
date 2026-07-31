@@ -566,12 +566,12 @@ where
         crate::sync::snapshot::SnapshotFrame::AccountSummaries(chunk)
     })
     .await?;
-    stream_chunked(wr, &space_id_owned, snapshot.space_settings, |chunk| {
-        crate::sync::snapshot::SnapshotFrame::SpaceSettings(chunk)
-    })
-    .await?;
     stream_chunked(wr, &space_id_owned, snapshot.model_versions, |chunk| {
         crate::sync::snapshot::SnapshotFrame::ModelVersions(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.space_settings, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::SpaceSettings(chunk)
     })
     .await?;
     stream_chunked(wr, &space_id_owned, snapshot.high_water_vector, |chunk| {

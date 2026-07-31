@@ -35,6 +35,7 @@ use getrandom::fill;
 use serde::{Deserialize, Serialize};
 use spake2::{Ed25519Group, Identity as PakeIdentity, Password, Spake2};
 use sqlx::SqlitePool;
+use tauri::AppHandle;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -71,6 +72,7 @@ pub struct PairToken {
 // Wire types live in `snapshot` so they can be reused by the sync
 // session fallback. Re-exported here for backwards-compat callers.
 pub use crate::sync::snapshot::{SnapshotFrame, SpaceSnapshot, WireMember, WireSpace, WireUser};
+use crate::sync::wire::ModelData;
 
 /// Sent by the joiner. Tells the host who is joining and how to reach
 /// this device later.
@@ -107,6 +109,7 @@ struct PairHeader {
 enum PairFrame {
     Header(PairHeader),
     Chunk(SnapshotFrame),
+    ModelData(ModelData),
     End,
 }
 
@@ -189,6 +192,7 @@ pub async fn start_host_session(
     db: SqlitePool,
     state: Arc<PairingState>,
     snapshot: SpaceSnapshot,
+    app: AppHandle,
 ) -> Result<PairToken, AppError> {
     let space_id = snapshot.space.id.clone();
 
@@ -217,7 +221,14 @@ pub async fn start_host_session(
     tokio::spawn(async move {
         let result = tokio::time::timeout(
             Duration::from_secs(HANDSHAKE_DEADLINE_SECS),
-            run_host_session(listener, token_for_session.clone(), space_id, snapshot, db),
+            run_host_session(
+                listener,
+                token_for_session.clone(),
+                space_id,
+                snapshot,
+                db,
+                app,
+            ),
         )
         .await;
         // Always drop the token after the session ends or times out.
@@ -246,6 +257,7 @@ async fn run_host_session(
     space_id: String,
     snapshot: SpaceSnapshot,
     db: SqlitePool,
+    app: AppHandle,
 ) -> Result<(), AppError> {
     let (mut stream, _peer) = listener
         .accept()
@@ -305,12 +317,20 @@ async fn run_host_session(
         SnapshotFrame::AccountSummaries(c)
     })
     .await?;
-    stream_pair_chunks(&mut stream, &cipher, &snapshot.space_settings, |c| {
-        SnapshotFrame::SpaceSettings(c)
-    })
-    .await?;
     stream_pair_chunks(&mut stream, &cipher, &snapshot.model_versions, |c| {
         SnapshotFrame::ModelVersions(c)
+    })
+    .await?;
+    for manifest in &snapshot.model_versions {
+        let version = u32::try_from(manifest.version)
+            .map_err(|_| AppError::InvalidInput("pairing: invalid model version".into()))?;
+        if let Some(data) = crate::sync::model_sync::read_model(&app, &manifest.space_id, version)?
+        {
+            write_encrypted(&mut stream, &cipher, &PairFrame::ModelData(data)).await?;
+        }
+    }
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.space_settings, |c| {
+        SnapshotFrame::SpaceSettings(c)
     })
     .await?;
     stream_pair_chunks(&mut stream, &cipher, &snapshot.high_water_vector, |c| {
@@ -367,6 +387,7 @@ pub async fn run_joiner(
     address: String,
     joining_user: Option<WireUser>,
     device_display_name: String,
+    app: AppHandle,
 ) -> Result<PairingResult, AppError> {
     let (digits, target) = parse_address(&address)?;
     let identity = crate::sync::identity::ensure_identity(&db).await?;
@@ -426,7 +447,8 @@ pub async fn run_joiner(
     // The stream is moved into the closure so the remaining frames
     // can be read inside the transaction. A mid-stream failure rolls
     // back every DB write; the joiner can then retry pairing.
-    crate::sync::apply_guard::run_as_device(&db, &host_device_id, move |tx| {
+    let app_for_models = app.clone();
+    let model_data = crate::sync::apply_guard::run_as_device(&db, &host_device_id, move |tx| {
         Box::pin(async move {
             // Build a SpaceSnapshot skeleton from the header so we can
             // pass it to the reusable `apply_snapshot_frame` helper.
@@ -453,6 +475,7 @@ pub async fn run_joiner(
                 devices: Vec::new(),
                 space_devices: Vec::new(),
             };
+            let mut model_data = Vec::new();
             apply_header(tx, &header).await?;
             loop {
                 let frame: PairFrame = read_encrypted(&mut stream, &cipher).await?;
@@ -468,13 +491,21 @@ pub async fn run_joiner(
                         }
                         crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot, &chunk).await?;
                     }
+                    PairFrame::ModelData(data) => {
+                        if data.space_id != snapshot.space.id {
+                            return Err(AppError::InvalidInput(
+                                "pairing: model data space mismatch".into(),
+                            ));
+                        }
+                        model_data.push(data);
+                    }
                     PairFrame::End => {
                         stream.shutdown().await.ok();
                         break;
                     }
                 }
             }
-            Ok(())
+            Ok(model_data)
         })
     })
     .await
@@ -499,6 +530,10 @@ pub async fn run_joiner(
     )
     .await
     .map_err(|e| AppError::Db(format!("pairing install cursors: {e}")))?;
+
+    for data in model_data {
+        crate::sync::model_sync::apply_model(&app_for_models, &db, &data).await?;
+    }
 
     Ok(PairingResult {
         space_id,
@@ -797,4 +832,56 @@ async fn apply_header(
     .await?;
     crate::sync::snapshot::apply_snapshot_frame(tx, &skeleton, &SnapshotFrame::End).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::snapshot::{WireModelVersion, WireSpaceSetting};
+
+    #[test]
+    fn model_manifest_precedes_model_data_and_active_setting() {
+        let frames = [
+            PairFrame::Chunk(SnapshotFrame::ModelVersions(vec![WireModelVersion {
+                space_id: "space-1".into(),
+                version: 1,
+                weights_md5: "weights".into(),
+                card_md5: "card".into(),
+                trained_at: "2024-01-01T00:00:00Z".into(),
+            }])),
+            PairFrame::ModelData(ModelData {
+                space_id: "space-1".into(),
+                version: 1,
+                weights: vec![1, 2, 3],
+                card: vec![4, 5, 6],
+                weights_md5: "weights".into(),
+                card_md5: "card".into(),
+            }),
+            PairFrame::Chunk(SnapshotFrame::SpaceSettings(vec![WireSpaceSetting {
+                space_id: "space-1".into(),
+                key: "active_model_version".into(),
+                value: "1".into(),
+            }])),
+        ];
+
+        let decoded: Vec<PairFrame> = frames
+            .iter()
+            .map(|frame| {
+                postcard::from_bytes(
+                    &postcard::to_allocvec(frame).expect("pair frame should serialize"),
+                )
+                .expect("pair frame should deserialize")
+            })
+            .collect();
+
+        assert!(matches!(
+            &decoded[0],
+            PairFrame::Chunk(SnapshotFrame::ModelVersions(_))
+        ));
+        assert!(matches!(&decoded[1], PairFrame::ModelData(_)));
+        assert!(matches!(
+            &decoded[2],
+            PairFrame::Chunk(SnapshotFrame::SpaceSettings(_))
+        ));
+    }
 }

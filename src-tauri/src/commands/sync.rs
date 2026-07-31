@@ -225,7 +225,7 @@ pub async fn generate_pair_token(
     )
     .await?;
 
-    pairing::start_host_session((*db).clone(), pairing.inner().clone(), snapshot).await
+    pairing::start_host_session((*db).clone(), pairing.inner().clone(), snapshot, app).await
 }
 
 #[tauri::command]
@@ -236,6 +236,7 @@ pub async fn accept_pair_token_from_peer(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     registry: State<'_, PeerRegistry>,
+    app: AppHandle,
 ) -> Result<JoinResult, AppError> {
     let user_session = session.require_user()?;
 
@@ -262,8 +263,14 @@ pub async fn accept_pair_token_from_peer(
         updated_at: user_row.updated_at,
     };
 
-    let result =
-        pairing::run_joiner((*db).clone(), address, Some(joining), device_display_name).await?;
+    let result = pairing::run_joiner(
+        (*db).clone(),
+        address,
+        Some(joining),
+        device_display_name,
+        app,
+    )
+    .await?;
 
     Ok(JoinResult {
         space_id: result.space_id,
@@ -288,6 +295,7 @@ pub async fn join_space(
     device_display_name: String,
     db: State<'_, DbPool>,
     registry: State<'_, PeerRegistry>,
+    app: AppHandle,
 ) -> Result<SpaceUsers, AppError> {
     let peer = registry
         .snapshot()
@@ -297,7 +305,8 @@ pub async fn join_space(
 
     let pairing_port = peer.pairing_port.unwrap_or(PAIRING_PORT);
     let address = format!("{token}|{}:{}", peer.host, pairing_port);
-    let result = pairing::run_joiner((*db).clone(), address, None, device_display_name).await?;
+    let result =
+        pairing::run_joiner((*db).clone(), address, None, device_display_name, app).await?;
 
     Ok(SpaceUsers {
         space_id: result.space_id,
@@ -332,6 +341,7 @@ pub async fn accept_pair_token(
     device_display_name: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    app: AppHandle,
 ) -> Result<JoinResult, AppError> {
     let user_session = session.require_user()?;
 
@@ -349,8 +359,14 @@ pub async fn accept_pair_token(
         updated_at: user_row.updated_at,
     };
 
-    let result =
-        pairing::run_joiner((*db).clone(), address, Some(joining), device_display_name).await?;
+    let result = pairing::run_joiner(
+        (*db).clone(),
+        address,
+        Some(joining),
+        device_display_name,
+        app,
+    )
+    .await?;
 
     Ok(JoinResult {
         space_id: result.space_id,
