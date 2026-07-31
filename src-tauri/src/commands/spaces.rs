@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sqlx::{Sqlite, Transaction};
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
@@ -160,7 +161,7 @@ pub async fn list_my_spaces(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<Vec<Space>, AppError> {
-    let data = session.require_user()?;
+    let data = session.require_user_valid(db.inner()).await?;
 
     let rows = sqlx::query_file!("queries/spaces/list_spaces_for_user.sql", data.user_id)
         .fetch_all(db.inner())
@@ -190,7 +191,7 @@ pub async fn create_space(
         return Err(AppError::InvalidInput("space name cannot be empty".into()));
     }
 
-    let data = session.require()?;
+    let data = session.require_user_valid(db.inner()).await?;
     let space_id = create_space_for_user(&data.user_id, name.trim(), db.inner()).await?;
 
     let rows = sqlx::query_file!("queries/spaces/list_spaces_for_user.sql", data.user_id)
@@ -222,7 +223,7 @@ pub async fn set_active_space(
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
 ) -> Result<(), AppError> {
-    let data = session.require_user()?;
+    let data = session.require_user_valid(db.inner()).await?;
 
     let is_member = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, data.user_id)
         .fetch_optional(db.inner())
@@ -278,7 +279,7 @@ pub async fn list_space_members(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<Vec<SpaceMember>, AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
 
     let rows = sqlx::query_file!("queries/spaces/list_space_members.sql", data.space_id)
         .fetch_all(db.inner())
@@ -302,10 +303,15 @@ pub async fn add_space_member(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
-    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+    let data = session.require_valid(db.inner()).await?;
 
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("add_space_member begin: {e}")))?;
+    require_owner_tx(&mut tx, &data.space_id, &data.user_id).await?;
 
     sqlx::query_file!(
         "queries/spaces/add_space_member.sql",
@@ -314,9 +320,12 @@ pub async fn add_space_member(
         "member",
         now
     )
-    .execute(db.inner())
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("add_space_member: {e}")))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("add_space_member commit: {e}")))?;
 
     debounce.notify_mutation();
     Ok(())
@@ -329,12 +338,35 @@ pub async fn remove_space_member(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
-    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+    let data = session.require_valid(db.inner()).await?;
 
     if user_id == data.user_id {
         return Err(AppError::InvalidInput(
             "use leave_space to remove yourself".into(),
+        ));
+    }
+
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_member begin: {e}")))?;
+    require_owner_tx(&mut tx, &data.space_id, &data.user_id).await?;
+    let target = sqlx::query_file!("queries/spaces/get_member_role.sql", data.space_id, user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_member target: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("user {user_id} is not a member")))?;
+    if target.role == "owner"
+        && sqlx::query_file!("queries/spaces/count_space_owners.sql", data.space_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| AppError::Db(format!("remove_space_member owner count: {e}")))?
+            .count
+            <= 1
+    {
+        return Err(AppError::InvalidInput(
+            "cannot remove the last owner".into(),
         ));
     }
 
@@ -343,9 +375,12 @@ pub async fn remove_space_member(
         data.space_id,
         user_id
     )
-    .execute(db.inner())
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("remove_space_member: {e}")))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_member commit: {e}")))?;
 
     debounce.notify_mutation();
     Ok(())
@@ -358,8 +393,7 @@ pub async fn remove_person_and_exclusive_devices(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
-    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+    let data = session.require_valid(db.inner()).await?;
 
     if user_id == data.user_id {
         return Err(AppError::InvalidInput(
@@ -372,6 +406,29 @@ pub async fn remove_person_and_exclusive_devices(
         .begin()
         .await
         .map_err(|e| AppError::Db(format!("remove_person_and_exclusive_devices begin: {e}")))?;
+    require_owner_tx(&mut tx, &data.space_id, &data.user_id).await?;
+
+    let target = sqlx::query_file!("queries/spaces/get_member_role.sql", data.space_id, user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("remove_person_and_exclusive_devices target: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("user {user_id} is not a member")))?;
+    if target.role == "owner"
+        && sqlx::query_file!("queries/spaces/count_space_owners.sql", data.space_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                AppError::Db(format!(
+                    "remove_person_and_exclusive_devices owner count: {e}"
+                ))
+            })?
+            .count
+            <= 1
+    {
+        return Err(AppError::InvalidInput(
+            "cannot remove the last owner".into(),
+        ));
+    }
 
     let exclusive_devices = sqlx::query_file!(
         "queries/spaces/list_exclusive_device_ids_for_user.sql",
@@ -423,17 +480,37 @@ pub async fn leave_space(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
-
+    let data = session.require_valid(db.inner()).await?;
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("leave_space begin: {e}")))?;
+    let member = sqlx::query_file!(
+        "queries/spaces/get_member_role.sql",
+        data.space_id,
+        data.user_id
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("leave_space membership: {e}")))?
+    .ok_or(AppError::Forbidden)?;
     let count = sqlx::query_file!("queries/spaces/count_space_members.sql", data.space_id)
-        .fetch_one(db.inner())
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| AppError::Db(format!("leave_space count: {e}")))?
         .count;
-
-    if count <= 1 {
+    if count <= 1
+        || (member.role == "owner"
+            && sqlx::query_file!("queries/spaces/count_space_owners.sql", data.space_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| AppError::Db(format!("leave_space owner count: {e}")))?
+                .count
+                <= 1)
+    {
         return Err(AppError::InvalidInput(
-            "you are the last member; delete the space instead".into(),
+            "you are the last owner or member; delete the space instead".into(),
         ));
     }
 
@@ -442,9 +519,12 @@ pub async fn leave_space(
         data.space_id,
         data.user_id
     )
-    .execute(db.inner())
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("leave_space: {e}")))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("leave_space commit: {e}")))?;
 
     debounce.notify_mutation();
     session.clear_space()?;
@@ -457,8 +537,7 @@ pub async fn delete_space(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
-    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+    let data = session.require_valid(db.inner()).await?;
 
     let space_id = &data.space_id;
     let mut tx = db
@@ -466,6 +545,7 @@ pub async fn delete_space(
         .begin()
         .await
         .map_err(|e| AppError::Db(format!("delete_space begin: {e}")))?;
+    require_owner_tx(&mut tx, space_id, &data.user_id).await?;
 
     // Soft-delete the space row (no change_log entry — the update trigger
     // has WHEN NEW.deleted = 0).
@@ -582,18 +662,26 @@ pub async fn rename_space(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
-    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+    let data = session.require_valid(db.inner()).await?;
 
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("space name cannot be empty".into()));
     }
 
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("rename_space begin: {e}")))?;
+    require_owner_tx(&mut tx, &data.space_id, &data.user_id).await?;
     sqlx::query_file!("queries/spaces/rename_space.sql", name, now, data.space_id)
-        .execute(db.inner())
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Db(format!("rename_space: {e}")))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("rename_space commit: {e}")))?;
 
     debounce.notify_mutation();
     Ok(())
@@ -607,12 +695,36 @@ pub async fn update_member_role(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
-    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+    let data = session.require_valid(db.inner()).await?;
 
     if role != "owner" && role != "member" {
         return Err(AppError::InvalidInput(
             "role must be 'owner' or 'member'".into(),
+        ));
+    }
+
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("update_member_role begin: {e}")))?;
+    require_owner_tx(&mut tx, &data.space_id, &data.user_id).await?;
+    let target = sqlx::query_file!("queries/spaces/get_member_role.sql", data.space_id, user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("update_member_role target: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("user {user_id} is not a member")))?;
+    if role == "member"
+        && target.role == "owner"
+        && sqlx::query_file!("queries/spaces/count_space_owners.sql", data.space_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| AppError::Db(format!("update_member_role owner count: {e}")))?
+            .count
+            <= 1
+    {
+        return Err(AppError::InvalidInput(
+            "cannot demote the last owner".into(),
         ));
     }
 
@@ -622,9 +734,12 @@ pub async fn update_member_role(
         data.space_id,
         user_id
     )
-    .execute(db.inner())
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("update_member_role: {e}")))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("update_member_role commit: {e}")))?;
 
     debounce.notify_mutation();
     Ok(())
@@ -641,7 +756,7 @@ pub async fn export_space_data(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<ExportResult, AppError> {
-    let data = session.require_user()?;
+    let data = session.require_user_valid(db.inner()).await?;
     require_member(&space_id, &data.user_id, db.inner()).await?;
 
     let space = sqlx::query_file!("queries/spaces/get_space_name.sql", space_id)
@@ -718,7 +833,7 @@ pub async fn import_space_data(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<ImportResult, AppError> {
-    let data = session.require_user()?;
+    let data = session.require_user_valid(db.inner()).await?;
     require_member(&space_id, &data.user_id, db.inner()).await?;
 
     let file_contents = std::fs::read_to_string(&path)
@@ -826,11 +941,15 @@ pub async fn import_space_data(
 // Private helpers
 // ---------------------------------------------------------------------------
 
-async fn require_owner(space_id: &str, user_id: &str, db: &DbPool) -> Result<(), AppError> {
+async fn require_owner_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    space_id: &str,
+    user_id: &str,
+) -> Result<(), AppError> {
     let row = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, user_id)
-        .fetch_optional(db)
+        .fetch_optional(&mut **tx)
         .await
-        .map_err(|e| AppError::Db(format!("require_owner: {e}")))?;
+        .map_err(|e| AppError::Db(format!("require_owner_tx: {e}")))?;
 
     match row {
         None => Err(AppError::Forbidden),

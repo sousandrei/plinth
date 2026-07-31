@@ -97,6 +97,45 @@ impl Session {
         let guard = self.lock()?;
         guard.clone().ok_or(AppError::Unauthorized)
     }
+
+    pub async fn require_user_valid(&self, db: &sqlx::SqlitePool) -> Result<SessionData, AppError> {
+        let data = self.require_user()?;
+        let exists = sqlx::query_file!("queries/users/get_user.sql", data.user_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| AppError::Db(format!("validate session user: {e}")))?
+            .is_some();
+
+        if !exists {
+            self.clear()?;
+            return Err(AppError::Unauthorized);
+        }
+
+        Ok(data)
+    }
+
+    pub async fn require_valid(&self, db: &sqlx::SqlitePool) -> Result<ActiveSession, AppError> {
+        let data = self.require_user_valid(db).await?;
+        let space_id = data
+            .space_id
+            .ok_or_else(|| AppError::InvalidInput("no active space selected".into()))?;
+        let member =
+            sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, data.user_id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| AppError::Db(format!("validate session membership: {e}")))?
+                .is_some();
+
+        if !member {
+            self.clear_space()?;
+            return Err(AppError::Forbidden);
+        }
+
+        Ok(ActiveSession {
+            user_id: data.user_id,
+            space_id,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

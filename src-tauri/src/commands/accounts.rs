@@ -19,7 +19,7 @@ pub async fn list_accounts(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<Vec<Account>, AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
 
     let accounts =
         sqlx::query_file_as!(Account, "queries/accounts/list_accounts.sql", data.space_id)
@@ -46,7 +46,7 @@ pub async fn update_account(
         return Err(AppError::InvalidInput("color cannot be empty".into()));
     }
 
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
     let name = name.trim().to_string();
     let color = color.trim().to_string();
 
@@ -82,7 +82,7 @@ pub async fn delete_account(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
 
     // Verify the account belongs to the active space before touching anything.
     let exists = sqlx::query_file_as!(Account, "queries/accounts/get_account.sql", id)

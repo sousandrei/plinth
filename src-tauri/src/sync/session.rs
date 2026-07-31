@@ -1,6 +1,6 @@
 use serde::Serialize;
 use sqlx::{Sqlite, SqlitePool, Transaction};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
@@ -662,6 +662,7 @@ where
             }
             Frame::ChangesDone(_) => {
                 let entries = apply_round_core(&db, &peer.device_id, &staged_batches).await?;
+                clear_invalid_session(&app, &db).await;
                 let rows_count = staged_batches.iter().map(|b| b.rows.len()).sum::<usize>();
                 let spaces: std::collections::HashSet<&str> =
                     staged_batches.iter().map(|b| b.space_id.as_str()).collect();
@@ -728,6 +729,7 @@ where
                 if let (Some(space_id), Some(host)) = (snapshot_space.take(), snapshot_host.take())
                 {
                     apply_snapshot_stream(&db, host, &snapshot_buf).await?;
+                    clear_invalid_session(&app, &db).await;
                     let _ = app.emit(
                         "sync://applied",
                         SyncAppliedPayload {
@@ -775,6 +777,12 @@ where
         }
     }
     Ok(())
+}
+
+async fn clear_invalid_session(app: &AppHandle, db: &SqlitePool) {
+    if let Some(session) = app.try_state::<crate::Session>() {
+        let _ = session.require_valid(db).await;
+    }
 }
 
 /// Apply a buffered snapshot stream under `apply_guard` so the host

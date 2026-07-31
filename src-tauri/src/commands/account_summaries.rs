@@ -23,7 +23,7 @@ pub async fn list_account_summaries(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<AccountSummaryPage, AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
 
     let total = sqlx::query_file_scalar!(
         "queries/account_summaries/count_account_summaries.sql",
@@ -59,7 +59,7 @@ pub async fn upsert_account_summary(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
 
     let owned = sqlx::query_file_scalar!(
         "queries/accounts/count_account_in_space.sql",
@@ -96,7 +96,7 @@ pub async fn delete_account_summary(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
 
     let owned = sqlx::query_file_scalar!(
         "queries/accounts/count_account_in_space.sql",

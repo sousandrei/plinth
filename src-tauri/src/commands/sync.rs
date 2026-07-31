@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use sqlx::{Sqlite, Transaction};
 use tauri::{AppHandle, State};
 
 use crate::{
@@ -68,7 +69,7 @@ pub async fn record_device_user_grant(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let user_session = session.require_user()?;
+    let user_session = session.require_user_valid(db.inner()).await?;
     let identity = crate::sync::identity::ensure_identity(&db).await?;
 
     sqlx::query_file!(
@@ -103,7 +104,7 @@ pub async fn list_space_devices(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<Vec<SpaceDevice>, AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
     let rows = sqlx::query_file!("queries/sync/list_space_devices.sql", active.space_id)
         .fetch_all(&*db)
         .await
@@ -127,7 +128,7 @@ pub async fn remove_space_device(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
 
     let local_device_id_key = "device_id";
     let local_device_id =
@@ -159,14 +160,23 @@ pub async fn remove_space_device(
         // of the TLS trust set automatically.
     }
 
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_device begin: {e}")))?;
+    require_owner_tx(&mut tx, &active.space_id, &active.user_id).await?;
     sqlx::query_file!(
         "queries/sync/delete_space_device.sql",
         active.space_id,
         device_id
     )
-    .execute(&*db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("remove_space_device delete: {e}")))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_device commit: {e}")))?;
 
     debounce.notify_mutation();
     Ok(())
@@ -186,7 +196,7 @@ pub async fn set_space_device_trust_mode(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
 
     let mode: TrustMode = trust_mode.parse().map_err(|e: AppError| {
         AppError::InvalidInput(format!("set_space_device_trust_mode: {e}"))
@@ -204,13 +214,19 @@ pub async fn set_space_device_trust_mode(
         ));
     }
 
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("set_space_device_trust_mode begin: {e}")))?;
+    require_owner_tx(&mut tx, &active.space_id, &active.user_id).await?;
     let updated = sqlx::query_file!(
         "queries/sync/update_space_device_trust_mode.sql",
         active.space_id,
         device_id,
         mode
     )
-    .execute(&*db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("set_space_device_trust_mode: {e}")))?;
 
@@ -220,6 +236,9 @@ pub async fn set_space_device_trust_mode(
             active.space_id, device_id
         )));
     }
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("set_space_device_trust_mode commit: {e}")))?;
 
     debounce.notify_mutation();
     Ok(())
@@ -237,7 +256,16 @@ pub async fn generate_pair_token(
     pairing: State<'_, Arc<PairingState>>,
     app: AppHandle,
 ) -> Result<PairToken, AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("generate_pair_token begin: {e}")))?;
+    require_owner_tx(&mut tx, &active.space_id, &active.user_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("generate_pair_token commit: {e}")))?;
     let identity = crate::sync::identity::ensure_identity(&db).await?;
 
     let snapshot = crate::sync::snapshot::collect_snapshot(
@@ -263,7 +291,7 @@ pub async fn accept_pair_token_from_peer(
     registry: State<'_, PeerRegistry>,
     app: AppHandle,
 ) -> Result<JoinResult, AppError> {
-    let user_session = session.require_user()?;
+    let user_session = session.require_user_valid(db.inner()).await?;
 
     let peer = registry
         .snapshot()
@@ -367,7 +395,7 @@ pub async fn accept_pair_token(
     db: State<'_, DbPool>,
     app: AppHandle,
 ) -> Result<JoinResult, AppError> {
-    let user_session = session.require_user()?;
+    let user_session = session.require_user_valid(db.inner()).await?;
 
     let user_row = sqlx::query_file!("queries/sync/get_user.sql", user_session.user_id)
         .fetch_optional(&*db)
@@ -437,4 +465,21 @@ pub async fn list_quarantined_devices(
             quarantined_at: r.quarantined_at,
         })
         .collect())
+}
+
+async fn require_owner_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    space_id: &str,
+    user_id: &str,
+) -> Result<(), AppError> {
+    let row = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, user_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| AppError::Db(format!("require_owner_tx: {e}")))?;
+
+    match row {
+        None => Err(AppError::Forbidden),
+        Some(r) if r.role != "owner" => Err(AppError::Forbidden),
+        _ => Ok(()),
+    }
 }
