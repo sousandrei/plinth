@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "-- List every device's certificate for TLS verification. Replaces\n-- list_all_trusted_certs.sql from the trusted_devices era.\nSELECT\n    device_id  AS \"device_id!: String\",\n    cert_pem   AS \"cert_pem!: String\"\nFROM devices\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "cert_pem!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "cert_pem"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "cd620fae77b0cc47f8cca1b446c929da793ac1324626d7069b48f862efec45d9"
+}

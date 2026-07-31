@@ -16,7 +16,7 @@ pub async fn get_aggregations(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<HashMap<String, AggregatedMonth>, AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
 
     let spend_rows = sqlx::query_file!(
         "queries/aggregations/get_category_spend_by_month.sql",

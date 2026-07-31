@@ -44,8 +44,14 @@ rust-argon2 = "3.0.0"
 # Random salt generation
 getrandom = "0.4.3"
 
+# Direct dep of ring for handshake signature verification (Step 30.3).
+# rustls already pulls ring transitively, but we want a stable major
+# version pin in Cargo.toml so future rustls upgrades don't silently
+# change the API we depend on.
+ring = "0.17"
+
 # UUIDs for generated IDs
-uuid = { version = "1.23", features = ["v4"] }
+uuid = { version = "1.24", features = ["v4"] }
 
 # P2P sync — local network discovery
 gethostname = "1"
@@ -56,7 +62,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 
 # Import pipeline
 boa_engine = "0.21"
-calamine = { version = "0.36.0", features = ["dates"] }
+calamine = { version = "0.36", features = ["dates"] }
 csv = "1"
 md-5 = "0.11.0"
 pdf-extract = "0.12.0"
@@ -74,12 +80,14 @@ chacha20poly1305 = "0.11"
 postcard = { version = "1", features = ["alloc"] }
 rcgen = "0.14.8"
 rustls-pemfile = "2"
+sha2 = "0.11.0"
 spake2 = "0.4"
 tauri-plugin-updater = "2.10.1"
 tokio-rustls = { version = "0.26", default-features = false, features = [
     "ring",
     "tls12",
 ] }
+x509-parser = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.11", features = ["metal"] }
@@ -93,3 +101,7 @@ candle-transformers = { version = "0.11" }
 
 [features]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+
+[dev-dependencies]
+tempfile = "3"
+time = { version = "0.3", features = ["std"] }

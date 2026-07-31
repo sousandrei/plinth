@@ -11,14 +11,18 @@ use crate::error::AppError;
 pub type GuardedFuture<'c, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'c>>;
 
 /// Run `body` inside a SQLite transaction in which every change_log
-/// trigger fired by `body` will stamp `peer_device_id` instead of this
-/// device's own id. The override is set as the first statement of the
-/// transaction and cleared as the last; rollback on any error leaves
-/// `app_settings` exactly as it was before the call.
+/// trigger is suppressed and the `applying_as_device` override is set
+/// so any trigger that does fire stamps `peer_device_id`.
 ///
-/// This is the entry point every sync apply path must go through —
-/// without it, applied rows would echo back to the network on the
-/// next session.
+/// Both `applying_remote = 1` (suppresses all change_log triggers and
+/// auto-updated_at triggers) and `applying_as_device = <peer>` are set
+/// as the first statements of the transaction and cleared as the last;
+/// rollback on any error leaves `app_settings` exactly as it was before
+/// the call.
+///
+/// The caller must insert the incoming change_log row directly (with
+/// its original origin_device_id and origin_seq) before materializing
+/// the row body, since the triggers will not do it. See Step 29.2.
 ///
 /// The closure receives `&mut Transaction` so its writes happen on the
 /// same connection as the override; otherwise the trigger would see
@@ -39,14 +43,22 @@ where
     sqlx::query_file!("queries/sync/set_apply_override.sql", peer_device_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| AppError::Db(format!("apply_guard set: {e}")))?;
+        .map_err(|e| AppError::Db(format!("apply_guard set override: {e}")))?;
+    sqlx::query_file!("queries/sync/set_applying_remote.sql")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("apply_guard set remote: {e}")))?;
 
     let out = body(&mut tx).await?;
 
     sqlx::query_file!("queries/sync/clear_apply_override.sql")
         .execute(&mut *tx)
         .await
-        .map_err(|e| AppError::Db(format!("apply_guard clear: {e}")))?;
+        .map_err(|e| AppError::Db(format!("apply_guard clear override: {e}")))?;
+    sqlx::query_file!("queries/sync/clear_applying_remote.sql")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("apply_guard clear remote: {e}")))?;
 
     tx.commit()
         .await
@@ -117,18 +129,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writes_inside_guard_are_attributed_to_peer() {
+    async fn writes_inside_guard_do_not_echo() {
         let pool = fresh_pool().await;
 
-        // Insert a space without the guard — it should be attributed
-        // to the local device.
-        let s1_id = "s1";
-        let s1_name = "local space";
+        // Insert a space without the guard — triggers fire normally,
+        // creating a change_log row attributed to the local device.
         let ts = "2024-01-01T00:00:00Z";
         sqlx::query_file!(
             "queries/tests/insert_space_fixture.sql",
-            s1_id,
-            s1_name,
+            "s1",
+            "local space",
             ts,
             ts
         )
@@ -136,17 +146,17 @@ mod tests {
         .await
         .unwrap();
 
-        // Insert a space inside the guard — should be attributed to
-        // the peer.
+        // Insert a space inside the guard — triggers are suppressed
+        // (applying_remote = 1), so no change_log row is created. The
+        // space row IS materialized. The caller is responsible for
+        // inserting the change_log entry directly if relay is needed.
         run_as_device(&pool, "peer-xyz", |tx| {
             Box::pin(async move {
-                let s2_id = "s2";
-                let s2_name = "peer space";
                 let ts = "2024-01-01T00:00:00Z";
                 sqlx::query_file!(
                     "queries/tests/insert_space_fixture.sql",
-                    s2_id,
-                    s2_name,
+                    "s2",
+                    "peer space",
                     ts,
                     ts
                 )
@@ -164,10 +174,17 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(rows.len(), 2);
+        // Only the local write created a change_log row; the guarded
+        // write was suppressed.
+        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].row_id, "s1");
         assert_eq!(rows[0].device_id, "local-device");
-        assert_eq!(rows[1].row_id, "s2");
-        assert_eq!(rows[1].device_id, "peer-xyz");
+
+        // But the space row WAS materialized.
+        let s2_exists: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM spaces WHERE id = 's2'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(s2_exists, 1, "guarded write must materialize the row");
     }
 }

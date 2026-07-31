@@ -2,6 +2,7 @@ use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use sqlx::SqlitePool;
 
 use crate::error::AppError;
+use crate::sync::cert_validation;
 
 /// This device's persistent network identity.
 #[derive(Debug, Clone)]
@@ -15,6 +16,11 @@ pub struct DeviceIdentity {
 /// private key. The cert's Common Name is the `device_id`, so peers can
 /// cross-check the cert against the pairing handshake. Stored in
 /// `app_settings` for persistence.
+///
+/// Step 30.2: also writes the local device row into `devices` (via
+/// `upsert_device.sql`) so the trust set is populated before the
+/// first remote session. The cert is the locally-generated one, so
+/// every validation check passes trivially.
 pub async fn ensure_identity(db: &SqlitePool) -> Result<DeviceIdentity, AppError> {
     let rows = sqlx::query_file!("queries/sync/get_identity.sql")
         .fetch_all(db)
@@ -37,6 +43,10 @@ pub async fn ensure_identity(db: &SqlitePool) -> Result<DeviceIdentity, AppError
         .ok_or_else(|| AppError::Internal("device_id missing from app_settings".into()))?;
 
     if let (Some(cert_pem), Some(key_pem)) = (cert_pem, key_pem) {
+        // Make sure the local device row exists with DER + fingerprint
+        // populated, even if the migration that added those columns
+        // ran after the original cert was written.
+        register_local_device(db, &device_id, &cert_pem).await?;
         return Ok(DeviceIdentity {
             device_id,
             cert_pem,
@@ -73,9 +83,37 @@ pub async fn ensure_identity(db: &SqlitePool) -> Result<DeviceIdentity, AppError
         .await
         .map_err(|e| AppError::Db(format!("save device_key_pem: {e}")))?;
 
+    register_local_device(db, &device_id, &cert_pem).await?;
+
     Ok(DeviceIdentity {
         device_id,
         cert_pem,
         key_pem,
     })
+}
+
+async fn register_local_device(
+    db: &SqlitePool,
+    device_id: &str,
+    cert_pem: &str,
+) -> Result<(), AppError> {
+    let validated = cert_validation::parse_and_canonicalize(cert_pem)
+        .map_err(|e| AppError::Internal(format!("local cert invalid: {e}")))?;
+    // A self-issued cert always matches its own device_id; if not, the
+    // rcgen call above is broken, not the input.
+    cert_validation::check_device_id_match(&validated, device_id)
+        .map_err(|e| AppError::Internal(format!("local cert SAN mismatch: {e}")))?;
+    let display_name = String::new();
+    sqlx::query_file!(
+        "queries/sync/upsert_device.sql",
+        device_id,
+        cert_pem,
+        validated.der,
+        validated.fingerprint,
+        display_name
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("register local device: {e}")))?;
+    Ok(())
 }

@@ -1,6 +1,6 @@
 use serde::Serialize;
-use sqlx::SqlitePool;
-use tauri::{AppHandle, Emitter};
+use sqlx::{Sqlite, SqlitePool, Transaction};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
@@ -8,9 +8,10 @@ use crate::error::AppError;
 use crate::sync::apply_guard::{GuardedFuture, run_as_device};
 use crate::sync::cert_match::PeerIdentity;
 use crate::sync::frame;
+use crate::sync::payloads::TablePayload;
 use crate::sync::wire::{
-    Bye, ChangeBatch, ChangeRow, CursorEntry, Cursors, Frame, Hello, ModelVersionSummary,
-    PROTOCOL_VERSION, Pong,
+    AppliedCursors, Bye, ChangeBatch, ChangeRow, ChangesDone, CursorEntry, Cursors, Frame, Hello,
+    ModelVersionSummary, PROTOCOL_VERSION, Pong,
 };
 use crate::sync::{apply, changelog, cursors, model_sync};
 
@@ -29,7 +30,7 @@ pub struct SyncAppliedPayload {
 // ---------------------------------------------------------------------------
 
 /// Handle a freshly-accepted inbound mTLS session. The caller has already
-/// resolved `peer` from `trusted_devices`, so at least one shared space
+/// resolved `peer` from `space_devices`, so at least one shared space
 /// exists and the cert is trusted.
 ///
 /// Dispatches on the first frame. `Ping` is a presence-only heartbeat
@@ -163,6 +164,7 @@ where
 {
     let (cursors_tx, cursors_rx) = oneshot::channel::<Cursors>();
     let (model_versions_tx, model_versions_rx) = oneshot::channel::<ModelVersionSummary>();
+    let (applied_cursors_tx, applied_cursors_rx) = oneshot::channel::<AppliedCursors>();
 
     let db_recv = db.clone();
     let app_recv = app.clone();
@@ -176,6 +178,7 @@ where
         peer.clone(),
         cursors_rx,
         model_versions_rx,
+        applied_cursors_rx,
     );
     let recv_fut = recv_half(
         read_half,
@@ -185,6 +188,7 @@ where
         peer_recv,
         cursors_tx,
         model_versions_tx,
+        applied_cursors_tx,
     );
 
     let (send_res, recv_res) = tokio::join!(send_fut, recv_fut);
@@ -199,15 +203,9 @@ where
     recv_res?;
     send_res?;
 
-    for space_id in &peer.shared_space_ids {
-        let _ = sqlx::query_file!(
-            "queries/sync/delete_evicted_device.sql",
-            space_id,
-            peer.device_id
-        )
-        .execute(&db)
-        .await;
-    }
+    // Step 30.4: no eviction tombstone to clean up. A revoked peer
+    // simply has no space_devices row to begin with (the change_log
+    // DELETE row IS the durable record of revocation).
 
     Ok(())
 }
@@ -225,14 +223,15 @@ async fn send_half<W>(
     peer: PeerIdentity,
     cursors_rx: oneshot::Receiver<Cursors>,
     model_versions_rx: oneshot::Receiver<ModelVersionSummary>,
+    applied_cursors_rx: oneshot::Receiver<AppliedCursors>,
 ) -> Result<(), AppError>
 where
     W: AsyncWrite + Unpin,
 {
     // --- Cursor exchange ---
     let mut cursor_entries = Vec::new();
-    for space_id in &peer.shared_space_ids {
-        let devices = sqlx::query_file!("queries/sync/list_trusted_devices.sql", space_id)
+    for space_id in peer.outbound_spaces() {
+        let devices = sqlx::query_file!("queries/sync/list_space_devices.sql", space_id)
             .fetch_all(&db)
             .await
             .map_err(|e| AppError::Db(format!("session cursors query: {e}")))?;
@@ -241,7 +240,7 @@ where
             if d.device_id != local_device_id {
                 let last_seq = cursors::get(&db, space_id, &d.device_id).await?;
                 cursor_entries.push(CursorEntry {
-                    space_id: space_id.clone(),
+                    space_id: space_id.to_string(),
                     device_id: d.device_id,
                     last_seq,
                 });
@@ -262,7 +261,7 @@ where
 
     // --- Change batches ---
     for entry in &peer_cursors.entries {
-        if !peer.shared_space_ids.contains(&entry.space_id) {
+        if !peer.outbound_contains(&entry.space_id) {
             continue;
         }
         ship_batches(
@@ -272,6 +271,7 @@ where
             &entry.space_id,
             &entry.device_id,
             entry.last_seq,
+            &local_device_id,
         )
         .await?;
     }
@@ -280,21 +280,46 @@ where
         .iter()
         .map(|e| e.space_id.as_str())
         .collect();
-    for space_id in &peer.shared_space_ids {
-        if !mentioned.contains(space_id.as_str()) {
-            let devices = sqlx::query_file!("queries/sync/list_trusted_devices.sql", space_id)
+    for space_id in peer.outbound_spaces() {
+        if !mentioned.contains(space_id) {
+            let devices = sqlx::query_file!("queries/sync/list_space_devices.sql", space_id)
                 .fetch_all(&db)
                 .await
                 .map_err(|e| AppError::Db(format!("session fallback devices query: {e}")))?;
 
             for d in devices {
                 if d.device_id != peer.device_id {
-                    ship_batches(&mut wr, &db, &app, space_id, &d.device_id, 0).await?;
+                    ship_batches(
+                        &mut wr,
+                        &db,
+                        &app,
+                        space_id,
+                        &d.device_id,
+                        0,
+                        &local_device_id,
+                    )
+                    .await?;
                 }
             }
-            ship_batches(&mut wr, &db, &app, space_id, &local_device_id, 0).await?;
+            ship_batches(
+                &mut wr,
+                &db,
+                &app,
+                space_id,
+                &local_device_id,
+                0,
+                &local_device_id,
+            )
+            .await?;
         }
     }
+
+    // --- ChangesDone + AppliedCursors barrier ---
+    write_frame(&mut wr, &Frame::ChangesDone(ChangesDone {})).await?;
+    let applied = applied_cursors_rx.await.map_err(|_| {
+        AppError::Internal("session: recv half dropped before sending AppliedCursors".into())
+    })?;
+    write_frame(&mut wr, &Frame::AppliedCursors(applied)).await?;
 
     // --- Model version exchange ---
     // Sweep orphan files for each shared space BEFORE building the
@@ -302,13 +327,14 @@ where
     // propagated since the previous session, and the local files
     // matching that deletion should be removed now so the summary
     // doesn't claim we still have them.
-    for space_id in &peer.shared_space_ids {
+    let outbound_owned: Vec<String> = peer.outbound_spaces().map(|s| s.to_string()).collect();
+    for space_id in &outbound_owned {
         if let Err(e) = model_sync::gc_orphan_files(&db, &app, space_id).await {
             eprintln!("session: gc_orphan_files {space_id}: {e}");
         }
     }
 
-    let local_summary = model_sync::local_summary(&db, &app, &peer.shared_space_ids).await;
+    let local_summary = model_sync::local_summary(&db, &app, &outbound_owned).await;
     write_frame(&mut wr, &Frame::ModelVersionSummary(local_summary)).await?;
 
     let peer_summary = model_versions_rx.await.map_err(|_| {
@@ -323,7 +349,7 @@ where
     // integrity and canonical disagreement — happens in
     // `model_sync::apply_model` on the receiver side.
     for peer_entry in &peer_summary.entries {
-        if !peer.shared_space_ids.contains(&peer_entry.space_id) {
+        if !peer.outbound_contains(&peer_entry.space_id) {
             continue;
         }
         let peer_versions: std::collections::HashSet<u32> =
@@ -356,8 +382,10 @@ where
     Ok(())
 }
 
-/// Ship change_log rows for `(space_id, local_device_id)` with seq >
-/// peer_last_seq in batches of `DEFAULT_BATCH_LIMIT`.
+/// Ship change_log rows for `(space_id, device_id)` with seq >
+/// peer_last_seq in batches of `DEFAULT_BATCH_LIMIT`. `transport_device_id`
+/// is the local device's ID — stamped on every batch so the receiver
+/// can verify it against the TLS peer identity.
 async fn ship_batches<W>(
     wr: &mut W,
     db: &SqlitePool,
@@ -365,37 +393,57 @@ async fn ship_batches<W>(
     space_id: &str,
     device_id: &str,
     peer_last_seq: i64,
+    transport_device_id: &str,
 ) -> Result<(), AppError>
 where
     W: AsyncWrite + Unpin,
 {
-    let final_seq = changelog::max_seq(db, space_id, device_id).await?;
-    let min_seq = changelog::min_seq(db, space_id, device_id).await?;
+    let gap = sqlx::query_file!("queries/sync/get_origin_gap_state.sql", space_id, device_id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| AppError::Db(format!("get_origin_gap_state: {e}")))?;
 
-    if peer_last_seq > 0 && min_seq > 0 && peer_last_seq < min_seq {
+    let v2_required = sqlx::query_file!("queries/sync/get_v2_reconciliation.sql", space_id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| AppError::Db(format!("get_v2_reconciliation: {e}")))?
+        .required;
+
+    let effective_high_water = gap.high_water.max(gap.live_max_seq);
+    let effective_floor = if gap.live_min_seq > 0 {
+        gap.live_min_seq
+    } else {
+        gap.retained_floor
+    };
+
+    let needs_reconciliation = v2_required == 1
+        || (effective_high_water > 0 && gap.live_max_seq == 0)
+        || (peer_last_seq > 0 && peer_last_seq < effective_floor)
+        || (peer_last_seq > effective_high_water);
+
+    if needs_reconciliation {
         eprintln!(
-            "session: peer cursor {peer_last_seq} < min_seq {min_seq} for space {space_id} device {device_id}; \
-             streaming full snapshot"
+            "session: reconciliation required for space {space_id} device {device_id} \
+             (v2_required={v2_required}, high_water={}, live_max={}, floor={}, peer_cursor={peer_last_seq})",
+            effective_high_water, gap.live_max_seq, effective_floor
         );
         stream_space_snapshot(wr, db, app, space_id, device_id).await?;
         write_frame(wr, &Frame::SnapshotEnd).await?;
-        // After the snapshot is applied, the joiner is caught up to
-        // final_seq by construction (the snapshot contains every row
-        // currently in the synced tables). Emit an empty batch to mark
-        // the cursor advance.
         write_frame(
             wr,
             &Frame::Batch(ChangeBatch {
                 space_id: space_id.to_string(),
-                device_id: device_id.to_string(),
+                origin_device_id: device_id.to_string(),
+                transport_device_id: transport_device_id.to_string(),
                 rows: vec![],
-                final_seq,
+                final_seq: effective_high_water,
             }),
         )
         .await?;
         return Ok(());
     }
 
+    let final_seq = gap.live_max_seq;
     let mut last_sent = peer_last_seq;
     loop {
         let rows = changelog::read_since(
@@ -421,7 +469,8 @@ where
             wr,
             &Frame::Batch(ChangeBatch {
                 space_id: space_id.to_string(),
-                device_id: device_id.to_string(),
+                origin_device_id: device_id.to_string(),
+                transport_device_id: transport_device_id.to_string(),
                 rows,
                 final_seq: batch_final,
             }),
@@ -454,7 +503,7 @@ where
     let display_name = gethostname::gethostname().to_string_lossy().into_owned();
     let snapshot = crate::sync::snapshot::collect_snapshot(
         db,
-        app,
+        Some(app),
         space_id,
         identity.device_id.clone(),
         display_name,
@@ -464,10 +513,10 @@ where
 
     let space_id_owned = snapshot.space.id.clone();
 
-    // First chunk: space + members + users + categories (the seed
-    // data needed before any of the dependent tables can be inserted).
-    // Categories are seeded in `create_space` on a fresh space, so they
-    // fit comfortably in one frame.
+    // First chunk: space + users + members (the seed data needed
+    // before any of the dependent tables can be inserted). Users must
+    // precede members because `space_members.user_id` has a FK to
+    // `users(id)`.
     write_frame(
         wr,
         &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
@@ -480,7 +529,7 @@ where
         wr,
         &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
             space_id: space_id_owned.clone(),
-            frame: crate::sync::snapshot::SnapshotFrame::Members(snapshot.members.clone()),
+            frame: crate::sync::snapshot::SnapshotFrame::Users(snapshot.users.clone()),
         }),
     )
     .await?;
@@ -488,11 +537,27 @@ where
         wr,
         &Frame::Snapshot(crate::sync::wire::SnapshotChunk {
             space_id: space_id_owned.clone(),
-            frame: crate::sync::snapshot::SnapshotFrame::Users(snapshot.users.clone()),
+            frame: crate::sync::snapshot::SnapshotFrame::Members(snapshot.members.clone()),
         }),
     )
     .await?;
 
+    stream_chunked(wr, &space_id_owned, snapshot.devices, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::Devices(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.durable_revocations, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::DurableRevocations(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.space_devices, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::SpaceDevices(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.device_user_grants, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::DeviceUserGrants(chunk)
+    })
+    .await?;
     stream_chunked(wr, &space_id_owned, snapshot.categories, |chunk| {
         crate::sync::snapshot::SnapshotFrame::Categories(chunk)
     })
@@ -509,12 +574,20 @@ where
         crate::sync::snapshot::SnapshotFrame::AccountSummaries(chunk)
     })
     .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.model_versions, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::ModelVersions(chunk)
+    })
+    .await?;
     stream_chunked(wr, &space_id_owned, snapshot.space_settings, |chunk| {
         crate::sync::snapshot::SnapshotFrame::SpaceSettings(chunk)
     })
     .await?;
-    stream_chunked(wr, &space_id_owned, snapshot.model_versions, |chunk| {
-        crate::sync::snapshot::SnapshotFrame::ModelVersions(chunk)
+    stream_chunked(wr, &space_id_owned, snapshot.high_water_vector, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::HighWaterVector(chunk)
+    })
+    .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.row_winners, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::RowWinners(chunk)
     })
     .await?;
 
@@ -562,24 +635,26 @@ async fn recv_half<R>(
     peer: PeerIdentity,
     cursors_tx: oneshot::Sender<Cursors>,
     model_versions_tx: oneshot::Sender<ModelVersionSummary>,
+    applied_cursors_tx: oneshot::Sender<AppliedCursors>,
 ) -> Result<(), AppError>
 where
     R: AsyncRead + Unpin,
 {
+    let _ = &local_device_id; // used by apply_batch (not called in this path yet)
+
     // Cursors
     let peer_cursors = expect_cursors(&mut rd).await?;
     cursors_tx.send(peer_cursors).map_err(|_| {
         AppError::Internal("session: send half dropped before receiving Cursors".into())
     })?;
 
-    // Frame loop: ChangeBatch* (or Snapshot* SnapshotEnd Batch) then
-    // ModelVersionSummary then ModelData* then Bye
+    // Frame loop: Batch* (staged) then ChangesDone (applies round)
+    // then AppliedCursors (proof) then ModelVersionSummary then
+    // ModelData* then Bye. Snapshots are handled inline as before.
     let mut peer_model_summary_sent = false;
     let mut model_versions_tx = Some(model_versions_tx);
-    // When the host streams a full snapshot for one space, it sends
-    // Snapshot* frames followed by SnapshotEnd. We accumulate the
-    // chunks, apply them under apply_guard once SnapshotEnd arrives,
-    // then continue with the normal Batch flow.
+    let mut applied_cursors_tx = Some(applied_cursors_tx);
+    let mut staged_batches: Vec<ChangeBatch> = Vec::new();
     let mut snapshot_buf: Vec<crate::sync::wire::SnapshotChunk> = Vec::new();
     let mut snapshot_space: Option<String> = None;
     let mut snapshot_host: Option<crate::sync::snapshot::SpaceSnapshot> = None;
@@ -587,7 +662,35 @@ where
         let frame = crate::sync::frame::read_frame(&mut rd).await?;
         match frame {
             Frame::Batch(batch) => {
-                apply_batch(&db, &local_device_id, &peer, batch, &app).await?;
+                staged_batches.push(batch);
+            }
+            Frame::ChangesDone(_) => {
+                let entries = apply_round_core(&db, &peer.device_id, &staged_batches).await?;
+                clear_invalid_session(&app, &db).await;
+                let rows_count = staged_batches.iter().map(|b| b.rows.len()).sum::<usize>();
+                let spaces: std::collections::HashSet<&str> =
+                    staged_batches.iter().map(|b| b.space_id.as_str()).collect();
+                for space_id in &spaces {
+                    let _ = app.emit(
+                        "sync://applied",
+                        SyncAppliedPayload {
+                            space_id: space_id.to_string(),
+                            rows: rows_count as u64,
+                            snapshot: false,
+                        },
+                    );
+                }
+                staged_batches.clear();
+                if let Some(tx) = applied_cursors_tx.take() {
+                    tx.send(AppliedCursors { entries }).map_err(|_| {
+                        AppError::Internal(
+                            "session: send half dropped before receiving AppliedCursors".into(),
+                        )
+                    })?;
+                }
+            }
+            Frame::AppliedCursors(cursors) => {
+                store_peer_acks(&db, &peer.device_id, &cursors.entries).await?;
             }
             Frame::Snapshot(chunk) => {
                 if snapshot_space.is_none() {
@@ -597,6 +700,14 @@ where
                     let identity = crate::sync::identity::ensure_identity(&db).await?;
                     let display_name = gethostname::gethostname().to_string_lossy().into_owned();
                     snapshot_host = Some(crate::sync::snapshot::SpaceSnapshot {
+                        snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+                        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+                        snapshot_id: String::new(),
+                        host_device_id: identity.device_id.clone(),
+                        host_device_name: display_name,
+                        host_cert_pem: identity.cert_pem.clone(),
+                        high_water_vector: vec![],
+                        row_winners: vec![],
                         space: crate::sync::snapshot::WireSpace {
                             id: String::new(),
                             name: String::new(),
@@ -611,9 +722,10 @@ where
                         account_summaries: vec![],
                         space_settings: vec![],
                         model_versions: vec![],
-                        host_device_id: identity.device_id.clone(),
-                        host_device_name: display_name,
-                        host_cert_pem: identity.cert_pem.clone(),
+                        devices: vec![],
+                        space_devices: vec![],
+                        device_user_grants: vec![],
+                        durable_revocations: vec![],
                     });
                 }
                 snapshot_buf.push(chunk);
@@ -622,6 +734,7 @@ where
                 if let (Some(space_id), Some(host)) = (snapshot_space.take(), snapshot_host.take())
                 {
                     apply_snapshot_stream(&db, host, &snapshot_buf).await?;
+                    clear_invalid_session(&app, &db).await;
                     let _ = app.emit(
                         "sync://applied",
                         SyncAppliedPayload {
@@ -650,7 +763,7 @@ where
                         "session: ModelData arrived before ModelVersionSummary".into(),
                     ));
                 }
-                if peer.shared_space_ids.contains(&data.space_id)
+                if peer.inbound_contains(&data.space_id)
                     && let Err(e) = model_sync::apply_model(&app, &db, &data).await
                 {
                     eprintln!(
@@ -671,39 +784,505 @@ where
     Ok(())
 }
 
+async fn clear_invalid_session(app: &AppHandle, db: &SqlitePool) {
+    if let Some(session) = app.try_state::<crate::Session>() {
+        let _ = session.require_valid(db).await;
+    }
+}
+
 /// Apply a buffered snapshot stream under `apply_guard` so the host
 /// device (not the local device) is stamped as the author of every
 /// change_log row. The body collapses the chunk buffer back into a
 /// `SpaceSnapshot` and reuses `snapshot::apply_snapshot_frame`.
+///
+/// Step 31.2: after the apply transaction commits, install the
+/// complete cursor vector in a separate transaction so subsequent
+/// incremental syncs pick up where the snapshot left off (instead of
+/// re-shipping the entire backlog from seq=1).
 async fn apply_snapshot_stream(
     db: &SqlitePool,
-    mut snapshot: crate::sync::snapshot::SpaceSnapshot,
+    snapshot: crate::sync::snapshot::SpaceSnapshot,
     chunks: &[crate::sync::wire::SnapshotChunk],
 ) -> Result<(), AppError> {
+    // Step 31.2: verify the snapshot boundary BEFORE opening the apply
+    // transaction. A mixed-space or unsupported-version snapshot must
+    // be rejected outright — partial apply would leak hostile state.
+    let expected_space_id = snapshot.space.id.clone();
+    crate::sync::snapshot::verify_snapshot_boundary(
+        &expected_space_id,
+        snapshot.snapshot_schema_version,
+        chunks,
+    )?;
+
     // Apply each frame independently so a mid-stream failure aborts the
     // whole batch (apply_guard transaction rolls back).
+    //
+    // The snapshot skeleton is built from `collect_snapshot` (session
+    // path) or the pair-header (pairing path), so `snapshot.space.id`
+    // is populated from the start — the End frame's trusted_device
+    // upsert can find the space without needing to lift it from a
+    // later chunk.
     let host_device_id = snapshot.host_device_id.clone();
     let chunks_owned: Vec<_> = chunks.to_vec();
+    let snapshot_for_apply = snapshot.clone();
     crate::sync::apply_guard::run_as_device(db, &host_device_id, move |tx| {
         Box::pin(async move {
             for chunk in &chunks_owned {
-                crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot, &chunk.frame).await?;
-                // Lift the space identity out of the first Space frame
-                // so the End frame's trusted_device upsert can find it.
-                if let crate::sync::snapshot::SnapshotFrame::Space(s) = &chunk.frame {
-                    snapshot.space = s.clone();
-                }
+                crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot_for_apply, &chunk.frame)
+                    .await?;
             }
             Ok(())
         })
     })
     .await
     .map_err(|e| AppError::Db(format!("apply_snapshot_stream: {e}")))?;
+
+    // Step 31.2: install cursor vector AFTER commit. Separate tx so a
+    // crash here is detectable and the next sync can safely re-snapshot.
+    crate::sync::snapshot::install_snapshot_cursors(
+        db,
+        &expected_space_id,
+        &snapshot.high_water_vector,
+        &snapshot.host_device_id,
+    )
+    .await
+    .map_err(|e| AppError::Db(format!("apply_snapshot_stream cursors: {e}")))?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Batch validation — Step 29.4
+// ---------------------------------------------------------------------------
+
+/// Validate a `ChangeBatch` before any writes. Rejects atomically:
+/// if any row fails, the entire batch is refused without side effects.
+///
+/// Check 1 (transport device trusted for the space) is handled by the
+/// caller via `PeerIdentity::inbound_contains` — this function covers
+/// checks 2–7.
+pub(crate) fn validate_batch(batch: &ChangeBatch) -> Result<(), AppError> {
+    let batch_space = &batch.space_id;
+    let batch_origin = &batch.origin_device_id;
+    let mut prev_seq: i64 = 0;
+
+    for row in &batch.rows {
+        if row.device_id != *batch_origin {
+            return Err(AppError::InvalidInput(format!(
+                "validate_batch: row origin {} != batch origin {}",
+                row.device_id, batch_origin
+            )));
+        }
+
+        if row.space_id != *batch_space {
+            return Err(AppError::InvalidInput(format!(
+                "validate_batch: row space {} != batch space {}",
+                row.space_id, batch_space
+            )));
+        }
+
+        match row.operation.as_str() {
+            "insert" | "update" => {
+                let payload = row.payload.as_ref().ok_or_else(|| {
+                    AppError::InvalidInput(format!(
+                        "validate_batch: missing payload for {}/{}",
+                        row.table_name, row.operation
+                    ))
+                })?;
+                if payload.as_table_name() != row.table_name {
+                    return Err(AppError::InvalidInput(format!(
+                        "validate_batch: payload variant {} != table_name {}",
+                        payload.as_table_name(),
+                        row.table_name
+                    )));
+                }
+                validate_payload_keys(row, payload)?;
+            }
+            "delete" => {
+                validate_delete_key(row, batch_space)?;
+            }
+            other => {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: unknown operation {other:?}"
+                )));
+            }
+        }
+
+        if row.seq <= 0 {
+            return Err(AppError::InvalidInput(format!(
+                "validate_batch: non-positive seq {}",
+                row.seq
+            )));
+        }
+        if row.seq <= prev_seq {
+            return Err(AppError::InvalidInput(format!(
+                "validate_batch: seq {} not strictly monotonic (prev {})",
+                row.seq, prev_seq
+            )));
+        }
+        prev_seq = row.seq;
+    }
+
+    Ok(())
+}
+
+/// Verify that the payload's logical keys match the row envelope
+/// (`row_id` and `space_id`). Each table has its own key shape.
+fn validate_payload_keys(row: &ChangeRow, payload: &TablePayload) -> Result<(), AppError> {
+    fn mismatch(field: &str, expected: &str, actual: &str) -> AppError {
+        AppError::InvalidInput(format!(
+            "validate_batch: payload key mismatch: {field}: expected {expected:?}, got {actual:?}"
+        ))
+    }
+
+    match payload {
+        TablePayload::Space(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("space.id", &p.id, &row.row_id));
+            }
+            if p.id != row.space_id {
+                return Err(mismatch("space.id/space_id", &p.id, &row.space_id));
+            }
+        }
+        TablePayload::SpaceMember(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch("member.space_id", &p.space_id, &row.space_id));
+            }
+            let expected = format!("{}:{}", p.space_id, p.user_id);
+            if expected != row.row_id {
+                return Err(mismatch("member.row_id", &expected, &row.row_id));
+            }
+        }
+        TablePayload::Account(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("account.id", &p.id, &row.row_id));
+            }
+            if p.space_id != row.space_id {
+                return Err(mismatch("account.space_id", &p.space_id, &row.space_id));
+            }
+        }
+        TablePayload::Category(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("category.id", &p.id, &row.row_id));
+            }
+            if p.space_id != row.space_id {
+                return Err(mismatch("category.space_id", &p.space_id, &row.space_id));
+            }
+        }
+        TablePayload::Transaction(p) => {
+            if p.id != row.row_id {
+                return Err(mismatch("transaction.id", &p.id, &row.row_id));
+            }
+        }
+        TablePayload::AccountSummary(p) => {
+            let expected = format!("{}:{}", p.account_id, p.month);
+            if expected != row.row_id {
+                return Err(mismatch("summary.row_id", &expected, &row.row_id));
+            }
+        }
+        TablePayload::SpaceSetting(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch("setting.space_id", &p.space_id, &row.space_id));
+            }
+            let expected = format!("{}:{}", p.space_id, p.key);
+            if expected != row.row_id {
+                return Err(mismatch("setting.row_id", &expected, &row.row_id));
+            }
+        }
+        TablePayload::SpaceDevice(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch("device.space_id", &p.space_id, &row.space_id));
+            }
+            let expected = format!("{}:{}", p.space_id, p.device_id);
+            if expected != row.row_id {
+                return Err(mismatch("device.row_id", &expected, &row.row_id));
+            }
+        }
+        TablePayload::DeviceUserGrant(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch(
+                    "device_user_grant.space_id",
+                    &p.space_id,
+                    &row.space_id,
+                ));
+            }
+            let expected = format!("{}:{}:{}", p.space_id, p.device_id, p.user_id);
+            if expected != row.row_id {
+                return Err(mismatch("device_user_grant.row_id", &expected, &row.row_id));
+            }
+        }
+        TablePayload::DurableRevocation(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch(
+                    "durable_revocation.space_id",
+                    &p.space_id,
+                    &row.space_id,
+                ));
+            }
+            if p.revocation_id != row.row_id {
+                return Err(mismatch(
+                    "durable_revocation.revocation_id",
+                    &p.revocation_id,
+                    &row.row_id,
+                ));
+            }
+        }
+        TablePayload::ModelVersion(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch("model.space_id", &p.space_id, &row.space_id));
+            }
+            let expected = format!("{}:{}", p.space_id, p.version);
+            if expected != row.row_id {
+                return Err(mismatch("model.row_id", &expected, &row.row_id));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verify composite delete keys are well-formed and scoped to the
+/// outer space. Single-PK tables (accounts, categories, transactions)
+/// need no composite-key check.
+fn validate_delete_key(row: &ChangeRow, batch_space_id: &str) -> Result<(), AppError> {
+    match row.table_name.as_str() {
+        "spaces" => {
+            if row.row_id != row.space_id {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: spaces delete row_id {} != space_id {}",
+                    row.row_id, row.space_id
+                )));
+            }
+        }
+        "space_members" | "space_settings" | "model_versions" | "space_devices" => {
+            let parts: Vec<&str> = row.row_id.splitn(2, ':').collect();
+            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: invalid composite delete key {:?} for {}",
+                    row.row_id, row.table_name
+                )));
+            }
+            if parts[0] != batch_space_id {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: delete key space {} != batch space {}",
+                    parts[0], batch_space_id
+                )));
+            }
+        }
+        "device_user_grants" => {
+            let parts: Vec<&str> = row.row_id.split(':').collect();
+            if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: invalid composite delete key {:?} for device_user_grants",
+                    row.row_id
+                )));
+            }
+            if parts[0] != batch_space_id {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: delete key space {} != batch space {}",
+                    parts[0], batch_space_id
+                )));
+            }
+        }
+        "durable_revocations" => {
+            if row.row_id.is_empty() || row.space_id != batch_space_id {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: invalid durable revocation delete key {:?}",
+                    row.row_id
+                )));
+            }
+        }
+        "account_summaries" => {
+            let parts: Vec<&str> = row.row_id.splitn(2, ':').collect();
+            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: invalid composite delete key {:?} for account_summaries",
+                    row.row_id
+                )));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Apply one remote change_log row with Lamport revision tracking.
+///
+/// 1. Raises the local sequence clock to at least the incoming seq.
+/// 2. Inserts the change_log row (for relay) with its original origin.
+/// 3. Compares `(origin_seq, origin_device_id)` against the current
+///    winner. A losing revision is skipped — the row body is not
+///    materialized.
+/// 4. If the incoming revision wins, upserts `row_winners` and
+///    materializes the row body via `apply_change`.
+///
+/// Must be called inside `run_as_device` so triggers are suppressed.
+pub(crate) async fn apply_remote_row(
+    tx: &mut Transaction<'_, Sqlite>,
+    row: &ChangeRow,
+) -> Result<(), AppError> {
+    sqlx::query_file!("queries/sync/raise_sync_seq.sql", row.seq)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| AppError::Db(format!("raise_sync_seq: {e}")))?;
+
+    let payload_json = row.payload.as_ref().and_then(|p| p.to_json().ok());
+    sqlx::query_file!(
+        "queries/sync/insert_remote_change_log.sql",
+        row.id,
+        row.space_id,
+        row.table_name,
+        row.row_id,
+        row.operation,
+        payload_json,
+        row.seq,
+        row.device_id,
+        row.device_id,
+        row.seq,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("insert_remote_change_log: {e}")))?;
+
+    let existing = sqlx::query_file!(
+        "queries/sync/get_row_winner.sql",
+        row.space_id,
+        row.table_name,
+        row.row_id
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("get_row_winner: {e}")))?;
+
+    let incoming_wins = match existing {
+        None => true,
+        Some(e) => {
+            row.seq > e.winning_seq
+                || (row.seq == e.winning_seq && row.device_id > e.winning_origin)
+        }
+    };
+
+    if !incoming_wins {
+        return Ok(());
+    }
+
+    let is_delete: i64 = if row.operation == "delete" { 1 } else { 0 };
+    sqlx::query_file!(
+        "queries/sync/upsert_row_winner.sql",
+        row.space_id,
+        row.table_name,
+        row.row_id,
+        row.seq,
+        row.device_id,
+        is_delete,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_row_winner: {e}")))?;
+
+    apply::apply_change(tx, row).await
+}
+
+// ---------------------------------------------------------------------------
+// Round-based apply — Step 29.5
+// ---------------------------------------------------------------------------
+
+/// Foreign-key-safe table ordering. Tables with lower priority are
+/// applied first so that child rows (e.g. transactions) never
+/// reference a parent (e.g. account) that hasn't been inserted yet.
+fn table_priority(table_name: &str) -> u8 {
+    match table_name {
+        "spaces" => 0,
+        "accounts" | "categories" | "space_settings" | "model_versions" => 1,
+        "durable_revocations" => 2,
+        "space_devices" => 3,
+        "space_members" => 4,
+        "device_user_grants" => 5,
+        "transactions" | "account_summaries" => 6,
+        _ => 4,
+    }
+}
+
+/// Apply a complete sync round: validate all batches, flatten rows,
+/// sort by foreign-key-safe order, apply inside one `run_as_device`
+/// transaction, and advance all cursors. Returns the cursor entries
+/// that should be reported back to the sender via `AppliedCursors`.
+///
+/// This is the core logic shared by the production recv half and the
+/// test harness. The production wrapper adds transport-identity
+/// verification and event emission.
+pub(crate) async fn apply_round_core(
+    db: &SqlitePool,
+    transport_device_id: &str,
+    batches: &[ChangeBatch],
+) -> Result<Vec<CursorEntry>, AppError> {
+    for batch in batches {
+        validate_batch(batch)?;
+    }
+
+    let mut all_rows: Vec<ChangeRow> = batches
+        .iter()
+        .flat_map(|b| b.rows.iter().cloned())
+        .collect();
+    all_rows.sort_by_key(|r| (table_priority(&r.table_name), r.seq));
+
+    let cursor_entries: Vec<CursorEntry> = batches
+        .iter()
+        .map(|b| CursorEntry {
+            space_id: b.space_id.clone(),
+            device_id: b.origin_device_id.clone(),
+            last_seq: b.final_seq,
+        })
+        .collect();
+
+    let rows = all_rows;
+    let cursors = cursor_entries.clone();
+    run_as_device(db, transport_device_id, move |tx| {
+        let rows = rows.clone();
+        let cursors = cursors.clone();
+        Box::pin(async move {
+            for row in &rows {
+                apply_remote_row(tx, row).await?;
+            }
+            for c in &cursors {
+                cursors::advance(tx, &c.space_id, &c.device_id, c.last_seq).await?;
+            }
+            Ok::<(), AppError>(())
+        })
+    })
+    .await
+    .map_err(|e| AppError::Db(format!("apply_round_core: {e}")))?;
+
+    Ok(cursor_entries)
+}
+
+/// Persist a peer's `AppliedCursors` entries as real acknowledgments.
+/// Each entry says "peer `consuming_device_id` consumed changes from
+/// `origin_device_id` up to `last_seq`." This is the only source of
+/// truth for what a peer has acknowledged — never infer it from local
+/// receive cursors. See data/PLAN.md Step 29.6.
+pub(crate) async fn store_peer_acks(
+    db: &SqlitePool,
+    peer_device_id: &str,
+    entries: &[CursorEntry],
+) -> Result<(), AppError> {
+    for entry in entries {
+        sqlx::query_file!(
+            "queries/sync/upsert_peer_ack.sql",
+            entry.space_id,
+            peer_device_id,
+            entry.device_id,
+            entry.last_seq,
+        )
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("store_peer_acks: {e}")))?;
+    }
     Ok(())
 }
 
 /// Apply one `ChangeBatch` atomically with its cursor advance, and emit
 /// `sync://evicted` if this device's own trusted_devices row was deleted.
+#[allow(dead_code)]
 async fn apply_batch(
     db: &SqlitePool,
     local_device_id: &str,
@@ -711,9 +1290,11 @@ async fn apply_batch(
     batch: ChangeBatch,
     app: &AppHandle,
 ) -> Result<(), AppError> {
-    if !peer.shared_space_ids.contains(&batch.space_id) {
+    if !peer.inbound_contains(&batch.space_id) {
         return Ok(());
     }
+
+    validate_batch(&batch)?;
 
     let kind = classify_batch(&batch.rows, local_device_id);
     let is_space_deletion = matches!(kind, BatchKind::SpaceDeletion);
@@ -721,23 +1302,23 @@ async fn apply_batch(
 
     let space_id = batch.space_id.clone();
     let evicted_space_id = batch.space_id.clone();
-    let batch_device_id = batch.device_id.clone();
+    let batch_device_id = batch.origin_device_id.clone();
     let final_seq = batch.final_seq;
     let batch_space_id = batch.space_id.clone();
 
     if evicted {
-        let deleted_ids: Vec<String> = batch
+        let deleted_device_ids: Vec<String> = batch
             .rows
             .iter()
-            .filter(|r| r.table_name == "trusted_devices" && r.operation == "delete")
-            .map(|r| r.row_id.clone())
+            .filter(|r| r.table_name == "space_devices" && r.operation == "delete")
+            .filter_map(|r| r.row_id.split(':').nth(1).map(String::from))
             .collect();
 
         let own_rows = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM trusted_devices WHERE device_id = ?1 AND id IN (\
-             SELECT value FROM json_each(?2))",
+            "SELECT COUNT(*) FROM space_devices WHERE device_id = ?1 \
+             AND device_id IN (SELECT value FROM json_each(?2))",
             local_device_id,
-            serde_json::to_string(&deleted_ids).unwrap_or_default()
+            serde_json::to_string(&deleted_device_ids).unwrap_or_default()
         )
         .fetch_one(db)
         .await
@@ -749,7 +1330,7 @@ async fn apply_batch(
                 let device_id_inner = device_id_for_closure.clone();
                 Box::pin(async move {
                     for row in &batch.rows {
-                        apply::apply_change(tx, row).await?;
+                        apply_remote_row(tx, row).await?;
                     }
                     cursors::advance(tx, &space_id, &device_id_inner, final_seq).await?;
                     Ok(())
@@ -769,7 +1350,7 @@ async fn apply_batch(
         let device_id_inner = device_id_for_closure.clone();
         Box::pin(async move {
             for row in &batch.rows {
-                apply::apply_change(tx, row).await?;
+                apply_remote_row(tx, row).await?;
             }
             cursors::advance(tx, &batch_space_id, &device_id_inner, final_seq).await?;
             Ok(())
@@ -801,6 +1382,7 @@ async fn apply_batch(
 /// Classify a change batch to determine if it represents a space deletion
 /// (suppresses eviction detection) or a potential device revocation
 /// (triggers the eviction DB check). See PLAN.md §9.5.
+#[allow(dead_code)]
 enum BatchKind {
     SpaceDeletion,
     PotentialEviction,
@@ -809,12 +1391,13 @@ enum BatchKind {
 
 /// A batch containing a `spaces` delete is a space-deletion propagation.
 /// We suppress the eviction check for the whole batch in that case, since
-/// the `trusted_devices` deletes that ride along are cascade effects of the
+/// the `space_devices` deletes that ride along are cascade effects of the
 /// space deletion, not an explicit device revocation. The only way both
 /// could coexist in one batch is if a space deletion and an unrelated
 /// device revocation happened to share the same shipping window —
 /// acceptable risk: the revoked device's data is gone either way, and the
 /// next batch from the same peer will re-trigger eviction detection.
+#[allow(dead_code)]
 fn classify_batch(rows: &[ChangeRow], local_device_id: &str) -> BatchKind {
     if rows
         .iter()
@@ -823,9 +1406,7 @@ fn classify_batch(rows: &[ChangeRow], local_device_id: &str) -> BatchKind {
         return BatchKind::SpaceDeletion;
     }
     if rows.iter().any(|r| {
-        r.table_name == "trusted_devices"
-            && r.operation == "delete"
-            && r.device_id != local_device_id
+        r.table_name == "space_devices" && r.operation == "delete" && r.device_id != local_device_id
     }) {
         return BatchKind::PotentialEviction;
     }
@@ -888,7 +1469,7 @@ mod tests {
         let rows = vec![
             change_row("space_members", "delete", "peer-1"),
             change_row("spaces", "delete", "peer-1"),
-            change_row("trusted_devices", "delete", "peer-1"),
+            change_row("space_devices", "delete", "peer-1"),
         ];
         assert!(matches!(
             classify_batch(&rows, "local"),
@@ -898,18 +1479,18 @@ mod tests {
 
     #[test]
     fn classify_batch_detects_device_revocation() {
-        let rows = vec![change_row("trusted_devices", "delete", "peer-1")];
+        let rows = vec![change_row("space_devices", "delete", "peer-1")];
         assert!(matches!(
             classify_batch(&rows, "local"),
             BatchKind::PotentialEviction
         ));
     }
 
-    /// A trusted_devices delete authored by us is an echo of our own
+    /// A space_devices delete authored by us is an echo of our own
     /// change coming back — not an eviction.
     #[test]
     fn classify_batch_ignores_own_device_revocation() {
-        let rows = vec![change_row("trusted_devices", "delete", "local")];
+        let rows = vec![change_row("space_devices", "delete", "local")];
         assert!(matches!(classify_batch(&rows, "local"), BatchKind::Normal));
     }
 

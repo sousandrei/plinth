@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Snapshot: list per-origin high-water vector and retained floors for a space.\nSELECT origin_device_id, high_water, retained_floor\nFROM origin_state\nWHERE space_id = ?1\nORDER BY origin_device_id ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "origin_device_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "origin_state",
+            "name": "origin_device_id"
+          }
+        }
+      },
+      {
+        "name": "high_water",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "origin_state",
+            "name": "high_water"
+          }
+        }
+      },
+      {
+        "name": "retained_floor",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "origin_state",
+            "name": "retained_floor"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2941801d4159a0eba75d07e1b9847f4d40d00e3f447f2df9ab78e091bb52e364"
+}

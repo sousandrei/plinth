@@ -30,7 +30,7 @@ const setupMocks = () => {
   setMock('rename_space', null);
   setMock('update_member_role', null);
   setMock('remove_space_member', null);
-  setMock('remove_user', null);
+  setMock('remove_person_and_exclusive_devices', null);
   setMock('add_space_member', null);
   setMock('add_app_user', {
     id: 'u4',

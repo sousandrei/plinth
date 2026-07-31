@@ -4,9 +4,9 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::sync::conflict_detector::{self, HotFieldConflict, LocalSnapshot};
 use crate::sync::payloads::{
-    AccountPayload, AccountSummaryPayload, CategoryPayload, ModelVersionPayload,
-    SpaceMemberPayload, SpacePayload, SpaceSettingPayload, TablePayload, TransactionPayload,
-    TrustedDevicePayload, UserSnapshot,
+    AccountPayload, AccountSummaryPayload, CategoryPayload, DeviceUserGrantPayload,
+    DurableRevocationPayload, ModelVersionPayload, SpaceDevicePayload, SpaceMemberPayload,
+    SpacePayload, SpaceSettingPayload, TablePayload, TransactionPayload, UserSnapshot,
 };
 use crate::sync::wire::ChangeRow;
 
@@ -63,7 +63,9 @@ async fn apply_upsert(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
         TablePayload::Transaction(p) => upsert_transaction(tx, row, p).await,
         TablePayload::AccountSummary(p) => upsert_account_summary(tx, p).await,
         TablePayload::SpaceSetting(p) => upsert_space_setting(tx, p).await,
-        TablePayload::TrustedDevice(p) => upsert_trusted_device(tx, p).await,
+        TablePayload::SpaceDevice(p) => upsert_space_device(tx, row, p).await,
+        TablePayload::DeviceUserGrant(p) => upsert_device_user_grant(tx, p).await,
+        TablePayload::DurableRevocation(p) => upsert_durable_revocation(tx, p).await,
         TablePayload::ModelVersion(p) => upsert_model_version(tx, p).await,
     }
 }
@@ -132,11 +134,38 @@ async fn apply_delete(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
                 .await
                 .map_err(|e| AppError::Db(format!("delete_space_setting: {e}")))?;
         }
-        "trusted_devices" => {
-            sqlx::query_file!("queries/sync/apply/delete_trusted_device.sql", row.row_id)
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| AppError::Db(format!("delete_trusted_device: {e}")))?;
+        "space_devices" => {
+            let (space_id, device_id) = split_composite(&row.row_id, "space_devices")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_space_device.sql",
+                space_id,
+                device_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("delete_space_device: {e}")))?;
+        }
+        "device_user_grants" => {
+            let (space_id, device_id, user_id) =
+                split_triple_composite(&row.row_id, "device_user_grants")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_device_user_grant.sql",
+                space_id,
+                device_id,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("delete_device_user_grant: {e}")))?;
+        }
+        "durable_revocations" => {
+            sqlx::query_file!(
+                "queries/sync/apply/delete_durable_revocation.sql",
+                row.row_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("delete_durable_revocation: {e}")))?;
         }
         "model_versions" => {
             // Trigger emits row_id as `space_id:version` (see
@@ -157,6 +186,125 @@ async fn apply_delete(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
         other => {
             return Err(AppError::InvalidInput(format!(
                 "apply_delete: unknown table {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Delete a tombstoned row from its source table during snapshot apply.
+/// Dispatch is identical to `apply_delete` but takes the row identity
+/// directly (no `ChangeRow` wrapping). Used by the snapshot merge path
+/// after `row_winners` with `deleted = 1` are installed — the row
+/// materialization step may have re-created a previously-deleted row,
+/// so this pass is required to clean up stale state on the receiver.
+///
+/// Like `apply_delete`, this function is idempotent on non-existent rows
+/// and is safe to call inside `apply_guard::run_as_device` (triggers are
+/// suppressed, so no echo change_log entries are written).
+pub async fn apply_tombstone(
+    tx: &mut Transaction<'_, Sqlite>,
+    table_name: &str,
+    row_id: &str,
+) -> Result<(), AppError> {
+    match table_name {
+        "spaces" => {
+            sqlx::query_file!("queries/sync/apply/soft_delete_space.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone spaces: {e}")))?;
+        }
+        "space_members" => {
+            let (space_id, user_id) = split_composite(row_id, "space_members")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_space_member.sql",
+                space_id,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone space_members: {e}")))?;
+        }
+        "accounts" => {
+            sqlx::query_file!("queries/sync/apply/delete_account.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone accounts: {e}")))?;
+        }
+        "categories" => {
+            sqlx::query_file!("queries/sync/apply/delete_category.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone categories: {e}")))?;
+        }
+        "transactions" => {
+            sqlx::query_file!("queries/sync/apply/delete_transaction.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone transactions: {e}")))?;
+        }
+        "account_summaries" => {
+            let (account_id, month) = split_composite(row_id, "account_summaries")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_account_summary.sql",
+                month,
+                account_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone account_summaries: {e}")))?;
+        }
+        "space_settings" => {
+            let (space_id, key) = split_composite(row_id, "space_settings")?;
+            sqlx::query_file!("queries/sync/apply/delete_space_setting.sql", space_id, key)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone space_settings: {e}")))?;
+        }
+        "space_devices" => {
+            let (space_id, device_id) = split_composite(row_id, "space_devices")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_space_device.sql",
+                space_id,
+                device_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone space_devices: {e}")))?;
+        }
+        "device_user_grants" => {
+            let (space_id, device_id, user_id) =
+                split_triple_composite(row_id, "device_user_grants")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_device_user_grant.sql",
+                space_id,
+                device_id,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone device_user_grants: {e}")))?;
+        }
+        "durable_revocations" => {
+            sqlx::query_file!("queries/sync/apply/delete_durable_revocation.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone durable_revocations: {e}")))?;
+        }
+        "model_versions" => {
+            let (space_id, version) = split_composite(row_id, "model_versions")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_model_version.sql",
+                space_id,
+                version
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone model_versions: {e}")))?;
+        }
+        other => {
+            return Err(AppError::InvalidInput(format!(
+                "apply_tombstone: unknown table {other}"
             )));
         }
     }
@@ -216,7 +364,6 @@ async fn upsert_embedded_user(
         "queries/sync/apply/upsert_user.sql",
         u.id,
         u.name,
-        u.pin_hash,
         u.created_at,
         u.updated_at
     )
@@ -329,23 +476,71 @@ async fn upsert_space_setting(
     Ok(())
 }
 
-async fn upsert_trusted_device(
+async fn upsert_space_device(
     tx: &mut Transaction<'_, Sqlite>,
-    p: &TrustedDevicePayload,
+    row: &ChangeRow,
+    p: &SpaceDevicePayload,
 ) -> Result<(), AppError> {
+    // Step 30.2: change_log only carries the device_id (no cert).
+    // Validation against a real cert happens in the pairing /
+    // snapshot paths, not here. We accept the stub and let the
+    // pairing-time gate enforce fingerprint uniqueness when the
+    // actual cert arrives.
+    sqlx::query_file!("queries/sync/apply/upsert_device_stub.sql", p.device_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| AppError::Db(format!("upsert_device_stub: {e}")))?;
+
     sqlx::query_file!(
-        "queries/sync/apply/upsert_trusted_device.sql",
-        p.id,
+        "queries/sync/apply/upsert_space_device_guarded.sql",
         p.space_id,
         p.device_id,
-        p.display_name,
-        p.cert_pem,
-        p.sync_enabled,
-        p.paired_at
+        p.trust_mode,
+        p.paired_at,
+        row.seq
     )
     .execute(&mut **tx)
     .await
-    .map_err(|e| AppError::Db(format!("upsert_trusted_device: {e}")))?;
+    .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_device_user_grant(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: &DeviceUserGrantPayload,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_device_user_grant.sql",
+        p.space_id,
+        p.device_id,
+        p.user_id,
+        p.granted_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device_user_grant: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_durable_revocation(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: &DurableRevocationPayload,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_durable_revocation.sql",
+        p.revocation_id,
+        p.space_id,
+        p.target_device_id,
+        p.certificate_fingerprint,
+        p.winning_revision,
+        p.requesting_owner_id,
+        p.status,
+        p.target_acknowledged,
+        p.created_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_durable_revocation: {e}")))?;
     Ok(())
 }
 
@@ -472,6 +667,21 @@ fn split_composite<'a>(row_id: &'a str, table: &str) -> Result<(&'a str, &'a str
     })
 }
 
+fn split_triple_composite<'a>(
+    row_id: &'a str,
+    table: &str,
+) -> Result<(&'a str, &'a str, &'a str), AppError> {
+    let mut parts = row_id.split(':');
+    let (Some(first), Some(second), Some(third), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(AppError::InvalidInput(format!(
+            "split_triple_composite: malformed row_id {row_id:?} for table {table}"
+        )));
+    };
+    Ok((first, second, third))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,13 +758,12 @@ mod tests {
         );
     }
 
-    /// A trusted_devices upsert arriving from a peer with a different `id`
-    /// but the same `(space_id, device_id)` must update the existing row
-    /// instead of failing the UNIQUE constraint. This happens when pairing
-    /// creates a row locally with a fresh UUID, and the peer's changelog
-    /// later ships the same trust relationship with its own UUID.
+    /// Applying a space_device grant with the same `(space_id, device_id)`
+    /// as an existing local grant must upsert (converge to one logical
+    /// grant) instead of failing. The new schema has no random id column —
+    /// the PK is `(space_id, device_id)`. See data/PLAN.md Step 30.1.
     #[tokio::test]
-    async fn apply_trusted_device_upsert_handles_id_mismatch() {
+    async fn apply_space_device_upsert_converges_to_one_grant() {
         let pool = fresh_pool().await;
         let ts = "2024-01-01T00:00:00Z";
         let s1 = "s1";
@@ -564,30 +773,31 @@ mod tests {
             .await
             .unwrap();
 
-        // Simulate pairing: local row with a local UUID.
+        // Register a device and create a local space_device grant.
+        sqlx::query!("INSERT INTO devices (device_id, cert_pem, display_name) VALUES ('peer-1', 'CERT', 'Local Name')")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query!(
-            "INSERT INTO trusted_devices (id, space_id, device_id, display_name, cert_pem, sync_enabled, paired_at) \
-             VALUES ('local-uuid', 's1', 'peer-1', 'Local Name', 'LOCAL-CERT', 1, ?1)",
+            "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
+             VALUES ('s1', 'peer-1', 'active', ?1)",
             ts
         )
         .execute(&pool)
         .await
         .unwrap();
 
-        // Apply a changelog row from the peer with a DIFFERENT id.
+        // Apply a changelog row from the peer for the same (space_id, device_id).
         let row = ChangeRow {
             id: "cl-1".into(),
             space_id: s1.into(),
-            table_name: "trusted_devices".into(),
-            row_id: "remote-uuid".into(),
+            table_name: "space_devices".into(),
+            row_id: format!("{s1}:peer-1"),
             operation: "insert".into(),
-            payload: Some(TablePayload::TrustedDevice(TrustedDevicePayload {
-                id: "remote-uuid".into(),
+            payload: Some(TablePayload::SpaceDevice(SpaceDevicePayload {
                 space_id: s1.into(),
                 device_id: "peer-1".into(),
-                display_name: "Remote Name".into(),
-                cert_pem: "REMOTE-CERT".into(),
-                sync_enabled: 1,
+                trust_mode: crate::sync::trust_mode::TrustMode::Active,
                 paired_at: ts.into(),
             })),
             seq: 1,
@@ -599,15 +809,200 @@ mod tests {
         apply_change(&mut tx, &row).await.unwrap();
         tx.commit().await.unwrap();
 
-        let row = sqlx::query!(
-            "SELECT id, display_name, cert_pem FROM trusted_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
+        // Only one grant exists for (s1, peer-1).
+        let count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM space_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "converge to one logical grant");
+    }
+
+    #[tokio::test]
+    async fn durable_revocation_blocks_older_space_device_grant() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+
+        sqlx::query_file!(
+            "queries/tests/insert_space_fixture.sql",
+            "s1",
+            "test",
+            ts,
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query_file!("queries/users/create_user.sql", "owner", "Owner", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query_file!(
+            "queries/spaces/add_space_member.sql",
+            "s1",
+            "owner",
+            "owner",
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO devices (device_id, cert_pem, fingerprint, display_name) VALUES ('peer-1', 'CERT', 'fp-1', 'Peer')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let revocation = ChangeRow {
+            id: "revoke-1".into(),
+            space_id: "s1".into(),
+            table_name: "durable_revocations".into(),
+            row_id: "revoke-1".into(),
+            operation: "insert".into(),
+            payload: Some(TablePayload::DurableRevocation(DurableRevocationPayload {
+                revocation_id: "revoke-1".into(),
+                space_id: "s1".into(),
+                target_device_id: "peer-1".into(),
+                certificate_fingerprint: "fp-1".into(),
+                winning_revision: 6,
+                requesting_owner_id: "owner".into(),
+                status: "pending".into(),
+                target_acknowledged: 0,
+                created_at: ts.into(),
+            })),
+            seq: 6,
+            device_id: "owner-device".into(),
+            changed_at: ts.into(),
+        };
+        let mut tx = pool.begin().await.unwrap();
+        apply_change(&mut tx, &revocation).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let grant = ChangeRow {
+            id: "grant-1".into(),
+            space_id: "s1".into(),
+            table_name: "space_devices".into(),
+            row_id: "s1:peer-1".into(),
+            operation: "insert".into(),
+            payload: Some(TablePayload::SpaceDevice(SpaceDevicePayload {
+                space_id: "s1".into(),
+                device_id: "peer-1".into(),
+                trust_mode: crate::sync::trust_mode::TrustMode::Active,
+                paired_at: ts.into(),
+            })),
+            seq: 5,
+            device_id: "peer-1".into(),
+            changed_at: ts.into(),
+        };
+        let mut tx = pool.begin().await.unwrap();
+        apply_change(&mut tx, &grant).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM space_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0);
+        let tombstone_count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM durable_revocations WHERE revocation_id = 'revoke-1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tombstone_count, 1);
+    }
+
+    #[tokio::test]
+    async fn removing_one_user_preserves_shared_device_access() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+
+        sqlx::query_file!(
+            "queries/tests/insert_space_fixture.sql",
+            "s1",
+            "test",
+            ts,
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for user_id in ["u1", "u2"] {
+            sqlx::query_file!("queries/users/create_user.sql", user_id, user_id, ts, ts)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query_file!(
+                "queries/spaces/add_space_member.sql",
+                "s1",
+                user_id,
+                "member",
+                ts
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query!(
+            "INSERT INTO devices (device_id, cert_pem, display_name) VALUES ('device-1', 'CERT', 'Shared')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
+             VALUES ('s1', 'device-1', 'active', ?1)",
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for user_id in ["u1", "u2"] {
+            sqlx::query_file!(
+                "queries/sync/upsert_device_user_grant.sql",
+                "s1",
+                "device-1",
+                user_id,
+                ts
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        sqlx::query_file!("queries/spaces/remove_space_member.sql", "s1", "u1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let device_count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM space_devices WHERE space_id = 's1' AND device_id = 'device-1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let remaining_grants: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM device_user_grants \
+             WHERE space_id = 's1' AND device_id = 'device-1' AND user_id = 'u2'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let removed_grants: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM device_user_grants \
+             WHERE space_id = 's1' AND device_id = 'device-1' AND user_id = 'u1'"
         )
         .fetch_one(&pool)
         .await
         .unwrap();
 
-        assert_eq!(row.id, "local-uuid", "local PK should be preserved");
-        assert_eq!(row.display_name, "Remote Name");
-        assert_eq!(row.cert_pem, "REMOTE-CERT");
+        assert_eq!(device_count, 1);
+        assert_eq!(remaining_grants, 1);
+        assert_eq!(removed_grants, 0);
     }
 }

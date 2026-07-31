@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM device_user_grants\nWHERE space_id = ?1\n  AND device_id = ?2\n  AND user_id = ?3\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "a6048956d39fb70bb0b5efb0b0aea340356f248f234940f443849a0196da9436"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Upsert per-origin high-water mark and retained floor during snapshot apply.\nINSERT INTO origin_state (space_id, origin_device_id, high_water, retained_floor)\nVALUES (?1, ?2, ?3, ?4)\nON CONFLICT (space_id, origin_device_id) DO UPDATE\nSET high_water = MAX(excluded.high_water, origin_state.high_water),\n    retained_floor = excluded.retained_floor\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "44ba8f07df9b9d0df533fe72504056b225a33dcc945fa899145441d9086f9979"
+}

@@ -128,7 +128,7 @@ pub async fn upload_file(
     classifier: State<'_, crate::ClassifierState>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<UploadResult, AppError> {
-    let space_id = session.require()?.space_id;
+    let space_id = session.require_valid(db.inner()).await?.space_id;
     let path = PathBuf::from(&file_path);
     let mut logs = Vec::new();
 

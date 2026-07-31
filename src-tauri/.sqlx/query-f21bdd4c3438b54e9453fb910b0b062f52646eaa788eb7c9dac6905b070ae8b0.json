@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Delete a space_device grant during remote apply. Replaces\n-- apply/delete_trusted_device.sql.\nDELETE FROM space_devices WHERE space_id = ?1 AND device_id = ?2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f21bdd4c3438b54e9453fb910b0b062f52646eaa788eb7c9dac6905b070ae8b0"
+}

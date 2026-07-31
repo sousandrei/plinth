@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Upsert a device row by device_id. Used during pairing and on first\n-- launch to register the local device's certificate. The DER and\n-- SHA-256 fingerprint are populated from the validated cert so that\n-- `cert_match::resolve_peer` can use them for fast equality checks\n-- (Step 30.2). A re-issued cert for the same device_id is allowed to\n-- update cert_pem / cert_der / fingerprint — the caller is\n-- responsible for verifying this is not an unexpected change\n-- (Validator::check_against_existing) before calling this upsert.\nINSERT INTO devices (device_id, cert_pem, cert_der, fingerprint, display_name)\nVALUES (?1, ?2, ?3, ?4, ?5)\nON CONFLICT (device_id) DO UPDATE\nSET cert_pem = excluded.cert_pem,\n    cert_der = excluded.cert_der,\n    fingerprint = excluded.fingerprint,\n    display_name = excluded.display_name\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "32b35285f8019e8c2a787c29dc397c8b507a24d38d237462d4e37e9a02161c11"
+}

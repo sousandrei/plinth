@@ -3,19 +3,75 @@ use sqlx::SqlitePool;
 use tauri::AppHandle;
 
 use crate::error::AppError;
+use crate::sync::apply::apply_tombstone;
+use crate::sync::trust_mode::TrustMode;
+
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------------------
-// Wire types — one shape per synced table. Used by both the pairing
-// transfer (encrypted TCP) and the sync-session snapshot transfer
-// (`Frame::Snapshot` chunks). The on-the-wire format is identical in both
-// transports.
+// Wire types — one shape per synced table and snapshot section. Used by
+// both the pairing transfer (encrypted TCP) and the sync-session snapshot
+// transfer (`Frame::Snapshot` chunks). The on-the-wire format is identical
+// in both transports.
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireOriginState {
+    pub origin_device_id: String,
+    pub high_water: i64,
+    pub retained_floor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireRowWinner {
+    pub space_id: String,
+    pub table_name: String,
+    pub row_id: String,
+    pub winning_seq: i64,
+    pub winning_origin: String,
+    pub deleted: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireDevice {
+    pub device_id: String,
+    pub cert_pem: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireSpaceDevice {
+    pub space_id: String,
+    pub device_id: String,
+    pub trust_mode: TrustMode,
+    pub paired_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireDeviceUserGrant {
+    pub space_id: String,
+    pub device_id: String,
+    pub user_id: String,
+    pub granted_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireDurableRevocation {
+    pub revocation_id: String,
+    pub space_id: String,
+    pub target_device_id: String,
+    pub certificate_fingerprint: String,
+    pub winning_revision: i64,
+    pub requesting_owner_id: String,
+    pub status: String,
+    pub target_acknowledged: i64,
+    pub created_at: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireUser {
     pub id: String,
     pub name: String,
-    pub pin_hash: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -99,10 +155,20 @@ pub struct WireModelVersion {
 }
 
 /// Full snapshot of one space: identity, members, users, every synced
-/// table's rows, and the host's device identity (for `trusted_devices`).
-/// Constructed via `collect_snapshot`, applied via `apply_snapshot`.
+/// table's rows, devices & space grants, high-water vector, row winners/tombstones.
+/// Constructed via `collect_snapshot`, applied via `apply_snapshot_frame`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpaceSnapshot {
+    pub snapshot_schema_version: u32,
+    pub protocol_version: u16,
+    pub snapshot_id: String,
+    pub host_device_id: String,
+    pub host_device_name: String,
+    pub host_cert_pem: String,
+
+    pub high_water_vector: Vec<WireOriginState>,
+    pub row_winners: Vec<WireRowWinner>,
+
     pub space: WireSpace,
     pub members: Vec<WireMember>,
     pub users: Vec<WireUser>,
@@ -112,9 +178,10 @@ pub struct SpaceSnapshot {
     pub account_summaries: Vec<WireAccountSummary>,
     pub space_settings: Vec<WireSpaceSetting>,
     pub model_versions: Vec<WireModelVersion>,
-    pub host_device_id: String,
-    pub host_device_name: String,
-    pub host_cert_pem: String,
+    pub devices: Vec<WireDevice>,
+    pub space_devices: Vec<WireSpaceDevice>,
+    pub device_user_grants: Vec<WireDeviceUserGrant>,
+    pub durable_revocations: Vec<WireDurableRevocation>,
 }
 
 /// Tagged envelope sent over both the pairing transport (encrypted TCP)
@@ -124,6 +191,12 @@ pub struct SpaceSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SnapshotFrame {
     Space(WireSpace),
+    HighWaterVector(Vec<WireOriginState>),
+    RowWinners(Vec<WireRowWinner>),
+    Devices(Vec<WireDevice>),
+    SpaceDevices(Vec<WireSpaceDevice>),
+    DeviceUserGrants(Vec<WireDeviceUserGrant>),
+    DurableRevocations(Vec<WireDurableRevocation>),
     Members(Vec<WireMember>),
     Users(Vec<WireUser>),
     Categories(Vec<WireCategory>),
@@ -139,27 +212,53 @@ pub enum SnapshotFrame {
 // Collect: gather a snapshot from the local DB
 // ---------------------------------------------------------------------------
 
-/// Gather every row needed to reconstruct `space_id` on a fresh device.
+/// Gather every row needed to reconstruct `space_id` on a fresh device inside
+/// a single read transaction to guarantee snapshot consistency.
 /// Includes the active finetuned-model version (read from
 /// `space_settings`), so receivers that already have a finetuned model
 /// can advance their active version after a successful snapshot.
 pub async fn collect_snapshot(
     db: &SqlitePool,
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     space_id: &str,
     host_device_id: String,
     host_device_name: String,
     host_cert_pem: String,
 ) -> Result<SpaceSnapshot, AppError> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("collect_snapshot begin tx: {e}")))?;
+
+    let snapshot_id = format!("snap_{}", uuid::Uuid::new_v4().simple());
+
+    let high_water_vector: Vec<WireOriginState> = sqlx::query_file_as!(
+        WireOriginState,
+        "queries/snapshots/list_origin_states.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot origin_states: {e}")))?;
+
+    let row_winners: Vec<WireRowWinner> = sqlx::query_file_as!(
+        WireRowWinner,
+        "queries/snapshots/list_row_winners.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot row_winners: {e}")))?;
+
     let space = sqlx::query_file_as!(WireSpace, "queries/snapshots/list_space.sql", space_id)
-        .fetch_optional(db)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| AppError::Db(format!("collect_snapshot space: {e}")))?
         .ok_or_else(|| AppError::NotFound(format!("space {space_id}")))?;
 
     let members: Vec<WireMember> =
         sqlx::query_file_as!(WireMember, "queries/snapshots/list_members.sql", space_id)
-            .fetch_all(db)
+            .fetch_all(&mut *tx)
             .await
             .map_err(|e| AppError::Db(format!("collect_snapshot members: {e}")))?;
 
@@ -168,7 +267,7 @@ pub async fn collect_snapshot(
         "queries/snapshots/list_users_for_space.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot users: {e}")))?;
 
@@ -177,7 +276,7 @@ pub async fn collect_snapshot(
         "queries/sync/list_pairing_categories.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot categories: {e}")))?;
 
@@ -186,7 +285,7 @@ pub async fn collect_snapshot(
         "queries/sync/list_pairing_accounts.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot accounts: {e}")))?;
 
@@ -195,7 +294,7 @@ pub async fn collect_snapshot(
         "queries/snapshots/list_transactions.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot transactions: {e}")))?;
 
@@ -204,7 +303,7 @@ pub async fn collect_snapshot(
         "queries/snapshots/list_account_summaries.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot account_summaries: {e}")))?;
 
@@ -213,20 +312,16 @@ pub async fn collect_snapshot(
         "queries/sync/list_space_settings.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot space_settings: {e}")))?;
 
-    // Make sure the active model version is included in the snapshot even
-    // if no other settings exist for this space — a fresh joiner that
-    // hasn't trained yet still needs to know the host's version so it can
-    // pull the weights in the model-sync phase.
     let active_model_version: Option<String> = sqlx::query_file!(
         "queries/training/get_setting.sql",
         space_id,
         "active_model_version"
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot model_version: {e}")))?
     .map(|r| r.value);
@@ -249,13 +344,76 @@ pub async fn collect_snapshot(
         "queries/snapshots/list_model_versions.sql",
         space_id
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot model_versions: {e}")))?;
+
+    let devices: Vec<WireDevice> = sqlx::query_file_as!(
+        WireDevice,
+        "queries/snapshots/list_devices_for_space.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot devices: {e}")))?;
+
+    let space_devices_raw = sqlx::query_file!(
+        "queries/snapshots/list_space_devices_for_space.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot space_devices: {e}")))?;
+
+    let mut space_devices = Vec::with_capacity(space_devices_raw.len());
+    for r in space_devices_raw {
+        let mode = TrustMode::parse(&r.trust_mode).ok_or_else(|| {
+            AppError::Internal(format!(
+                "collect_snapshot: unknown trust_mode {:?} for device {}",
+                r.trust_mode, r.device_id
+            ))
+        })?;
+        space_devices.push(WireSpaceDevice {
+            space_id: r.space_id,
+            device_id: r.device_id,
+            trust_mode: mode,
+            paired_at: r.paired_at,
+        });
+    }
+
+    let device_user_grants: Vec<WireDeviceUserGrant> = sqlx::query_file_as!(
+        WireDeviceUserGrant,
+        "queries/snapshots/list_device_user_grants_for_space.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot device_user_grants: {e}")))?;
+
+    let durable_revocations: Vec<WireDurableRevocation> = sqlx::query_file_as!(
+        WireDurableRevocation,
+        "queries/snapshots/list_durable_revocations_for_space.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot durable_revocations: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("collect_snapshot commit: {e}")))?;
 
     let _ = app; // reserved for future "include model files in snapshot"
 
     Ok(SpaceSnapshot {
+        snapshot_schema_version: SNAPSHOT_SCHEMA_VERSION,
+        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+        snapshot_id,
+        host_device_id,
+        host_device_name,
+        host_cert_pem,
+        high_water_vector,
+        row_winners,
         space,
         members,
         users,
@@ -265,10 +423,111 @@ pub async fn collect_snapshot(
         account_summaries,
         space_settings,
         model_versions,
-        host_device_id,
-        host_device_name,
-        host_cert_pem,
+        devices,
+        space_devices,
+        device_user_grants,
+        durable_revocations,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Boundary: validate the snapshot stream before opening apply_guard
+// ---------------------------------------------------------------------------
+
+/// Step 31.2: verify the snapshot boundary before opening the apply
+/// transaction. Rejects mixed-space streams and unsupported schema
+/// versions, so a hostile or buggy peer cannot poison the receiver's
+/// state with a partial apply that passes all per-row checks.
+///
+/// Returns `Ok(())` on success. The caller MUST abort before any DB
+/// write on `Err(_)`.
+pub fn verify_snapshot_boundary(
+    expected_space_id: &str,
+    snapshot_schema_version: u32,
+    chunks: &[crate::sync::wire::SnapshotChunk],
+) -> Result<(), AppError> {
+    if snapshot_schema_version != SNAPSHOT_SCHEMA_VERSION {
+        return Err(AppError::InvalidInput(format!(
+            "snapshot boundary: unsupported snapshot_schema_version {} (expected {})",
+            snapshot_schema_version, SNAPSHOT_SCHEMA_VERSION
+        )));
+    }
+
+    if expected_space_id.is_empty() {
+        return Err(AppError::InvalidInput(
+            "snapshot boundary: empty expected space_id".into(),
+        ));
+    }
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        if chunk.space_id != expected_space_id {
+            return Err(AppError::InvalidInput(format!(
+                "snapshot boundary: chunk {i} has space_id {:?} != expected {:?}",
+                chunk.space_id, expected_space_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Install: advance cursors after snapshot apply commits
+// ---------------------------------------------------------------------------
+
+/// Step 31.2: install the complete cursor vector AFTER the snapshot
+/// apply transaction commits. Opens a separate write transaction so a
+/// crash between snapshot apply and cursor installation is detectable:
+/// the snapshot is on disk but the cursor says "0" — the next sync will
+/// request a fresh snapshot, which is correct (idempotent re-apply).
+///
+/// Each `WireOriginState` becomes a `sync_cursors(space_id, origin)` row
+/// advanced to `high_water`. The host is included if it appears in the
+/// vector; if not, we still install `sync_cursors(space_id, host) =
+/// host_high_water` derived from the vector's max (defensive — the host
+/// is by definition one of the origins, but a hostile snapshot claiming
+/// otherwise shouldn't trap the receiver in an infinite re-snapshot
+/// loop).
+///
+/// `MAX(...)` clamping inside `upsert_cursor.sql` guarantees the cursor
+/// only ever moves forward — concurrent incremental syncs that landed
+/// between the snapshot's capture and this install can't be undone.
+pub async fn install_snapshot_cursors(
+    db: &SqlitePool,
+    space_id: &str,
+    high_water_vector: &[WireOriginState],
+    host_device_id: &str,
+) -> Result<(), AppError> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("install_snapshot_cursors begin: {e}")))?;
+
+    let mut max_high_water: i64 = 0;
+    for os in high_water_vector {
+        crate::sync::cursors::advance(&mut tx, space_id, &os.origin_device_id, os.high_water)
+            .await
+            .map_err(|e| AppError::Db(format!("install_snapshot_cursors: {e}")))?;
+        if os.high_water > max_high_water {
+            max_high_water = os.high_water;
+        }
+    }
+
+    // Defensive: if the host isn't in the vector, install it at the
+    // max observed high water so the next sync doesn't re-request the
+    // whole backlog from seq=1.
+    if !high_water_vector
+        .iter()
+        .any(|os| os.origin_device_id == host_device_id)
+    {
+        crate::sync::cursors::advance(&mut tx, space_id, host_device_id, max_high_water)
+            .await
+            .map_err(|e| AppError::Db(format!("install_snapshot_cursors host: {e}")))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("install_snapshot_cursors commit: {e}")))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +546,43 @@ pub async fn apply_snapshot_frame(
     match frame {
         SnapshotFrame::Space(s) => {
             upsert_space(tx, s).await?;
+        }
+        SnapshotFrame::HighWaterVector(chunk) => {
+            for os in chunk {
+                upsert_origin_state(tx, &snapshot.space.id, os).await?;
+            }
+        }
+        SnapshotFrame::RowWinners(chunk) => {
+            for rw in chunk {
+                upsert_row_winner(tx, rw).await?;
+                // Step 31.2: honor tombstoned winners. The previous
+                // chunks may have re-materialized a row that the host
+                // has since deleted — apply the tombstone now to keep
+                // the receiver's row set in sync with `row_winners`.
+                if rw.deleted != 0 {
+                    apply_tombstone(tx, &rw.table_name, &rw.row_id).await?;
+                }
+            }
+        }
+        SnapshotFrame::Devices(chunk) => {
+            for d in chunk {
+                upsert_device(tx, d).await?;
+            }
+        }
+        SnapshotFrame::SpaceDevices(chunk) => {
+            for sd in chunk {
+                upsert_space_device(tx, sd).await?;
+            }
+        }
+        SnapshotFrame::DeviceUserGrants(chunk) => {
+            for grant in chunk {
+                upsert_device_user_grant(tx, grant).await?;
+            }
+        }
+        SnapshotFrame::DurableRevocations(chunk) => {
+            for revocation in chunk {
+                upsert_durable_revocation(tx, revocation).await?;
+            }
         }
         SnapshotFrame::Members(chunk) => {
             for m in chunk {
@@ -329,7 +625,7 @@ pub async fn apply_snapshot_frame(
             }
         }
         SnapshotFrame::End => {
-            upsert_trusted_device(
+            upsert_device_and_grant(
                 tx,
                 &snapshot.space.id,
                 &snapshot.host_device_id,
@@ -348,6 +644,121 @@ pub async fn apply_snapshot_frame(
 // `ON CONFLICT` clauses.
 // ---------------------------------------------------------------------------
 
+async fn upsert_origin_state(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space_id: &str,
+    os: &WireOriginState,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_origin_state.sql",
+        space_id,
+        os.origin_device_id,
+        os.high_water,
+        os.retained_floor
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_origin_state: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_row_winner(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    rw: &WireRowWinner,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/upsert_row_winner.sql",
+        rw.space_id,
+        rw.table_name,
+        rw.row_id,
+        rw.winning_seq,
+        rw.winning_origin,
+        rw.deleted
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_row_winner: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_device(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    d: &WireDevice,
+) -> Result<(), AppError> {
+    let (der, fp) = match crate::sync::cert_validation::parse_and_canonicalize(&d.cert_pem) {
+        Ok(v) => (Some(v.der), v.fingerprint),
+        Err(_) => (None, String::new()),
+    };
+    sqlx::query_file!(
+        "queries/sync/upsert_device.sql",
+        d.device_id,
+        d.cert_pem,
+        der,
+        fp,
+        d.display_name
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_space_device(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sd: &WireSpaceDevice,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/upsert_space_device.sql",
+        sd.space_id,
+        sd.device_id,
+        sd.trust_mode,
+        sd.paired_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_device_user_grant(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    grant: &WireDeviceUserGrant,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_device_user_grant.sql",
+        grant.space_id,
+        grant.device_id,
+        grant.user_id,
+        grant.granted_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device_user_grant: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_durable_revocation(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    revocation: &WireDurableRevocation,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_durable_revocation.sql",
+        revocation.revocation_id,
+        revocation.space_id,
+        revocation.target_device_id,
+        revocation.certificate_fingerprint,
+        revocation.winning_revision,
+        revocation.requesting_owner_id,
+        revocation.status,
+        revocation.target_acknowledged,
+        revocation.created_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_durable_revocation: {e}")))?;
+    Ok(())
+}
+
 async fn upsert_user(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     u: &WireUser,
@@ -356,7 +767,6 @@ async fn upsert_user(
         "queries/sync/apply/upsert_user.sql",
         u.id,
         u.name,
-        u.pin_hash,
         u.created_at,
         u.updated_at
     )
@@ -400,28 +810,77 @@ async fn upsert_space_member(
     Ok(())
 }
 
-async fn upsert_trusted_device(
+async fn upsert_device_and_grant(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space_id: &str,
     device_id: &str,
     display_name: &str,
     cert_pem: &str,
 ) -> Result<(), AppError> {
-    let id = uuid::Uuid::new_v4().to_string();
+    // Step 30.2: validate the host's cert before persisting. Same
+    // invariants as `pairing::upsert_device_and_grant`. The host's
+    // cert is the trust anchor for every subsequent change in the
+    // snapshot, so it must be rejected on any inconsistency.
+    let validated = crate::sync::cert_validation::parse_and_canonicalize(cert_pem)
+        .map_err(|e| AppError::InvalidInput(format!("snapshot host cert: {e}")))?;
+    crate::sync::cert_validation::check_device_id_match(&validated, device_id)
+        .map_err(|e| AppError::InvalidInput(format!("snapshot host cert: {e}")))?;
+
+    // Fingerprint / device_id uniqueness against the in-tx devices
+    // table. We can't easily look at *committed* state from inside a
+    // transaction, but since the snapshot path always runs against
+    // a fresh joiner DB the in-tx view is the only view that matters.
+    let by_fp = sqlx::query_file!(
+        "queries/sync/get_device_id_by_fingerprint.sql",
+        validated.fingerprint.clone()
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("snapshot fingerprint lookup: {e}")))?;
+    if let Some(row) = by_fp
+        && row.device_id != device_id
+    {
+        return Err(AppError::InvalidInput(format!(
+            "snapshot host cert: fingerprint already mapped to {}",
+            row.device_id
+        )));
+    }
+    let by_id = sqlx::query_file!("queries/sync/get_fingerprint_by_device_id.sql", device_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| AppError::Db(format!("snapshot device lookup: {e}")))?;
+    if let Some(row) = by_id {
+        let existing = row.fingerprint;
+        if !existing.is_empty() && existing != validated.fingerprint {
+            return Err(AppError::InvalidInput(format!(
+                "snapshot host cert: device_id {device_id} already has a different fingerprint"
+            )));
+        }
+    }
+
+    sqlx::query_file!(
+        "queries/sync/upsert_device.sql",
+        device_id,
+        cert_pem,
+        validated.der,
+        validated.fingerprint,
+        display_name
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device: {e}")))?;
+
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     sqlx::query_file!(
-        "queries/sync/apply/upsert_trusted_device.sql",
-        id,
+        "queries/sync/upsert_space_device.sql",
         space_id,
         device_id,
-        display_name,
-        cert_pem,
-        1_i64,
+        crate::sync::trust_mode::TrustMode::Active,
         now
     )
     .execute(&mut **tx)
     .await
-    .map_err(|e| AppError::Db(format!("upsert_trusted_device: {e}")))?;
+    .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
     Ok(())
 }
 

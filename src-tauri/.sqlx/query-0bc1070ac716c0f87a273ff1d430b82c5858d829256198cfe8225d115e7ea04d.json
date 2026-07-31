@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Look up the fingerprint currently stored for a device_id. Returns\n-- at most one row; empty fingerprint if the row exists but the\n-- fingerprint is unset (e.g. a stub row from a change_log-driven\n-- space_devices insert). Used during cert ingress to detect\n-- unexpected fingerprint changes.\nSELECT fingerprint AS \"fingerprint!: String\"\nFROM devices\nWHERE device_id = ?1\nLIMIT 1;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "fingerprint!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "fingerprint"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0bc1070ac716c0f87a273ff1d430b82c5858d829256198cfe8225d115e7ea04d"
+}

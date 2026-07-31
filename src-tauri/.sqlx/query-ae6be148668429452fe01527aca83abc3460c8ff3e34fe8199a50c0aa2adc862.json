@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Snapshot: list device identities associated with space_devices grants for a space.\nSELECT DISTINCT d.device_id, d.cert_pem, d.display_name\nFROM devices d\nJOIN space_devices sd ON sd.device_id = d.device_id\nWHERE sd.space_id = ?1\nORDER BY d.device_id ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "cert_pem",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "cert_pem"
+          }
+        }
+      },
+      {
+        "name": "display_name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "display_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ae6be148668429452fe01527aca83abc3460c8ff3e34fe8199a50c0aa2adc862"
+}

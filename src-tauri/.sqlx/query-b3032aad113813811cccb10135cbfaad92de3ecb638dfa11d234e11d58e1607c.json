@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM app_settings WHERE key = 'applying_remote'\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "b3032aad113813811cccb10135cbfaad92de3ecb638dfa11d234e11d58e1607c"
+}

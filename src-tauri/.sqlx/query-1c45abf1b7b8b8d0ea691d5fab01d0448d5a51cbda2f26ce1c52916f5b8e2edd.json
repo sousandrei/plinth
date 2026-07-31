@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Step 30.4: list space IDs that have at least one `trust_mode = 'active'`\n-- grant. Used by mDNS to populate the `spaces` TXT record. Peers without\n-- any active grant for a space aren't invited to participate in normal\n-- sync for it.\nSELECT DISTINCT sd.space_id AS \"space_id!: String\"\nFROM space_devices sd\nWHERE sd.trust_mode = 'active'\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "space_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1c45abf1b7b8b8d0ea691d5fab01d0448d5a51cbda2f26ce1c52916f5b8e2edd"
+}

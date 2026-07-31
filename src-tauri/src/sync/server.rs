@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use sqlx::SqlitePool;
 use tauri::AppHandle;
@@ -11,6 +12,10 @@ use crate::sync::discovery::PeerRegistry;
 use crate::sync::identity::DeviceIdentity;
 use crate::sync::session;
 use crate::sync::tls;
+
+/// Step 30.3: 5-second budget for the TLS handshake on the
+/// server side. Matches the client-side cap.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Handle to a running sync server task, plus the address it bound to.
 pub struct ServerHandle {
@@ -70,9 +75,9 @@ async fn handle_connection(
     peers: PeerRegistry,
 ) -> Result<(), AppError> {
     let acceptor = tls::server_acceptor(&db, &identity).await?;
-    let tls = acceptor
-        .accept(tcp)
+    let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp))
         .await
+        .map_err(|_| AppError::Io("tls accept: handshake timeout".into()))?
         .map_err(|e| AppError::Io(format!("tls accept: {e}")))?;
 
     let peer = extract_peer(&tls, &db).await?;

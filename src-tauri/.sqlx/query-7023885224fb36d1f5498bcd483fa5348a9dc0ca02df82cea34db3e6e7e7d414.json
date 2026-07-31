@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Set the trust_mode of an existing (space, device) grant. Used by the\n-- `set_space_device_trust_mode` Tauri command to transition a grant\n-- between Step 30.4 states ('active' ↔ 'revoking' ↔ 'revocation_only').\n-- The change_log AU trigger captures the transition so all peers see\n-- it on their next sync round.\nUPDATE space_devices\nSET trust_mode = ?3\nWHERE space_id = ?1 AND device_id = ?2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "7023885224fb36d1f5498bcd483fa5348a9dc0ca02df82cea34db3e6e7e7d414"
+}

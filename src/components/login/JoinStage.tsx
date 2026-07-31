@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { setActiveSpace } from '@/api/spaces';
-import { getDeviceName, joinSpace, listPeers } from '@/api/sync';
+import {
+  getDeviceName,
+  joinSpace,
+  listPeers,
+  recordDeviceUserGrant,
+} from '@/api/sync';
 import { createUserInSpace, setPin, verifyPin } from '@/api/users';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/util';
@@ -91,6 +96,7 @@ export const JoinStage = ({
         user = await createUserInSpace(newName.trim(), spaceId);
         await setPin(user.id, pin);
       }
+      await recordDeviceUserGrant(spaceId);
       await setActiveSpace(spaceId);
       return user;
     },

@@ -16,7 +16,7 @@ pub async fn list_all_categories(
     db: State<'_, DbPool>,
     session: State<'_, Session>,
 ) -> Result<Vec<Category>, AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
 
     let categories = sqlx::query_file_as!(
         Category,
@@ -38,7 +38,7 @@ pub async fn create_category(
     session: State<'_, Session>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<Category, AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
 
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
@@ -72,7 +72,7 @@ pub async fn delete_category(
     session: State<'_, Session>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
 
     let category = sqlx::query_file_as!(
         Category,
@@ -115,7 +115,7 @@ pub async fn update_category(
     session: State<'_, Session>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<Category, AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
 
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));

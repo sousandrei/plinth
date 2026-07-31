@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO pending_pairings (\n    space_id,\n    device_id,\n    display_name,\n    cert_pem,\n    created_at\n)\nVALUES (?1, ?2, ?3, ?4, ?5)\nON CONFLICT (space_id, device_id) DO UPDATE SET\n    display_name = excluded.display_name,\n    cert_pem = excluded.cert_pem,\n    created_at = excluded.created_at;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "159b09b3311e3a3e4a3b7041b9a9eea0406a5260f8e75305930b184ac42801c0"
+}

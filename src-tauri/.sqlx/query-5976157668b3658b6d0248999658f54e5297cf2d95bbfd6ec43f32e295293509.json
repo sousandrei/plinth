@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Snapshot: list materialized row revisions and deletion tombstones for a space.\nSELECT space_id, table_name, row_id, winning_seq, winning_origin, deleted\nFROM row_winners\nWHERE space_id = ?1\nORDER BY table_name ASC, row_id ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "table_name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "table_name"
+          }
+        }
+      },
+      {
+        "name": "row_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "row_id"
+          }
+        }
+      },
+      {
+        "name": "winning_seq",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "winning_seq"
+          }
+        }
+      },
+      {
+        "name": "winning_origin",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "winning_origin"
+          }
+        }
+      },
+      {
+        "name": "deleted",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "deleted"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5976157668b3658b6d0248999658f54e5297cf2d95bbfd6ec43f32e295293509"
+}

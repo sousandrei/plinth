@@ -97,7 +97,7 @@ pub async fn list_transactions(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
 ) -> Result<TransactionPage, AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
     let page = params.page.unwrap_or(0).max(0);
     let limit = params.limit.unwrap_or(10).clamp(1, 200);
     let offset = page * limit;
@@ -153,7 +153,7 @@ pub async fn update_transaction(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
 
     let rows = sqlx::query_file!(
         "queries/transactions/update_transaction.sql",
@@ -184,7 +184,7 @@ pub async fn bulk_approve_transactions(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<u64, AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
     let ids_json = serde_json::to_string(&ids)
         .map_err(|e| AppError::Internal(format!("bulk_approve_transactions: {e}")))?;
 
@@ -211,7 +211,7 @@ pub async fn bulk_categorize_transactions(
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<u64, AppError> {
-    let data = session.require()?;
+    let data = session.require_valid(db.inner()).await?;
     let ids_json = serde_json::to_string(&ids)
         .map_err(|e| AppError::Internal(format!("bulk_categorize_transactions: {e}")))?;
 

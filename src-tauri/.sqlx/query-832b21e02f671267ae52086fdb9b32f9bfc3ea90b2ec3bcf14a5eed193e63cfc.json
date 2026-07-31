@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Insert a model_versions row only if no row exists for\n-- (space_id, version). Used by the one-time startup backfill so\n-- orphan files on disk cannot overwrite a synchronized manifest or\n-- resurrect a remotely deleted row. See data/PLAN.md Step 28.4.\nINSERT INTO model_versions (space_id, version, weights_md5, card_md5, trained_at)\nVALUES (?1, ?2, ?3, ?4, ?5)\nON CONFLICT (space_id, version) DO NOTHING;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "832b21e02f671267ae52086fdb9b32f9bfc3ea90b2ec3bcf14a5eed193e63cfc"
+}

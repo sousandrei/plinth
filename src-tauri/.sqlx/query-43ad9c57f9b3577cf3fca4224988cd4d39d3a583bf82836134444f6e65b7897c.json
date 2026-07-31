@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Ensure a stub devices row exists to satisfy the FK constraint from\n-- space_devices. The full cert is synced separately via the pairing\n-- flow. INSERT OR IGNORE makes this idempotent.\nINSERT OR IGNORE INTO devices (device_id, cert_pem, display_name)\nVALUES (?1, '', '')\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "43ad9c57f9b3577cf3fca4224988cd4d39d3a583bf82836134444f6e65b7897c"
+}

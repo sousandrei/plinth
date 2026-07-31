@@ -4,7 +4,7 @@ use crate::sync::payloads::TablePayload;
 
 /// Protocol version, sent in `Hello`. Bumped on any wire-incompatible
 /// change. A mismatch terminates the session immediately.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// First frame sent in both directions after the mTLS handshake. Lets
 /// peers negotiate compatibility and exchange their stable device IDs
@@ -54,18 +54,37 @@ pub struct ChangeRow {
     pub changed_at: String,
 }
 
-/// A batch of changes for one space. The sender streams as many of these
-/// as it needs to cover everything past the recipient's cursor; the
-/// recipient applies them in `seq` order and records the new high-water
-/// mark via `sync_cursors`. `final_seq` is the sender's current max
-/// `seq` for this space — used by the receiver as its new cursor even
-/// if `rows` is empty.
+/// A batch of changes for one space and one origin. The sender streams
+/// as many of these as it needs to cover everything past the recipient's
+/// cursor. `origin_device_id` is the device that authored the changes;
+/// `transport_device_id` is the device that relayed this batch (the
+/// connected peer). They differ when a peer relays a third device's
+/// changes. The recipient applies rows in foreign-key-safe order only
+/// after receiving `Frame::ChangesDone` for the complete round.
+/// `final_seq` is the sender's current max `seq` for this origin —
+/// used by the receiver as its new cursor even if `rows` is empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangeBatch {
     pub space_id: String,
-    pub device_id: String,
+    pub origin_device_id: String,
+    pub transport_device_id: String,
     pub rows: Vec<ChangeRow>,
     pub final_seq: i64,
+}
+
+/// Sent by the sender after all `Batch` frames for a sync round.
+/// The receiver stages all batches until this frame arrives, then
+/// applies them in foreign-key-safe order before advancing cursors.
+/// See data/PLAN.md Step 29.5.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangesDone {}
+
+/// Sent by the receiver after committing the complete round. Carries
+/// the receiver's updated cursor positions as explicit proof of
+/// what was committed. See data/PLAN.md Step 29.5.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppliedCursors {
+    pub entries: Vec<CursorEntry>,
 }
 
 /// Closing frame; lets the session end cleanly without relying on
@@ -141,6 +160,12 @@ pub enum Frame {
     Hello(Hello),
     Cursors(Cursors),
     Batch(ChangeBatch),
+    /// Sent after all `Batch` frames for a sync round. The receiver
+    /// stages batches until this arrives, then applies in FK-safe order.
+    ChangesDone(ChangesDone),
+    /// Receiver's explicit proof of committed cursors after applying
+    /// a complete round.
+    AppliedCursors(AppliedCursors),
     /// Full snapshot for a single space, streamed in chunks. Sent by the
     /// host when the peer's cursor is behind `change_log.min_seq` and
     /// incremental replay can no longer catch the joiner up. The host

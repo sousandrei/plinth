@@ -1,0 +1,42 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Durable gap detection state for one origin. Returns origin_state\n-- high_water/retained_floor (durable, survives GC) plus the live\n-- max/min seq from change_log (may be 0 if the log was collected).\n-- See data/PLAN.md Step 29.8.\nSELECT\n    COALESCE(os.high_water, 0)          AS \"high_water!: i64\",\n    COALESCE(os.retained_floor, 0)      AS \"retained_floor!: i64\",\n    COALESCE(cl_live.max_seq, 0)         AS \"live_max_seq!: i64\",\n    COALESCE(cl_live.min_seq, 0)         AS \"live_min_seq!: i64\"\nFROM (SELECT 1) AS dummy\nLEFT JOIN origin_state os\n    ON os.space_id = ?1 AND os.origin_device_id = ?2\nLEFT JOIN (\n    SELECT\n        MAX(seq) AS max_seq,\n        MIN(seq) AS min_seq\n    FROM change_log\n    WHERE space_id = ?1 AND device_id = ?2\n) cl_live ON 1=1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "high_water!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "retained_floor!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "live_max_seq!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "live_min_seq!: i64",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b23d7b6d541ddc77ba83cab6353847f0792b5a7ac6704a6b53d882a7430c47f2"
+}

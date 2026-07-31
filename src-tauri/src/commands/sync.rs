@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use sqlx::{Sqlite, Transaction};
 use tauri::{AppHandle, State};
 
 use crate::{
@@ -10,10 +11,8 @@ use crate::{
     sync::{
         PeerInfo, PeerRegistry, SyncSummary,
         debounce::DebounceSender,
-        pairing::{
-            self, PAIRING_PORT, PairToken, PairingState, WireAccount, WireAccountSummary,
-            WireCategory, WireMember, WireSpace, WireSpaceSetting, WireTransaction, WireUser,
-        },
+        pairing::{self, PAIRING_PORT, PairToken, PairingState, WireUser},
+        trust_mode::TrustMode,
     },
 };
 
@@ -63,13 +62,37 @@ pub async fn force_sync_now(
     Ok(crate::sync::scheduler::await_dials(handles, dialled).await)
 }
 
+#[tauri::command]
+pub async fn record_device_user_grant(
+    space_id: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
+) -> Result<(), AppError> {
+    let user_session = session.require_user_valid(db.inner()).await?;
+    let identity = crate::sync::identity::ensure_identity(&db).await?;
+
+    sqlx::query_file!(
+        "queries/sync/upsert_device_user_grant.sql",
+        space_id,
+        identity.device_id,
+        user_session.user_id,
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
+    .execute(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("record_device_user_grant: {e}")))?;
+
+    debounce.notify_mutation();
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Trusted devices
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TrustedDevice {
-    pub id: String,
+pub struct SpaceDevice {
     pub space_id: String,
     pub device_id: String,
     pub display_name: String,
@@ -77,20 +100,19 @@ pub struct TrustedDevice {
 }
 
 #[tauri::command]
-pub async fn list_trusted_devices(
+pub async fn list_space_devices(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-) -> Result<Vec<TrustedDevice>, AppError> {
-    let active = session.require()?;
-    let rows = sqlx::query_file!("queries/sync/list_trusted_devices.sql", active.space_id)
+) -> Result<Vec<SpaceDevice>, AppError> {
+    let active = session.require_valid(db.inner()).await?;
+    let rows = sqlx::query_file!("queries/sync/list_space_devices.sql", active.space_id)
         .fetch_all(&*db)
         .await
-        .map_err(|e| AppError::Db(format!("list_trusted_devices: {e}")))?;
+        .map_err(|e| AppError::Db(format!("list_space_devices: {e}")))?;
 
     Ok(rows
         .into_iter()
-        .map(|r| TrustedDevice {
-            id: r.id,
+        .map(|r| SpaceDevice {
             space_id: r.space_id,
             device_id: r.device_id,
             display_name: r.display_name,
@@ -100,60 +122,137 @@ pub async fn list_trusted_devices(
 }
 
 #[tauri::command]
-pub async fn remove_trusted_device(
-    id: String,
+pub async fn remove_space_device(
+    device_id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let active = session.require()?;
+    let active = session.require_valid(db.inner()).await?;
 
     let local_device_id_key = "device_id";
     let local_device_id =
         sqlx::query_file_scalar!("queries/settings/get_setting.sql", local_device_id_key)
             .fetch_optional(&*db)
             .await
-            .map_err(|e| AppError::Db(format!("remove_trusted_device read device_id: {e}")))?;
+            .map_err(|e| AppError::Db(format!("remove_space_device read device_id: {e}")))?;
 
-    let target = sqlx::query!(
-        "SELECT device_id, cert_pem FROM trusted_devices WHERE space_id = ?1 AND id = ?2",
-        active.space_id,
-        id
-    )
-    .fetch_optional(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("remove_trusted_device fetch target: {e}")))?;
-
-    if let Some(ref t) = target {
-        if let Some(ref local_id) = local_device_id
-            && local_id == &t.device_id
-        {
-            return Err(AppError::InvalidInput(
-                "cannot remove this device from itself".into(),
-            ));
-        }
-
-        // Tombstone in evicted_devices
-        sqlx::query_file!(
-            "queries/sync/insert_evicted_device.sql",
-            active.space_id,
-            t.device_id,
-            t.cert_pem
-        )
-        .execute(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("remove_trusted_device insert evicted: {e}")))?;
+    if let Some(ref local_id) = local_device_id
+        && local_id == &device_id
+    {
+        return Err(AppError::InvalidInput(
+            "cannot remove this device from itself".into(),
+        ));
     }
 
-    // Delete from trusted_devices (triggers delete change_log row)
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_device begin: {e}")))?;
+    require_owner_tx(&mut tx, &active.space_id, &active.user_id).await?;
+    let fingerprint = sqlx::query_file!("queries/sync/get_device_fingerprint.sql", &device_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_device fingerprint: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("device {device_id}")))?
+        .fingerprint;
+    if fingerprint.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "device {device_id} has no certificate fingerprint"
+        )));
+    }
+    let sync_seq = sqlx::query_file_scalar!("queries/settings/get_setting.sql", "sync_seq")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_device revision: {e}")))?
+        .parse::<i64>()
+        .map_err(|e| AppError::Internal(format!("invalid sync_seq: {e}")))?;
     sqlx::query_file!(
-        "queries/sync/delete_trusted_device.sql",
-        active.space_id,
-        id
+        "queries/sync/create_durable_revocation.sql",
+        uuid::Uuid::new_v4().simple().to_string(),
+        &active.space_id,
+        &device_id,
+        fingerprint,
+        sync_seq + 1,
+        &active.user_id
     )
-    .execute(&*db)
+    .execute(&mut *tx)
     .await
-    .map_err(|e| AppError::Db(format!("remove_trusted_device delete: {e}")))?;
+    .map_err(|e| AppError::Db(format!("remove_space_device revocation: {e}")))?;
+    sqlx::query_file!(
+        "queries/sync/delete_space_device.sql",
+        &active.space_id,
+        &device_id
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("remove_space_device delete: {e}")))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_device commit: {e}")))?;
+
+    debounce.notify_mutation();
+    Ok(())
+}
+
+/// Step 30.4: transition an existing (space, device) grant between
+/// trust modes ('active' ↔ 'revoking' ↔ 'revocation_only'). The new
+/// state is captured in change_log and propagates to peers on their
+/// next sync round. Note: this command does NOT evict a device — to
+/// revoke access entirely, call `remove_space_device` afterwards (or
+/// directly, skipping the revoking intermediate).
+#[tauri::command]
+pub async fn set_space_device_trust_mode(
+    device_id: String,
+    trust_mode: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
+) -> Result<(), AppError> {
+    let active = session.require_valid(db.inner()).await?;
+
+    let mode: TrustMode = trust_mode.parse().map_err(|e: AppError| {
+        AppError::InvalidInput(format!("set_space_device_trust_mode: {e}"))
+    })?;
+
+    let local_device_id = sqlx::query_file_scalar!("queries/settings/get_setting.sql", "device_id")
+        .fetch_optional(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("set_space_device_trust_mode read device_id: {e}")))?
+        .ok_or_else(|| AppError::Internal("device_id missing from app_settings".into()))?;
+
+    if local_device_id == device_id {
+        return Err(AppError::InvalidInput(
+            "cannot change trust mode of this device from itself".into(),
+        ));
+    }
+
+    let mut tx = db
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| AppError::Db(format!("set_space_device_trust_mode begin: {e}")))?;
+    require_owner_tx(&mut tx, &active.space_id, &active.user_id).await?;
+    let updated = sqlx::query_file!(
+        "queries/sync/update_space_device_trust_mode.sql",
+        active.space_id,
+        device_id,
+        mode
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("set_space_device_trust_mode: {e}")))?;
+
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound(format!(
+            "no space_devices row for ({}, {})",
+            active.space_id, device_id
+        )));
+    }
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("set_space_device_trust_mode commit: {e}")))?;
 
     debounce.notify_mutation();
     Ok(())
@@ -169,163 +268,31 @@ pub async fn generate_pair_token(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     pairing: State<'_, Arc<PairingState>>,
+    app: AppHandle,
 ) -> Result<PairToken, AppError> {
-    let active = session.require()?;
-
-    let space = sqlx::query_file!("queries/sync/get_space.sql", active.space_id)
-        .fetch_optional(&*db)
+    let active = session.require_valid(db.inner()).await?;
+    let mut tx = db
+        .inner()
+        .begin()
         .await
-        .map_err(|e| AppError::Db(format!("get_space: {e}")))?
-        .ok_or_else(|| AppError::NotFound(format!("space {}", active.space_id)))?;
-    let space = WireSpace {
-        id: space.id,
-        name: space.name,
-        created_at: space.created_at,
-        updated_at: space.updated_at,
-    };
-
-    let owner_user_row = sqlx::query_file!("queries/sync/get_user.sql", active.user_id)
-        .fetch_optional(&*db)
+        .map_err(|e| AppError::Db(format!("generate_pair_token begin: {e}")))?;
+    require_owner_tx(&mut tx, &active.space_id, &active.user_id).await?;
+    tx.commit()
         .await
-        .map_err(|e| AppError::Db(format!("get_user: {e}")))?
-        .ok_or_else(|| AppError::NotFound(format!("user {}", active.user_id)))?;
-    let owner_user = WireUser {
-        id: owner_user_row.id,
-        name: owner_user_row.name,
-        pin_hash: owner_user_row.pin_hash,
-        created_at: owner_user_row.created_at,
-        updated_at: owner_user_row.updated_at,
-    };
+        .map_err(|e| AppError::Db(format!("generate_pair_token commit: {e}")))?;
+    let identity = crate::sync::identity::ensure_identity(&db).await?;
 
-    let members = sqlx::query_file!(
-        "queries/sync/list_space_members_for_pairing.sql",
-        active.space_id,
+    let snapshot = crate::sync::snapshot::collect_snapshot(
+        &db,
+        Some(&app),
+        &active.space_id,
+        identity.device_id,
+        host_display_name,
+        identity.cert_pem,
     )
-    .fetch_all(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("list members: {e}")))?
-    .into_iter()
-    .map(|r| WireMember {
-        space_id: r.space_id,
-        user_id: r.user_id,
-        role: r.role,
-        joined_at: r.joined_at,
-    })
-    .collect();
+    .await?;
 
-    let member_users =
-        sqlx::query_file!("queries/sync/list_space_member_users.sql", active.space_id,)
-            .fetch_all(&*db)
-            .await
-            .map_err(|e| AppError::Db(format!("list member users: {e}")))?
-            .into_iter()
-            .map(|r| WireUser {
-                id: r.id,
-                name: r.name,
-                pin_hash: r.pin_hash,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-            })
-            .collect();
-
-    let categories = sqlx::query_file!("queries/sync/list_pairing_categories.sql", active.space_id)
-        .fetch_all(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("list pairing categories: {e}")))?
-        .into_iter()
-        .map(|r| WireCategory {
-            id: r.id,
-            name: r.name,
-            color: r.color,
-            space_id: r.space_id,
-        })
-        .collect();
-
-    let accounts = sqlx::query_file!("queries/sync/list_pairing_accounts.sql", active.space_id)
-        .fetch_all(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("list pairing accounts: {e}")))?
-        .into_iter()
-        .map(|r| WireAccount {
-            id: r.id,
-            name: r.name,
-            currency: r.currency,
-            account_type: r.account_type,
-            account_source: r.account_source,
-            color: r.color,
-            space_id: r.space_id,
-        })
-        .collect();
-
-    let transactions = sqlx::query_file!("queries/spaces/export_transactions.sql", active.space_id)
-        .fetch_all(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("list pairing transactions: {e}")))?
-        .into_iter()
-        .map(|r| WireTransaction {
-            id: r.id,
-            booking_date: r.booking_date,
-            value_date: r.value_date,
-            reference: r.reference,
-            text: r.text,
-            currency: r.currency,
-            amount: r.amount,
-            balance: r.balance,
-            approved: r.approved,
-            note: r.note,
-            category: if r.category.is_empty() {
-                None
-            } else {
-                Some(r.category)
-            },
-            account_id: r.account_id,
-        })
-        .collect();
-
-    let account_summaries = sqlx::query_file!(
-        "queries/spaces/export_account_summaries.sql",
-        active.space_id
-    )
-    .fetch_all(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("list pairing account summaries: {e}")))?
-    .into_iter()
-    .map(|r| WireAccountSummary {
-        month: r.month,
-        account_id: r.account_id,
-        balance: r.balance,
-    })
-    .collect();
-
-    let space_settings = sqlx::query_file!("queries/sync/list_space_settings.sql", active.space_id)
-        .fetch_all(&*db)
-        .await
-        .map_err(|e| AppError::Db(format!("list pairing space settings: {e}")))?
-        .into_iter()
-        .map(|r| WireSpaceSetting {
-            space_id: r.space_id,
-            key: r.key,
-            value: r.value,
-        })
-        .collect();
-
-    pairing::start_host_session(
-        (*db).clone(),
-        pairing.inner().clone(),
-        pairing::HostInputs {
-            space,
-            members,
-            member_users,
-            owner_user,
-            host_display_name,
-            categories,
-            accounts,
-            transactions,
-            account_summaries,
-            space_settings,
-        },
-    )
-    .await
+    pairing::start_host_session((*db).clone(), pairing.inner().clone(), snapshot, app).await
 }
 
 #[tauri::command]
@@ -336,8 +303,9 @@ pub async fn accept_pair_token_from_peer(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     registry: State<'_, PeerRegistry>,
+    app: AppHandle,
 ) -> Result<JoinResult, AppError> {
-    let user_session = session.require_user()?;
+    let user_session = session.require_user_valid(db.inner()).await?;
 
     let peer = registry
         .snapshot()
@@ -357,13 +325,18 @@ pub async fn accept_pair_token_from_peer(
     let joining = WireUser {
         id: user_row.id,
         name: user_row.name,
-        pin_hash: user_row.pin_hash,
         created_at: user_row.created_at,
         updated_at: user_row.updated_at,
     };
 
-    let result =
-        pairing::run_joiner((*db).clone(), address, Some(joining), device_display_name).await?;
+    let result = pairing::run_joiner(
+        (*db).clone(),
+        address,
+        Some(joining),
+        device_display_name,
+        app,
+    )
+    .await?;
 
     Ok(JoinResult {
         space_id: result.space_id,
@@ -388,6 +361,7 @@ pub async fn join_space(
     device_display_name: String,
     db: State<'_, DbPool>,
     registry: State<'_, PeerRegistry>,
+    app: AppHandle,
 ) -> Result<SpaceUsers, AppError> {
     let peer = registry
         .snapshot()
@@ -397,7 +371,8 @@ pub async fn join_space(
 
     let pairing_port = peer.pairing_port.unwrap_or(PAIRING_PORT);
     let address = format!("{token}|{}:{}", peer.host, pairing_port);
-    let result = pairing::run_joiner((*db).clone(), address, None, device_display_name).await?;
+    let result =
+        pairing::run_joiner((*db).clone(), address, None, device_display_name, app).await?;
 
     Ok(SpaceUsers {
         space_id: result.space_id,
@@ -432,8 +407,9 @@ pub async fn accept_pair_token(
     device_display_name: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    app: AppHandle,
 ) -> Result<JoinResult, AppError> {
-    let user_session = session.require_user()?;
+    let user_session = session.require_user_valid(db.inner()).await?;
 
     let user_row = sqlx::query_file!("queries/sync/get_user.sql", user_session.user_id)
         .fetch_optional(&*db)
@@ -444,16 +420,80 @@ pub async fn accept_pair_token(
     let joining = WireUser {
         id: user_row.id,
         name: user_row.name,
-        pin_hash: user_row.pin_hash,
         created_at: user_row.created_at,
         updated_at: user_row.updated_at,
     };
 
-    let result =
-        pairing::run_joiner((*db).clone(), address, Some(joining), device_display_name).await?;
+    let result = pairing::run_joiner(
+        (*db).clone(),
+        address,
+        Some(joining),
+        device_display_name,
+        app,
+    )
+    .await?;
 
     Ok(JoinResult {
         space_id: result.space_id,
         space_name: result.space_name,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Step 30.2 — Quarantined certs
+// ---------------------------------------------------------------------------
+
+/// One row in the `quarantined_devices` table, exposed to the UI so
+/// the user can see which certs were rejected and why. Populated by
+/// `pairing::upsert_device_and_grant` and the snapshot apply path
+/// when ingress validation fails.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QuarantinedDevice {
+    pub id: i64,
+    pub space_id: Option<String>,
+    pub claimed_device_id: String,
+    pub fingerprint: Option<String>,
+    pub cert_pem: String,
+    pub reason: String,
+    pub quarantined_at: String,
+}
+
+#[tauri::command]
+pub async fn list_quarantined_devices(
+    db: State<'_, DbPool>,
+) -> Result<Vec<QuarantinedDevice>, AppError> {
+    let rows = sqlx::query_file!("queries/sync/list_quarantined_devices.sql")
+        .fetch_all(&*db)
+        .await
+        .map_err(|e| AppError::Db(format!("list_quarantined_devices: {e}")))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| QuarantinedDevice {
+            id: r.id,
+            space_id: r.space_id,
+            claimed_device_id: r.claimed_device_id,
+            fingerprint: r.fingerprint,
+            cert_pem: r.cert_pem,
+            reason: r.reason,
+            quarantined_at: r.quarantined_at,
+        })
+        .collect())
+}
+
+async fn require_owner_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    space_id: &str,
+    user_id: &str,
+) -> Result<(), AppError> {
+    let row = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, user_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| AppError::Db(format!("require_owner_tx: {e}")))?;
+
+    match row {
+        None => Err(AppError::Forbidden),
+        Some(r) if r.role != "owner" => Err(AppError::Forbidden),
+        _ => Ok(()),
+    }
 }

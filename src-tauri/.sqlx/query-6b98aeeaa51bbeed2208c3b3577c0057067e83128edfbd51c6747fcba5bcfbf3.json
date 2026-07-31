@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "-- List all space-device grants for a space, joined with device identity.\nSELECT\n    sd.space_id    AS \"space_id!: String\",\n    sd.device_id   AS \"device_id!: String\",\n    sd.trust_mode  AS \"trust_mode!: String\",\n    sd.paired_at   AS \"paired_at!: String\",\n    d.display_name AS \"display_name!: String\"\nFROM space_devices sd\nJOIN devices d ON d.device_id = sd.device_id\nWHERE sd.space_id = ?1\nORDER BY sd.paired_at\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "device_id!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "trust_mode!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "trust_mode"
+          }
+        }
+      },
+      {
+        "name": "paired_at!: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_devices",
+            "name": "paired_at"
+          }
+        }
+      },
+      {
+        "name": "display_name!: String",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "display_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6b98aeeaa51bbeed2208c3b3577c0057067e83128edfbd51c6747fcba5bcfbf3"
+}

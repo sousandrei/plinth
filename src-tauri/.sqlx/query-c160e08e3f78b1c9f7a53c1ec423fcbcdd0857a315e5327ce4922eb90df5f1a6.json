@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT revocation_id, space_id, target_device_id, certificate_fingerprint,\n       winning_revision, requesting_owner_id, status, target_acknowledged, created_at\nFROM durable_revocations\nWHERE space_id = ?1\nORDER BY winning_revision ASC, revocation_id ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "revocation_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "revocation_id"
+          }
+        }
+      },
+      {
+        "name": "space_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "target_device_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "target_device_id"
+          }
+        }
+      },
+      {
+        "name": "certificate_fingerprint",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "certificate_fingerprint"
+          }
+        }
+      },
+      {
+        "name": "winning_revision",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "winning_revision"
+          }
+        }
+      },
+      {
+        "name": "requesting_owner_id",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "requesting_owner_id"
+          }
+        }
+      },
+      {
+        "name": "status",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "target_acknowledged",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "target_acknowledged"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "durable_revocations",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c160e08e3f78b1c9f7a53c1ec423fcbcdd0857a315e5327ce4922eb90df5f1a6"
+}

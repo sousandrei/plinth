@@ -97,6 +97,45 @@ impl Session {
         let guard = self.lock()?;
         guard.clone().ok_or(AppError::Unauthorized)
     }
+
+    pub async fn require_user_valid(&self, db: &sqlx::SqlitePool) -> Result<SessionData, AppError> {
+        let data = self.require_user()?;
+        let exists = sqlx::query_file!("queries/users/get_user.sql", data.user_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| AppError::Db(format!("validate session user: {e}")))?
+            .is_some();
+
+        if !exists {
+            self.clear()?;
+            return Err(AppError::Unauthorized);
+        }
+
+        Ok(data)
+    }
+
+    pub async fn require_valid(&self, db: &sqlx::SqlitePool) -> Result<ActiveSession, AppError> {
+        let data = self.require_user_valid(db).await?;
+        let space_id = data
+            .space_id
+            .ok_or_else(|| AppError::InvalidInput("no active space selected".into()))?;
+        let member =
+            sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, data.user_id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| AppError::Db(format!("validate session membership: {e}")))?
+                .is_some();
+
+        if !member {
+            self.clear_space()?;
+            return Err(AppError::Forbidden);
+        }
+
+        Ok(ActiveSession {
+            user_id: data.user_id,
+            space_id,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +182,7 @@ pub fn run() {
             commands::users::set_pin,
             commands::users::verify_pin,
             commands::users::update_user_name,
-            commands::users::remove_user,
+            commands::users::delete_local_profile,
             commands::users::factory_reset,
             commands::spaces::list_my_spaces,
             commands::spaces::create_space,
@@ -153,6 +192,7 @@ pub fn run() {
             commands::spaces::list_space_members,
             commands::spaces::add_space_member,
             commands::spaces::remove_space_member,
+            commands::spaces::remove_person_and_exclusive_devices,
             commands::spaces::leave_space,
             commands::spaces::delete_space,
             commands::spaces::evict_space,
@@ -199,8 +239,11 @@ pub fn run() {
             commands::settings::set_app_setting,
             commands::sync::list_peers,
             commands::sync::force_sync_now,
-            commands::sync::list_trusted_devices,
-            commands::sync::remove_trusted_device,
+            commands::sync::record_device_user_grant,
+            commands::sync::list_space_devices,
+            commands::sync::remove_space_device,
+            commands::sync::set_space_device_trust_mode,
+            commands::sync::list_quarantined_devices,
             commands::sync::generate_pair_token,
             commands::sync::accept_pair_token,
             commands::sync::accept_pair_token_from_peer,

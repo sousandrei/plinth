@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Upsert the winning revision for a logical row. The WHERE clause\n-- ensures a losing revision cannot dethrone the existing winner.\n-- Comparison: higher winning_seq wins; tiebreaker: higher winning_origin\n-- (origin_device_id). Matches the bootstrap ORDER BY in migration 0004\n-- and the change_log_winner_upsert trigger in migration 0006.\n-- See data/PLAN.md Step 29.3.\nINSERT INTO row_winners (space_id, table_name, row_id, winning_seq, winning_origin, deleted)\nVALUES (?1, ?2, ?3, ?4, ?5, ?6)\nON CONFLICT (space_id, table_name, row_id) DO UPDATE\nSET winning_seq = excluded.winning_seq,\n    winning_origin = excluded.winning_origin,\n    deleted = excluded.deleted\nWHERE excluded.winning_seq > row_winners.winning_seq\n   OR (excluded.winning_seq = row_winners.winning_seq\n       AND excluded.winning_origin > row_winners.winning_origin)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "b964a910572ef83c6c37eaba68e499629c32eb30fc277250f0c0c6d752e7fc30"
+}

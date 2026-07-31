@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Grant a device access to a space. One row per (space_id, device_id).\n-- `trust_mode` is one of 'active', 'revoking', 'revocation_only'.\nINSERT INTO space_devices (space_id, device_id, trust_mode, paired_at)\nSELECT ?1, ?2, ?3, ?4\nWHERE NOT EXISTS (\n    SELECT 1 FROM durable_revocations\n    WHERE space_id = ?1 AND target_device_id = ?2\n)\nON CONFLICT (space_id, device_id) DO UPDATE\nSET trust_mode = excluded.trust_mode\nWHERE NOT EXISTS (\n    SELECT 1 FROM durable_revocations\n    WHERE space_id = ?1 AND target_device_id = ?2\n)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "a7aeaf7fe3c70a88088fd56d9a87a9fcd6f33cbae8c42404428c30fcf30e2b13"
+}

@@ -228,7 +228,7 @@ pub async fn fine_tune(
     session: State<'_, Session>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<FinetuneResult, AppError> {
-    let active_session = session.require()?;
+    let active_session = session.require_valid(db.inner()).await?;
     let space_id = active_session.space_id.clone();
     let app_data = app
         .path()
@@ -491,7 +491,7 @@ pub async fn list_models(
     db: State<'_, DbPool>,
     session: State<'_, Session>,
 ) -> Result<Vec<ModelCard>, AppError> {
-    let active_session = session.require()?;
+    let active_session = session.require_valid(db.inner()).await?;
     let dir = models_dir(&app, &active_session.space_id)?;
     let active = get_active_version(&db, &active_session.space_id).await;
 
@@ -524,7 +524,7 @@ pub async fn set_active_model(
     session: State<'_, Session>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let active_session = session.require()?;
+    let active_session = session.require_valid(db.inner()).await?;
     let dir = models_dir(&app, &active_session.space_id)?;
 
     let p = weights_path(&dir, version);
@@ -554,7 +554,7 @@ pub async fn get_training_samples(
     classifier: State<'_, ClassifierState>,
     session: State<'_, Session>,
 ) -> Result<Vec<TrainingSample>, AppError> {
-    let active_session = session.require()?;
+    let active_session = session.require_valid(db.inner()).await?;
     let space_id = active_session.space_id.clone();
 
     let rows = sqlx::query_file!("queries/training/get_training_samples.sql", space_id, limit)
@@ -638,7 +638,7 @@ pub async fn count_approved_transactions(
     db: State<'_, DbPool>,
     session: State<'_, Session>,
 ) -> Result<i64, AppError> {
-    let active_session = session.require()?;
+    let active_session = session.require_valid(db.inner()).await?;
     let row = sqlx::query_file!(
         "queries/training/count_approved_transactions.sql",
         active_session.space_id
@@ -664,7 +664,7 @@ pub async fn delete_model(
     session: State<'_, Session>,
     debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
-    let active_session = session.require()?;
+    let active_session = session.require_valid(db.inner()).await?;
     let space_id = active_session.space_id.clone();
     let dir = models_dir(&app, &space_id)?;
     let active = get_active_version(&db, &space_id).await;
@@ -796,7 +796,7 @@ pub async fn reload_classifier(
     classifier: State<'_, ClassifierState>,
     session: State<'_, Session>,
 ) -> Result<(), AppError> {
-    let space_id = match session.require() {
+    let space_id = match session.require_valid(db.inner()).await {
         Ok(s) => s.space_id,
         Err(_) => return Ok(()),
     };

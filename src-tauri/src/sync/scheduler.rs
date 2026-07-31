@@ -124,9 +124,9 @@ fn now_unix_secs() -> u64 {
 
 async fn trusted_device_ids(db: &SqlitePool) -> HashSet<String> {
     // Only dial peers that share at least one existing space.  When a space
-    // is deleted the trusted_devices row is orphaned (no CASCADE) — we must
+    // is deleted the space_devices row is orphaned (no CASCADE) — we must
     // not dial that peer for a space we no longer have.
-    match sqlx::query_file!("queries/sync/list_trusted_device_ids.sql")
+    match sqlx::query_file!("queries/sync/list_known_device_ids.sql")
         .fetch_all(db)
         .await
     {
@@ -145,7 +145,7 @@ pub async fn dial_all_peers(
     app: &AppHandle,
     in_flight: &DialInFlight,
 ) -> (Vec<JoinHandle<Result<(), AppError>>>, Vec<PeerInfo>) {
-    // Only dial peers we have a trusted_devices row for — this prevents
+    // Only dial peers we have a space_devices row for — this prevents
     // handshake failures against unknown LAN peers and stops the noise
     // from devices we haven't paired with (or where pairing was cancelled).
     let trusted = trusted_device_ids(db).await;

@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Get the current winning revision for a logical row, if any.\n-- Used by the remote-apply path to compare (origin_seq, origin_device_id)\n-- before materializing the row body. See data/PLAN.md Step 29.3.\nSELECT winning_seq, winning_origin, deleted\nFROM row_winners\nWHERE space_id = ?1 AND table_name = ?2 AND row_id = ?3\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "winning_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "winning_seq"
+          }
+        }
+      },
+      {
+        "name": "winning_origin",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "winning_origin"
+          }
+        }
+      },
+      {
+        "name": "deleted",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "row_winners",
+            "name": "deleted"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0f0a99255ab034b2e9d59f8399717f0d516826dfaf37b5041bea2205d206423a"
+}

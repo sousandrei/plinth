@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::sync::trust_mode::TrustMode;
+
 // ---------------------------------------------------------------------------
 // One payload struct per synced table. Field names and types must match
 // exactly what the SQLite triggers produce via `json_object(...)` in
@@ -32,7 +34,6 @@ pub struct SpacePayload {
 pub struct UserSnapshot {
     pub id: String,
     pub name: String,
-    pub pin_hash: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -96,14 +97,36 @@ pub struct SpaceSettingPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrustedDevicePayload {
-    pub id: String,
+pub struct SpaceDevicePayload {
     pub space_id: String,
     pub device_id: String,
-    pub display_name: String,
-    pub cert_pem: String,
-    pub sync_enabled: i64,
+    /// Step 30.4: serialized as the lowercase enum string
+    /// (`active` / `revoking` / `revocation_only`). Old payloads carried
+    /// `sync_enabled: 0|1`; new peers reject unknown trust_mode values
+    /// at apply time rather than guessing.
+    pub trust_mode: TrustMode,
     pub paired_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceUserGrantPayload {
+    pub space_id: String,
+    pub device_id: String,
+    pub user_id: String,
+    pub granted_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableRevocationPayload {
+    pub revocation_id: String,
+    pub space_id: String,
+    pub target_device_id: String,
+    pub certificate_fingerprint: String,
+    pub winning_revision: i64,
+    pub requesting_owner_id: String,
+    pub status: String,
+    pub target_acknowledged: i64,
+    pub created_at: String,
 }
 
 /// One row of the `model_versions` registry — the mesh-wide record of
@@ -135,7 +158,9 @@ pub enum TablePayload {
     Transaction(TransactionPayload),
     AccountSummary(AccountSummaryPayload),
     SpaceSetting(SpaceSettingPayload),
-    TrustedDevice(TrustedDevicePayload),
+    SpaceDevice(SpaceDevicePayload),
+    DeviceUserGrant(DeviceUserGrantPayload),
+    DurableRevocation(DurableRevocationPayload),
     ModelVersion(ModelVersionPayload),
 }
 
@@ -151,8 +176,29 @@ impl TablePayload {
             Self::Transaction(_) => "transactions",
             Self::AccountSummary(_) => "account_summaries",
             Self::SpaceSetting(_) => "space_settings",
-            Self::TrustedDevice(_) => "trusted_devices",
+            Self::SpaceDevice(_) => "space_devices",
+            Self::DeviceUserGrant(_) => "device_user_grants",
+            Self::DurableRevocation(_) => "durable_revocations",
             Self::ModelVersion(_) => "model_versions",
+        }
+    }
+
+    /// Serialize the inner payload struct (not the tagged enum) to JSON.
+    /// This is the inverse of `from_json` — the trigger's `json_object`
+    /// produces plain object JSON, and this method matches that format.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        match self {
+            Self::Space(p) => serde_json::to_string(p),
+            Self::SpaceMember(p) => serde_json::to_string(p),
+            Self::Account(p) => serde_json::to_string(p),
+            Self::Category(p) => serde_json::to_string(p),
+            Self::Transaction(p) => serde_json::to_string(p),
+            Self::AccountSummary(p) => serde_json::to_string(p),
+            Self::SpaceSetting(p) => serde_json::to_string(p),
+            Self::SpaceDevice(p) => serde_json::to_string(p),
+            Self::DeviceUserGrant(p) => serde_json::to_string(p),
+            Self::DurableRevocation(p) => serde_json::to_string(p),
+            Self::ModelVersion(p) => serde_json::to_string(p),
         }
     }
 }
@@ -180,7 +226,9 @@ pub fn from_json(table_name: &str, json: &str) -> Result<TablePayload, PayloadEr
         "transactions" => decode!(Transaction, TransactionPayload),
         "account_summaries" => decode!(AccountSummary, AccountSummaryPayload),
         "space_settings" => decode!(SpaceSetting, SpaceSettingPayload),
-        "trusted_devices" => decode!(TrustedDevice, TrustedDevicePayload),
+        "space_devices" => decode!(SpaceDevice, SpaceDevicePayload),
+        "device_user_grants" => decode!(DeviceUserGrant, DeviceUserGrantPayload),
+        "durable_revocations" => decode!(DurableRevocation, DurableRevocationPayload),
         "model_versions" => decode!(ModelVersion, ModelVersionPayload),
         other => Err(PayloadError::UnknownTable(other.to_string())),
     }
@@ -237,7 +285,6 @@ mod tests {
             "user": {
                 "id": "u-1",
                 "name": "Alice",
-                "pin_hash": "argon2:...",
                 "created_at": "2024-01-01T00:00:00Z",
                 "updated_at": "2024-01-01T00:00:00Z"
             }

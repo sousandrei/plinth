@@ -35,12 +35,14 @@ use getrandom::fill;
 use serde::{Deserialize, Serialize};
 use spake2::{Ed25519Group, Identity as PakeIdentity, Password, Spake2};
 use sqlx::SqlitePool;
+use tauri::AppHandle;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
 use crate::error::AppError;
+use crate::sync::trust_mode::TrustMode;
 
 const TOKEN_TTL_SECS: u64 = 90;
 const HANDSHAKE_DEADLINE_SECS: u64 = 300;
@@ -69,10 +71,8 @@ pub struct PairToken {
 
 // Wire types live in `snapshot` so they can be reused by the sync
 // session fallback. Re-exported here for backwards-compat callers.
-pub use crate::sync::snapshot::{
-    SnapshotFrame, SpaceSnapshot, WireAccount, WireAccountSummary, WireCategory, WireMember,
-    WireSpace, WireSpaceSetting, WireTransaction, WireUser,
-};
+pub use crate::sync::snapshot::{SnapshotFrame, SpaceSnapshot, WireMember, WireSpace, WireUser};
+use crate::sync::wire::ModelData;
 
 /// Sent by the joiner. Tells the host who is joining and how to reach
 /// this device later.
@@ -85,27 +85,6 @@ pub struct JoinPayload {
     pub device_id: String,
     pub device_name: String,
     pub cert_pem: String,
-}
-
-/// Sent by the host. Carries the full space context so the joiner can
-/// materialize the space on its end.
-///
-/// Thin wrapper over `SpaceSnapshot` that adds the member list and
-/// member users (which the host gathers separately for the pairing
-/// handshake and aren't part of the reusable snapshot structure).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpaceBundle {
-    pub space: WireSpace,
-    pub members: Vec<WireMember>,
-    pub users: Vec<WireUser>,
-    pub categories: Vec<WireCategory>,
-    pub accounts: Vec<WireAccount>,
-    pub transactions: Vec<WireTransaction>,
-    pub account_summaries: Vec<WireAccountSummary>,
-    pub space_settings: Vec<WireSpaceSetting>,
-    pub host_device_id: String,
-    pub host_device_name: String,
-    pub host_cert_pem: String,
 }
 
 /// Small, always-fits-in-1MB header sent first in the host→joiner
@@ -130,7 +109,11 @@ struct PairHeader {
 enum PairFrame {
     Header(PairHeader),
     Chunk(SnapshotFrame),
+    ModelData(ModelData),
     End,
+    SnapshotApplied,
+    PairCommitted,
+    PairFailed(String),
 }
 
 /// Stream snapshot data in chunks, producing one `PairFrame::Chunk`
@@ -205,33 +188,16 @@ impl PairingState {
 // Host side — listen for an incoming pairing
 // ---------------------------------------------------------------------------
 
-/// Inputs the host side needs to pre-package the space context before
-/// any peer connects. Owner of the space gathers these from the DB,
-/// hands them to `start_host_session`, and the session task does the
-/// rest.
-pub struct HostInputs {
-    pub space: WireSpace,
-    pub members: Vec<WireMember>,
-    pub member_users: Vec<WireUser>,
-    pub owner_user: WireUser,
-    pub host_display_name: String,
-    pub categories: Vec<WireCategory>,
-    pub accounts: Vec<WireAccount>,
-    pub transactions: Vec<WireTransaction>,
-    pub account_summaries: Vec<WireAccountSummary>,
-    pub space_settings: Vec<WireSpaceSetting>,
-}
-
 /// Generates a fresh 6-digit token, starts a single-shot listener on an
 /// ephemeral port, and registers the token in the in-memory pairing
 /// state. The listener auto-times-out after `HANDSHAKE_DEADLINE_SECS`.
 pub async fn start_host_session(
     db: SqlitePool,
     state: Arc<PairingState>,
-    inputs: HostInputs,
+    snapshot: SpaceSnapshot,
+    app: AppHandle,
 ) -> Result<PairToken, AppError> {
-    let identity = crate::sync::identity::ensure_identity(&db).await?;
-    let space_id = inputs.space.id.clone();
+    let space_id = snapshot.space.id.clone();
 
     let token = {
         let mut buf = [0u8; 4];
@@ -253,32 +219,20 @@ pub async fn start_host_session(
         Duration::from_secs(TOKEN_TTL_SECS),
     )?;
 
-    let bundle = SpaceBundle {
-        space: inputs.space,
-        members: inputs.members,
-        users: {
-            let mut u = inputs.member_users;
-            if !u.iter().any(|x| x.id == inputs.owner_user.id) {
-                u.push(inputs.owner_user);
-            }
-            u
-        },
-        categories: inputs.categories,
-        accounts: inputs.accounts,
-        transactions: inputs.transactions,
-        account_summaries: inputs.account_summaries,
-        space_settings: inputs.space_settings,
-        host_device_id: identity.device_id.clone(),
-        host_device_name: inputs.host_display_name,
-        host_cert_pem: identity.cert_pem.clone(),
-    };
-
     let token_for_session = token.clone();
     let state_for_session = state.clone();
     tokio::spawn(async move {
         let result = tokio::time::timeout(
             Duration::from_secs(HANDSHAKE_DEADLINE_SECS),
-            run_host_session(listener, token_for_session.clone(), space_id, bundle, db),
+            run_host_session(
+                listener,
+                token_for_session.clone(),
+                space_id,
+                snapshot,
+                db,
+                app,
+                state_for_session.clone(),
+            ),
         )
         .await;
         // Always drop the token after the session ends or times out.
@@ -305,13 +259,21 @@ async fn run_host_session(
     listener: TcpListener,
     token: String,
     space_id: String,
-    bundle: SpaceBundle,
+    snapshot: SpaceSnapshot,
     db: SqlitePool,
+    app: AppHandle,
+    state: Arc<PairingState>,
 ) -> Result<(), AppError> {
     let (mut stream, _peer) = listener
         .accept()
         .await
         .map_err(|e| AppError::Io(format!("pairing accept: {e}")))?;
+
+    if state.take(&token).is_none() {
+        return Err(AppError::InvalidInput(
+            "pairing token expired or already used".into(),
+        ));
+    }
 
     // SPAKE2 symmetric handshake.
     let (state, our_msg) = Spake2::<Ed25519Group>::start_symmetric(
@@ -329,60 +291,145 @@ async fn run_host_session(
     // Receive JoinPayload from the joiner.
     let join: JoinPayload = read_encrypted(&mut stream, &cipher).await?;
 
-    // Stream the space data: header first, then chunked table data, then
-    // an End marker. Each frame is independently encrypted and stays
-    // under the 1 MB cap regardless of space size.
-    let header = PairHeader {
-        space: bundle.space.clone(),
-        members: bundle.members.clone(),
-        users: bundle.users.clone(),
-        host_device_id: bundle.host_device_id.clone(),
-        host_device_name: bundle.host_device_name.clone(),
-        host_cert_pem: bundle.host_cert_pem.clone(),
-    };
-    write_encrypted(&mut stream, &cipher, &PairFrame::Header(header)).await?;
-
-    stream_pair_chunks(&mut stream, &cipher, &bundle.categories, |c| {
-        SnapshotFrame::Categories(c)
-    })
-    .await?;
-    stream_pair_chunks(&mut stream, &cipher, &bundle.accounts, |c| {
-        SnapshotFrame::Accounts(c)
-    })
-    .await?;
-    stream_pair_chunks(&mut stream, &cipher, &bundle.transactions, |c| {
-        SnapshotFrame::Transactions(c)
-    })
-    .await?;
-    stream_pair_chunks(&mut stream, &cipher, &bundle.account_summaries, |c| {
-        SnapshotFrame::AccountSummaries(c)
-    })
-    .await?;
-    stream_pair_chunks(&mut stream, &cipher, &bundle.space_settings, |c| {
-        SnapshotFrame::SpaceSettings(c)
-    })
-    .await?;
-
-    write_encrypted(&mut stream, &cipher, &PairFrame::End).await?;
-
-    // Persist the joiner as a trusted device of this space.
-    upsert_trusted_device(
+    if let Err(error) = create_pending_pairing(
         &db,
         &space_id,
         &join.device_id,
         &join.device_name,
         &join.cert_pem,
     )
-    .await?;
-
-    // Only add a new member if the joiner sent a user payload.
-    // If `user` is None, the joiner is an existing member joining on a new
-    // device — just trust the device, don't create a duplicate membership.
-    if let Some(ref u) = join.user {
-        upsert_user(&db, u).await?;
-        upsert_space_member(&db, &space_id, &u.id, "member").await?;
+    .await
+    {
+        let _ = write_encrypted(
+            &mut stream,
+            &cipher,
+            &PairFrame::PairFailed(error.to_string()),
+        )
+        .await;
+        return Err(error);
     }
 
+    // Stream the space data: header first, then chunked table data, then
+    // an End marker. Each frame is independently encrypted and stays
+    // under the 1 MB cap regardless of space size.
+    let header = PairHeader {
+        space: snapshot.space.clone(),
+        members: snapshot.members.clone(),
+        users: snapshot.users.clone(),
+        host_device_id: snapshot.host_device_id.clone(),
+        host_device_name: snapshot.host_device_name.clone(),
+        host_cert_pem: snapshot.host_cert_pem.clone(),
+    };
+    write_encrypted(&mut stream, &cipher, &PairFrame::Header(header)).await?;
+
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.devices, |c| {
+        SnapshotFrame::Devices(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.durable_revocations, |c| {
+        SnapshotFrame::DurableRevocations(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.space_devices, |c| {
+        SnapshotFrame::SpaceDevices(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.device_user_grants, |c| {
+        SnapshotFrame::DeviceUserGrants(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.categories, |c| {
+        SnapshotFrame::Categories(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.accounts, |c| {
+        SnapshotFrame::Accounts(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.transactions, |c| {
+        SnapshotFrame::Transactions(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.account_summaries, |c| {
+        SnapshotFrame::AccountSummaries(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.model_versions, |c| {
+        SnapshotFrame::ModelVersions(c)
+    })
+    .await?;
+    for manifest in &snapshot.model_versions {
+        let version = u32::try_from(manifest.version)
+            .map_err(|_| AppError::InvalidInput("pairing: invalid model version".into()))?;
+        if let Some(data) = crate::sync::model_sync::read_model(&app, &manifest.space_id, version)?
+        {
+            write_encrypted(&mut stream, &cipher, &PairFrame::ModelData(data)).await?;
+        }
+    }
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.space_settings, |c| {
+        SnapshotFrame::SpaceSettings(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.high_water_vector, |c| {
+        SnapshotFrame::HighWaterVector(c)
+    })
+    .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.row_winners, |c| {
+        SnapshotFrame::RowWinners(c)
+    })
+    .await?;
+
+    write_encrypted(&mut stream, &cipher, &PairFrame::End).await?;
+
+    match read_encrypted::<PairFrame>(&mut stream, &cipher).await? {
+        PairFrame::SnapshotApplied => {}
+        other => {
+            return Err(AppError::Internal(format!(
+                "pairing: expected SnapshotApplied, got {:?}",
+                std::mem::discriminant(&other)
+            )));
+        }
+    }
+
+    let commit_result = async {
+        upsert_device_and_grant(
+            &db,
+            &space_id,
+            &join.device_id,
+            &join.device_name,
+            &join.cert_pem,
+        )
+        .await?;
+
+        if let Some(ref u) = join.user {
+            upsert_user(&db, u).await?;
+            upsert_space_member(&db, &space_id, &u.id, "member").await?;
+            upsert_device_user_grant(&db, &space_id, &join.device_id, &u.id).await?;
+        }
+
+        sqlx::query_file!(
+            "queries/sync/delete_pending_pairing.sql",
+            space_id,
+            join.device_id
+        )
+        .execute(&db)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_pending_pairing: {e}")))?;
+        Ok::<(), AppError>(())
+    }
+    .await;
+
+    if let Err(error) = commit_result {
+        let _ = write_encrypted(
+            &mut stream,
+            &cipher,
+            &PairFrame::PairFailed(error.to_string()),
+        )
+        .await;
+        return Err(error);
+    }
+
+    write_encrypted(&mut stream, &cipher, &PairFrame::PairCommitted).await?;
     stream.shutdown().await.ok();
     Ok(())
 }
@@ -408,6 +455,7 @@ pub async fn run_joiner(
     address: String,
     joining_user: Option<WireUser>,
     device_display_name: String,
+    app: AppHandle,
 ) -> Result<PairingResult, AppError> {
     let (digits, target) = parse_address(&address)?;
     let identity = crate::sync::identity::ensure_identity(&db).await?;
@@ -458,15 +506,42 @@ pub async fn run_joiner(
     let space_name = header.space.name.clone();
     let users = header.users.clone();
 
+    let mut frames = Vec::new();
+    loop {
+        let frame: PairFrame = read_encrypted(&mut stream, &cipher).await?;
+        match frame {
+            PairFrame::Header(_) => {
+                return Err(AppError::Internal("pairing: duplicate Header frame".into()));
+            }
+            PairFrame::Chunk(_) | PairFrame::ModelData(_) => frames.push(frame),
+            PairFrame::End => break,
+            PairFrame::SnapshotApplied | PairFrame::PairCommitted | PairFrame::PairFailed(_) => {
+                return Err(AppError::Internal(
+                    "pairing: unexpected control frame".into(),
+                ));
+            }
+        }
+    }
+
+    let mut model_data = Vec::new();
+    for frame in &frames {
+        if let PairFrame::ModelData(data) = frame {
+            if data.space_id != space_id {
+                return Err(AppError::InvalidInput(
+                    "pairing: model data space mismatch".into(),
+                ));
+            }
+            model_data.push(data.clone());
+        }
+    }
+
     // Persist everything received. Run inside apply_guard so the
     // change_log override is set to the host's device_id — every
     // change_log trigger on a synced table stamps the host's id, so
     // the inserted rows originated on the host and don't echo back as
     // local changes on subsequent sync sessions.
     //
-    // The stream is moved into the closure so the remaining frames
-    // can be read inside the transaction. A mid-stream failure rolls
-    // back every DB write; the joiner can then retry pairing.
+    let app_for_models = app.clone();
     crate::sync::apply_guard::run_as_device(&db, &host_device_id, move |tx| {
         Box::pin(async move {
             // Build a SpaceSnapshot skeleton from the header so we can
@@ -474,6 +549,14 @@ pub async fn run_joiner(
             // The space row gets filled in from the first Space chunk
             // (or we already have it from the header).
             let mut snapshot = SpaceSnapshot {
+                snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+                protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+                snapshot_id: String::new(),
+                host_device_id: header.host_device_id.clone(),
+                host_device_name: header.host_device_name.clone(),
+                host_cert_pem: header.host_cert_pem.clone(),
+                high_water_vector: Vec::new(),
+                row_winners: Vec::new(),
                 space: header.space.clone(),
                 members: header.members.clone(),
                 users: header.users.clone(),
@@ -483,17 +566,14 @@ pub async fn run_joiner(
                 account_summaries: Vec::new(),
                 space_settings: Vec::new(),
                 model_versions: Vec::new(),
-                host_device_id: header.host_device_id.clone(),
-                host_device_name: header.host_device_name.clone(),
-                host_cert_pem: header.host_cert_pem.clone(),
+                devices: Vec::new(),
+                space_devices: Vec::new(),
+                device_user_grants: Vec::new(),
+                durable_revocations: Vec::new(),
             };
             apply_header(tx, &header).await?;
-            loop {
-                let frame: PairFrame = read_encrypted(&mut stream, &cipher).await?;
+            for frame in frames {
                 match frame {
-                    PairFrame::Header(_) => {
-                        return Err(AppError::Internal("pairing: duplicate Header frame".into()));
-                    }
                     PairFrame::Chunk(chunk) => {
                         // Lift the space identity if we ever get a Space
                         // chunk (defensive — host sends it in the header).
@@ -502,9 +582,15 @@ pub async fn run_joiner(
                         }
                         crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot, &chunk).await?;
                     }
-                    PairFrame::End => {
-                        stream.shutdown().await.ok();
-                        break;
+                    PairFrame::ModelData(data) => {
+                        let _ = data;
+                    }
+                    PairFrame::Header(_)
+                    | PairFrame::End
+                    | PairFrame::SnapshotApplied
+                    | PairFrame::PairCommitted
+                    | PairFrame::PairFailed(_) => {
+                        return Err(AppError::Internal("pairing: unexpected frame".into()));
                     }
                 }
             }
@@ -513,6 +599,43 @@ pub async fn run_joiner(
     })
     .await
     .map_err(|e| AppError::Db(format!("pairing persist: {e}")))?;
+
+    // Step 31.2: install the cursor vector AFTER the snapshot tx commits.
+    // The streaming skeleton above had an empty high_water_vector, so we
+    // re-read the just-applied origin_state rows from disk and use those.
+    let high_water_vector: Vec<crate::sync::snapshot::WireOriginState> = sqlx::query_file_as!(
+        crate::sync::snapshot::WireOriginState,
+        "queries/snapshots/list_origin_states.sql",
+        space_id
+    )
+    .fetch_all(&db)
+    .await
+    .map_err(|e| AppError::Db(format!("pairing list_origin_states: {e}")))?;
+    crate::sync::snapshot::install_snapshot_cursors(
+        &db,
+        &space_id,
+        &high_water_vector,
+        &host_device_id,
+    )
+    .await
+    .map_err(|e| AppError::Db(format!("pairing install cursors: {e}")))?;
+
+    for data in model_data {
+        crate::sync::model_sync::apply_model(&app_for_models, &db, &data).await?;
+    }
+
+    write_encrypted(&mut stream, &cipher, &PairFrame::SnapshotApplied).await?;
+    match read_encrypted::<PairFrame>(&mut stream, &cipher).await? {
+        PairFrame::PairCommitted => {}
+        PairFrame::PairFailed(error) => return Err(AppError::Internal(error)),
+        other => {
+            return Err(AppError::Internal(format!(
+                "pairing: expected PairCommitted, got {:?}",
+                std::mem::discriminant(&other)
+            )));
+        }
+    }
+    stream.shutdown().await.ok();
 
     Ok(PairingResult {
         space_id,
@@ -526,13 +649,40 @@ pub async fn run_joiner(
 // its own rows, not applying a peer's data)
 // ---------------------------------------------------------------------------
 
+async fn create_pending_pairing(
+    db: &SqlitePool,
+    space_id: &str,
+    device_id: &str,
+    display_name: &str,
+    cert_pem: &str,
+) -> Result<(), AppError> {
+    let validated = crate::sync::cert_validation::parse_and_canonicalize(cert_pem)
+        .map_err(|e| AppError::InvalidInput(format!("pairing pending cert: {e}")))?;
+    crate::sync::cert_validation::check_device_id_match(&validated, device_id)
+        .map_err(|e| AppError::InvalidInput(format!("pairing pending cert: {e}")))?;
+    crate::sync::cert_validation::check_against_existing(db, device_id, &validated.fingerprint)
+        .await
+        .map_err(|e| AppError::InvalidInput(format!("pairing pending cert: {e}")))?;
+
+    sqlx::query_file!(
+        "queries/sync/upsert_pending_pairing.sql",
+        space_id,
+        device_id,
+        display_name,
+        cert_pem,
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_pending_pairing: {e}")))?;
+    Ok(())
+}
+
 async fn upsert_user(db: &SqlitePool, user: &WireUser) -> Result<(), AppError> {
-    let pin = user.pin_hash.clone();
     sqlx::query_file!(
         "queries/sync/upsert_user.sql",
         user.id,
         user.name,
-        pin,
         user.created_at,
         user.updated_at,
     )
@@ -560,26 +710,126 @@ async fn upsert_space_member(
     Ok(())
 }
 
-async fn upsert_trusted_device(
+async fn upsert_device_user_grant(
+    db: &SqlitePool,
+    space_id: &str,
+    device_id: &str,
+    user_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/upsert_device_user_grant.sql",
+        space_id,
+        device_id,
+        user_id,
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device_user_grant: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_device_and_grant(
     db: &SqlitePool,
     space_id: &str,
     device_id: &str,
     display_name: &str,
     cert_pem: &str,
 ) -> Result<(), AppError> {
-    let id = uuid::Uuid::new_v4().to_string();
+    // Step 30.2: validate the joiner's cert before persisting. A
+    // malformed or mismatched cert is quarantined so the user can
+    // review it; the pairing is rejected outright — we'd rather
+    // fail the handshake than persist a half-trusted peer.
+    let validated = match crate::sync::cert_validation::parse_and_canonicalize(cert_pem) {
+        Ok(v) => v,
+        Err(e) => {
+            sqlx::query_file!(
+                "queries/sync/insert_quarantined_device.sql",
+                space_id,
+                device_id,
+                Option::<String>::None,
+                cert_pem,
+                format!("{e}"),
+            )
+            .execute(db)
+            .await
+            .map_err(|e| AppError::Db(format!("quarantine_device: {e}")))?;
+            return Err(e);
+        }
+    };
+    if let Err(e) = crate::sync::cert_validation::check_device_id_match(&validated, device_id) {
+        sqlx::query_file!(
+            "queries/sync/insert_quarantined_device.sql",
+            space_id,
+            device_id,
+            Some(validated.fingerprint.clone()),
+            cert_pem,
+            format!("{e}"),
+        )
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("quarantine_device: {e}")))?;
+        return Err(AppError::InvalidInput(format!("pairing: {e}")));
+    }
+    if let Err(e) =
+        crate::sync::cert_validation::check_against_existing(db, device_id, &validated.fingerprint)
+            .await
+    {
+        sqlx::query_file!(
+            "queries/sync/insert_quarantined_device.sql",
+            space_id,
+            device_id,
+            Some(validated.fingerprint.clone()),
+            cert_pem,
+            format!("{e}"),
+        )
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Db(format!("quarantine_device: {e}")))?;
+        return Err(AppError::InvalidInput(format!("pairing: {e}")));
+    }
+
     sqlx::query_file!(
-        "queries/sync/upsert_trusted_device.sql",
-        id,
-        space_id,
+        "queries/sync/upsert_device.sql",
         device_id,
-        display_name,
         cert_pem,
+        validated.der,
+        validated.fingerprint,
+        display_name
     )
     .execute(db)
     .await
-    .map_err(|e| AppError::Db(format!("upsert_trusted_device: {e}")))?;
+    .map_err(|e| AppError::Db(format!("upsert_device: {e}")))?;
+
+    let ts = "2024-01-01T00:00:00Z";
+    sqlx::query_file!(
+        "queries/sync/upsert_space_device.sql",
+        space_id,
+        device_id,
+        TrustMode::Active,
+        ts
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
     Ok(())
+}
+
+/// Test-only wrapper that exposes the private `upsert_device_and_grant`
+/// so the Step 30.2 ingress-validation tests can drive the function
+/// directly. The production callers (host-side `run_host_session`,
+/// `snapshot::apply_snapshot_frame`) go through their own internal
+/// paths; this wrapper just exists so the validation logic itself is
+/// testable without a live socket.
+#[cfg(test)]
+pub async fn upsert_device_and_grant_for_test(
+    db: &SqlitePool,
+    space_id: &str,
+    device_id: &str,
+    display_name: &str,
+    cert_pem: &str,
+) -> Result<(), AppError> {
+    upsert_device_and_grant(db, space_id, device_id, display_name, cert_pem).await
 }
 
 fn parse_address(s: &str) -> Result<(String, SocketAddr), AppError> {
@@ -690,6 +940,14 @@ async fn apply_header(
     header: &PairHeader,
 ) -> Result<(), AppError> {
     let skeleton = SpaceSnapshot {
+        snapshot_schema_version: crate::sync::snapshot::SNAPSHOT_SCHEMA_VERSION,
+        protocol_version: crate::sync::wire::PROTOCOL_VERSION,
+        snapshot_id: String::new(),
+        host_device_id: header.host_device_id.clone(),
+        host_device_name: header.host_device_name.clone(),
+        host_cert_pem: header.host_cert_pem.clone(),
+        high_water_vector: Vec::new(),
+        row_winners: Vec::new(),
         space: header.space.clone(),
         members: header.members.clone(),
         users: header.users.clone(),
@@ -699,9 +957,10 @@ async fn apply_header(
         account_summaries: Vec::new(),
         space_settings: Vec::new(),
         model_versions: Vec::new(),
-        host_device_id: header.host_device_id.clone(),
-        host_device_name: header.host_device_name.clone(),
-        host_cert_pem: header.host_cert_pem.clone(),
+        devices: Vec::new(),
+        space_devices: Vec::new(),
+        device_user_grants: Vec::new(),
+        durable_revocations: Vec::new(),
     };
     crate::sync::snapshot::apply_snapshot_frame(
         tx,
@@ -712,15 +971,108 @@ async fn apply_header(
     crate::sync::snapshot::apply_snapshot_frame(
         tx,
         &skeleton,
-        &SnapshotFrame::Members(header.members.clone()),
+        &SnapshotFrame::Users(header.users.clone()),
     )
     .await?;
     crate::sync::snapshot::apply_snapshot_frame(
         tx,
         &skeleton,
-        &SnapshotFrame::Users(header.users.clone()),
+        &SnapshotFrame::Members(header.members.clone()),
     )
     .await?;
     crate::sync::snapshot::apply_snapshot_frame(tx, &skeleton, &SnapshotFrame::End).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::snapshot::{WireModelVersion, WireSpaceSetting};
+
+    #[test]
+    fn model_manifest_precedes_model_data_and_active_setting() {
+        let frames = [
+            PairFrame::Chunk(SnapshotFrame::ModelVersions(vec![WireModelVersion {
+                space_id: "space-1".into(),
+                version: 1,
+                weights_md5: "weights".into(),
+                card_md5: "card".into(),
+                trained_at: "2024-01-01T00:00:00Z".into(),
+            }])),
+            PairFrame::ModelData(ModelData {
+                space_id: "space-1".into(),
+                version: 1,
+                weights: vec![1, 2, 3],
+                card: vec![4, 5, 6],
+                weights_md5: "weights".into(),
+                card_md5: "card".into(),
+            }),
+            PairFrame::Chunk(SnapshotFrame::SpaceSettings(vec![WireSpaceSetting {
+                space_id: "space-1".into(),
+                key: "active_model_version".into(),
+                value: "1".into(),
+            }])),
+        ];
+
+        let decoded: Vec<PairFrame> = frames
+            .iter()
+            .map(|frame| {
+                postcard::from_bytes(
+                    &postcard::to_allocvec(frame).expect("pair frame should serialize"),
+                )
+                .expect("pair frame should deserialize")
+            })
+            .collect();
+
+        assert!(matches!(
+            &decoded[0],
+            PairFrame::Chunk(SnapshotFrame::ModelVersions(_))
+        ));
+        assert!(matches!(&decoded[1], PairFrame::ModelData(_)));
+        assert!(matches!(
+            &decoded[2],
+            PairFrame::Chunk(SnapshotFrame::SpaceSettings(_))
+        ));
+    }
+
+    #[test]
+    fn pairing_commit_control_frames_roundtrip() {
+        let frames = [
+            PairFrame::SnapshotApplied,
+            PairFrame::PairCommitted,
+            PairFrame::PairFailed("host database failure".into()),
+        ];
+
+        let decoded: Vec<PairFrame> = frames
+            .iter()
+            .map(|frame| {
+                postcard::from_bytes(
+                    &postcard::to_allocvec(frame).expect("pair frame should serialize"),
+                )
+                .expect("pair frame should deserialize")
+            })
+            .collect();
+
+        assert!(matches!(&decoded[0], PairFrame::SnapshotApplied));
+        assert!(matches!(&decoded[1], PairFrame::PairCommitted));
+        assert!(
+            matches!(&decoded[2], PairFrame::PairFailed(message) if message == "host database failure")
+        );
+    }
+
+    #[test]
+    fn pairing_tokens_are_single_use_and_expire() {
+        let state = PairingState::new();
+        state
+            .insert("123456".into(), "space-1".into(), Duration::from_secs(60))
+            .expect("token insert should succeed");
+
+        assert_eq!(state.take("123456").as_deref(), Some("space-1"));
+        assert!(state.take("123456").is_none());
+
+        state
+            .insert("654321".into(), "space-2".into(), Duration::ZERO)
+            .expect("token insert should succeed");
+        assert!(state.take("654321").is_none());
+    }
 }

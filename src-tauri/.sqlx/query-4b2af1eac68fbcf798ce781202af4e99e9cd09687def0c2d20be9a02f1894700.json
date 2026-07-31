@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "-- Upsert a peer's acknowledgment for one origin. Called when the\n-- recv half receives Frame::AppliedCursors — the entries represent\n-- what the peer (consuming_device_id) has actually consumed, not\n-- what we consumed. MAX ensures monotonic progress even if a peer\n-- reports a lower seq due to a bug or reconnection edge case.\n-- See data/PLAN.md Step 29.6.\nINSERT INTO peer_acks (space_id, consuming_device_id, origin_device_id, last_applied_seq)\nVALUES (?1, ?2, ?3, ?4)\nON CONFLICT (space_id, consuming_device_id, origin_device_id) DO UPDATE\nSET last_applied_seq = MAX(excluded.last_applied_seq, peer_acks.last_applied_seq)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "4b2af1eac68fbcf798ce781202af4e99e9cd09687def0c2d20be9a02f1894700"
+}

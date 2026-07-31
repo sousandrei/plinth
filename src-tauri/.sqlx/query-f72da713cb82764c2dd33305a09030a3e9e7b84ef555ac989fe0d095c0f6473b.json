@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "-- List every quarantined device, newest first. Returned to the UI\n-- so the user can review certs that failed ingress validation.\n-- Step 30.2 — see data/PLAN.md.\nSELECT\n    id              AS \"id!: i64\",\n    space_id        AS \"space_id?: String\",\n    claimed_device_id AS \"claimed_device_id!: String\",\n    fingerprint     AS \"fingerprint?: String\",\n    cert_pem        AS \"cert_pem!: String\",\n    reason          AS \"reason!: String\",\n    quarantined_at  AS \"quarantined_at!: String\"\nFROM quarantined_devices\nORDER BY id DESC;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "quarantined_devices",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "space_id?: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "quarantined_devices",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "claimed_device_id!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "quarantined_devices",
+            "name": "claimed_device_id"
+          }
+        }
+      },
+      {
+        "name": "fingerprint?: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "quarantined_devices",
+            "name": "fingerprint"
+          }
+        }
+      },
+      {
+        "name": "cert_pem!: String",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "quarantined_devices",
+            "name": "cert_pem"
+          }
+        }
+      },
+      {
+        "name": "reason!: String",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "quarantined_devices",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "name": "quarantined_at!: String",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "quarantined_devices",
+            "name": "quarantined_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f72da713cb82764c2dd33305a09030a3e9e7b84ef555ac989fe0d095c0f6473b"
+}
