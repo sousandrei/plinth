@@ -231,6 +231,7 @@ pub async fn start_host_session(
                 snapshot,
                 db,
                 app,
+                state_for_session.clone(),
             ),
         )
         .await;
@@ -261,11 +262,18 @@ async fn run_host_session(
     snapshot: SpaceSnapshot,
     db: SqlitePool,
     app: AppHandle,
+    state: Arc<PairingState>,
 ) -> Result<(), AppError> {
     let (mut stream, _peer) = listener
         .accept()
         .await
         .map_err(|e| AppError::Io(format!("pairing accept: {e}")))?;
+
+    if state.take(&token).is_none() {
+        return Err(AppError::InvalidInput(
+            "pairing token expired or already used".into(),
+        ));
+    }
 
     // SPAKE2 symmetric handshake.
     let (state, our_msg) = Spake2::<Ed25519Group>::start_symmetric(
@@ -1020,5 +1028,21 @@ mod tests {
         assert!(
             matches!(&decoded[2], PairFrame::PairFailed(message) if message == "host database failure")
         );
+    }
+
+    #[test]
+    fn pairing_tokens_are_single_use_and_expire() {
+        let state = PairingState::new();
+        state
+            .insert("123456".into(), "space-1".into(), Duration::from_secs(60))
+            .expect("token insert should succeed");
+
+        assert_eq!(state.take("123456").as_deref(), Some("space-1"));
+        assert!(state.take("123456").is_none());
+
+        state
+            .insert("654321".into(), "space-2".into(), Duration::ZERO)
+            .expect("token insert should succeed");
+        assert!(state.take("654321").is_none());
     }
 }
