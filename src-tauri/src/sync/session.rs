@@ -810,12 +810,8 @@ async fn apply_snapshot_stream(
     crate::sync::apply_guard::run_as_device(db, &host_device_id, move |tx| {
         Box::pin(async move {
             for chunk in &chunks_owned {
-                crate::sync::snapshot::apply_snapshot_frame(
-                    tx,
-                    &snapshot_for_apply,
-                    &chunk.frame,
-                )
-                .await?;
+                crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot_for_apply, &chunk.frame)
+                    .await?;
             }
             Ok(())
         })

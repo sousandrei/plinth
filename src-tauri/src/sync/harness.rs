@@ -3051,7 +3051,8 @@ async fn snapshot_rejects_inconsistent_space_ids() {
     );
     let err = result.expect_err("unsupported schema must be rejected");
     assert!(
-        err.to_string().contains("unsupported snapshot_schema_version"),
+        err.to_string()
+            .contains("unsupported snapshot_schema_version"),
         "error must mention schema version: {err}"
     );
 
@@ -3217,24 +3218,159 @@ async fn snapshot_apply_creates_no_local_change_log() {
     // Any change_log rows that exist must be attributed to the local
     // device for legitimate pre-snapshot writes (B's space insert +
     // auto-updated_at + account insert), not the snapshot host.
-    let local_rows: i64 = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM change_log WHERE device_id = 'device-B'"
-    )
-    .fetch_one(&b.pool)
-    .await
-    .unwrap();
-    let host_rows: i64 = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM change_log WHERE device_id = 'device-A'"
-    )
-    .fetch_one(&b.pool)
-    .await
-    .unwrap();
+    let local_rows: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE device_id = 'device-B'")
+            .fetch_one(&b.pool)
+            .await
+            .unwrap();
+    let host_rows: i64 =
+        sqlx::query_scalar!("SELECT COUNT(*) FROM change_log WHERE device_id = 'device-A'")
+            .fetch_one(&b.pool)
+            .await
+            .unwrap();
     assert!(
         local_rows >= 1,
         "B has at least one pre-snapshot local row (space insert)"
     );
-    assert_eq!(
-        host_rows, 0,
-        "no echo rows attributed to the snapshot host"
+    assert_eq!(host_rows, 0, "no echo rows attributed to the snapshot host");
+}
+
+/// Step 31.3: a later pairing through A must receive the complete trust
+/// roster, not just rows that happen to remain in A's change_log. C must be
+/// able to resolve A and B from their certificates immediately after the
+/// snapshot is applied.
+#[tokio::test]
+async fn snapshot_seeds_complete_trust_roster_for_later_pairing() {
+    use tokio_rustls::rustls::pki_types::CertificateDer;
+
+    use crate::sync::apply_guard::run_as_device;
+    use crate::sync::snapshot::{SnapshotFrame, SpaceSnapshot};
+
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let c = TestDevice::create("device-C", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+    let cert_b = test_cert_pem("device-B");
+    let cert_c = test_cert_pem("device-C");
+
+    a.insert_space("s1", "shared").await;
+
+    // A knows B and C before C pairs through A. These are durable roster
+    // rows, so the snapshot remains complete even after old history is
+    // removed.
+    for (device_id, cert) in [("device-B", cert_b.clone()), ("device-C", cert_c)] {
+        sqlx::query_file!(
+            "queries/sync/upsert_device.sql",
+            device_id,
+            cert,
+            Option::<Vec<u8>>::None,
+            "",
+            device_id,
+        )
+        .execute(&a.pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
+             VALUES ('s1', ?1, 'active', ?2)",
+            device_id,
+            ts,
+        )
+        .execute(&a.pool)
+        .await
+        .unwrap();
+    }
+
+    // Simulate a host that has compacted/collected its old history. The
+    // roster must still be available from the durable devices/grants.
+    sqlx::query_file!("queries/spaces/delete_change_log_for_space.sql", "s1")
+        .execute(&a.pool)
+        .await
+        .unwrap();
+
+    let snapshot: SpaceSnapshot = crate::sync::snapshot::collect_snapshot(
+        &a.pool,
+        None,
+        "s1",
+        "device-A".into(),
+        "Host A".into(),
+        test_cert_pem("device-A"),
+    )
+    .await
+    .expect("roster snapshot must succeed");
+
+    assert!(snapshot.devices.iter().any(|d| d.device_id == "device-B"));
+    assert!(snapshot.devices.iter().any(|d| d.device_id == "device-C"));
+    assert!(
+        snapshot
+            .space_devices
+            .iter()
+            .any(|grant| grant.device_id == "device-B")
     );
+    assert!(
+        snapshot
+            .space_devices
+            .iter()
+            .any(|grant| grant.device_id == "device-C")
+    );
+
+    let host_cert = snapshot.host_cert_pem.clone();
+    let snapshot_for_apply = snapshot.clone();
+    run_as_device(&c.pool, "device-A", move |tx| {
+        Box::pin(async move {
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snapshot_for_apply,
+                &SnapshotFrame::Space(snapshot_for_apply.space.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snapshot_for_apply,
+                &SnapshotFrame::Devices(snapshot_for_apply.devices.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snapshot_for_apply,
+                &SnapshotFrame::SpaceDevices(snapshot_for_apply.space_devices.clone()),
+            )
+            .await?;
+            crate::sync::snapshot::apply_snapshot_frame(
+                tx,
+                &snapshot_for_apply,
+                &SnapshotFrame::End,
+            )
+            .await?;
+            Ok::<(), crate::error::AppError>(())
+        })
+    })
+    .await
+    .expect("roster snapshot apply must succeed");
+
+    let mut host_reader = host_cert.as_bytes();
+    let host_der = rustls_pemfile::certs(&mut host_reader)
+        .next()
+        .expect("host certificate must contain one certificate")
+        .expect("host certificate must parse");
+    let host_peer =
+        crate::sync::cert_match::resolve_peer(&c.pool, &CertificateDer::from(host_der.to_vec()))
+            .await
+            .expect("host resolution must succeed")
+            .expect("host must be trusted after snapshot");
+    assert_eq!(host_peer.device_id, "device-A");
+    assert!(host_peer.inbound_contains("s1"));
+
+    let mut peer_reader = cert_b.as_bytes();
+    let peer_der = rustls_pemfile::certs(&mut peer_reader)
+        .next()
+        .expect("peer certificate must contain one certificate")
+        .expect("peer certificate must parse");
+    let peer =
+        crate::sync::cert_match::resolve_peer(&c.pool, &CertificateDer::from(peer_der.to_vec()))
+            .await
+            .expect("peer resolution must succeed")
+            .expect("B must be trusted after snapshot");
+    assert_eq!(peer.device_id, "device-B");
+    assert!(peer.outbound_contains("s1"));
 }

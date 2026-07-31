@@ -232,14 +232,10 @@ pub async fn apply_tombstone(
         }
         "space_settings" => {
             let (space_id, key) = split_composite(row_id, "space_settings")?;
-            sqlx::query_file!(
-                "queries/sync/apply/delete_space_setting.sql",
-                space_id,
-                key
-            )
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| AppError::Db(format!("tombstone space_settings: {e}")))?;
+            sqlx::query_file!("queries/sync/apply/delete_space_setting.sql", space_id, key)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone space_settings: {e}")))?;
         }
         "space_devices" => {
             let (space_id, device_id) = split_composite(row_id, "space_devices")?;
