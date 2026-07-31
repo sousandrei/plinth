@@ -109,6 +109,14 @@ pub struct SpaceDevicePayload {
     pub paired_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceUserGrantPayload {
+    pub space_id: String,
+    pub device_id: String,
+    pub user_id: String,
+    pub granted_at: String,
+}
+
 /// One row of the `model_versions` registry — the mesh-wide record of
 /// which trained-model versions exist, authored by whom, and their
 /// MD5s for transfer integrity. The on-disk weights + card files are
@@ -139,6 +147,7 @@ pub enum TablePayload {
     AccountSummary(AccountSummaryPayload),
     SpaceSetting(SpaceSettingPayload),
     SpaceDevice(SpaceDevicePayload),
+    DeviceUserGrant(DeviceUserGrantPayload),
     ModelVersion(ModelVersionPayload),
 }
 
@@ -155,6 +164,7 @@ impl TablePayload {
             Self::AccountSummary(_) => "account_summaries",
             Self::SpaceSetting(_) => "space_settings",
             Self::SpaceDevice(_) => "space_devices",
+            Self::DeviceUserGrant(_) => "device_user_grants",
             Self::ModelVersion(_) => "model_versions",
         }
     }
@@ -172,6 +182,7 @@ impl TablePayload {
             Self::AccountSummary(p) => serde_json::to_string(p),
             Self::SpaceSetting(p) => serde_json::to_string(p),
             Self::SpaceDevice(p) => serde_json::to_string(p),
+            Self::DeviceUserGrant(p) => serde_json::to_string(p),
             Self::ModelVersion(p) => serde_json::to_string(p),
         }
     }
@@ -201,6 +212,7 @@ pub fn from_json(table_name: &str, json: &str) -> Result<TablePayload, PayloadEr
         "account_summaries" => decode!(AccountSummary, AccountSummaryPayload),
         "space_settings" => decode!(SpaceSetting, SpaceSettingPayload),
         "space_devices" => decode!(SpaceDevice, SpaceDevicePayload),
+        "device_user_grants" => decode!(DeviceUserGrant, DeviceUserGrantPayload),
         "model_versions" => decode!(ModelVersion, ModelVersionPayload),
         other => Err(PayloadError::UnknownTable(other.to_string())),
     }

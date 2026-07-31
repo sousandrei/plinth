@@ -199,6 +199,7 @@ pub fn run() {
             commands::settings::set_app_setting,
             commands::sync::list_peers,
             commands::sync::force_sync_now,
+            commands::sync::record_device_user_grant,
             commands::sync::list_space_devices,
             commands::sync::remove_space_device,
             commands::sync::set_space_device_trust_mode,

@@ -61,6 +61,31 @@ pub async fn force_sync_now(
     Ok(crate::sync::scheduler::await_dials(handles, dialled).await)
 }
 
+#[tauri::command]
+pub async fn record_device_user_grant(
+    space_id: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+    debounce: State<'_, DebounceSender>,
+) -> Result<(), AppError> {
+    let user_session = session.require_user()?;
+    let identity = crate::sync::identity::ensure_identity(&db).await?;
+
+    sqlx::query_file!(
+        "queries/sync/upsert_device_user_grant.sql",
+        space_id,
+        identity.device_id,
+        user_session.user_id,
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
+    .execute(db.inner())
+    .await
+    .map_err(|e| AppError::Db(format!("record_device_user_grant: {e}")))?;
+
+    debounce.notify_mutation();
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Trusted devices
 // ---------------------------------------------------------------------------

@@ -4,9 +4,9 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::sync::conflict_detector::{self, HotFieldConflict, LocalSnapshot};
 use crate::sync::payloads::{
-    AccountPayload, AccountSummaryPayload, CategoryPayload, ModelVersionPayload,
-    SpaceDevicePayload, SpaceMemberPayload, SpacePayload, SpaceSettingPayload, TablePayload,
-    TransactionPayload, UserSnapshot,
+    AccountPayload, AccountSummaryPayload, CategoryPayload, DeviceUserGrantPayload,
+    ModelVersionPayload, SpaceDevicePayload, SpaceMemberPayload, SpacePayload, SpaceSettingPayload,
+    TablePayload, TransactionPayload, UserSnapshot,
 };
 use crate::sync::wire::ChangeRow;
 
@@ -64,6 +64,7 @@ async fn apply_upsert(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
         TablePayload::AccountSummary(p) => upsert_account_summary(tx, p).await,
         TablePayload::SpaceSetting(p) => upsert_space_setting(tx, p).await,
         TablePayload::SpaceDevice(p) => upsert_space_device(tx, p).await,
+        TablePayload::DeviceUserGrant(p) => upsert_device_user_grant(tx, p).await,
         TablePayload::ModelVersion(p) => upsert_model_version(tx, p).await,
     }
 }
@@ -142,6 +143,19 @@ async fn apply_delete(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
             .execute(&mut **tx)
             .await
             .map_err(|e| AppError::Db(format!("delete_space_device: {e}")))?;
+        }
+        "device_user_grants" => {
+            let (space_id, device_id, user_id) =
+                split_triple_composite(&row.row_id, "device_user_grants")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_device_user_grant.sql",
+                space_id,
+                device_id,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("delete_device_user_grant: {e}")))?;
         }
         "model_versions" => {
             // Trigger emits row_id as `space_id:version` (see
@@ -247,6 +261,19 @@ pub async fn apply_tombstone(
             .execute(&mut **tx)
             .await
             .map_err(|e| AppError::Db(format!("tombstone space_devices: {e}")))?;
+        }
+        "device_user_grants" => {
+            let (space_id, device_id, user_id) =
+                split_triple_composite(row_id, "device_user_grants")?;
+            sqlx::query_file!(
+                "queries/sync/apply/delete_device_user_grant.sql",
+                space_id,
+                device_id,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("tombstone device_user_grants: {e}")))?;
         }
         "model_versions" => {
             let (space_id, version) = split_composite(row_id, "model_versions")?;
@@ -461,6 +488,23 @@ async fn upsert_space_device(
     Ok(())
 }
 
+async fn upsert_device_user_grant(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: &DeviceUserGrantPayload,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_device_user_grant.sql",
+        p.space_id,
+        p.device_id,
+        p.user_id,
+        p.granted_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device_user_grant: {e}")))?;
+    Ok(())
+}
+
 async fn upsert_model_version(
     tx: &mut Transaction<'_, Sqlite>,
     p: &ModelVersionPayload,
@@ -582,6 +626,21 @@ fn split_composite<'a>(row_id: &'a str, table: &str) -> Result<(&'a str, &'a str
             "split_composite: malformed composite row_id {row_id:?} for table {table}"
         ))
     })
+}
+
+fn split_triple_composite<'a>(
+    row_id: &'a str,
+    table: &str,
+) -> Result<(&'a str, &'a str, &'a str), AppError> {
+    let mut parts = row_id.split(':');
+    let (Some(first), Some(second), Some(third), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(AppError::InvalidInput(format!(
+            "split_triple_composite: malformed row_id {row_id:?} for table {table}"
+        )));
+    };
+    Ok((first, second, third))
 }
 
 #[cfg(test)]
@@ -719,5 +778,95 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count, 1, "converge to one logical grant");
+    }
+
+    #[tokio::test]
+    async fn removing_one_user_preserves_shared_device_access() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+
+        sqlx::query_file!(
+            "queries/tests/insert_space_fixture.sql",
+            "s1",
+            "test",
+            ts,
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for user_id in ["u1", "u2"] {
+            sqlx::query_file!("queries/users/create_user.sql", user_id, user_id, ts, ts)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query_file!(
+                "queries/spaces/add_space_member.sql",
+                "s1",
+                user_id,
+                "member",
+                ts
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query!(
+            "INSERT INTO devices (device_id, cert_pem, display_name) VALUES ('device-1', 'CERT', 'Shared')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO space_devices (space_id, device_id, trust_mode, paired_at) \
+             VALUES ('s1', 'device-1', 'active', ?1)",
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for user_id in ["u1", "u2"] {
+            sqlx::query_file!(
+                "queries/sync/upsert_device_user_grant.sql",
+                "s1",
+                "device-1",
+                user_id,
+                ts
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        sqlx::query_file!("queries/spaces/remove_space_member.sql", "s1", "u1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let device_count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM space_devices WHERE space_id = 's1' AND device_id = 'device-1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let remaining_grants: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM device_user_grants \
+             WHERE space_id = 's1' AND device_id = 'device-1' AND user_id = 'u2'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let removed_grants: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM device_user_grants \
+             WHERE space_id = 's1' AND device_id = 'device-1' AND user_id = 'u1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(device_count, 1);
+        assert_eq!(remaining_grants, 1);
+        assert_eq!(removed_grants, 0);
     }
 }

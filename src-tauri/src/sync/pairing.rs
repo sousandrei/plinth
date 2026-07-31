@@ -330,6 +330,10 @@ async fn run_host_session(
         SnapshotFrame::SpaceDevices(c)
     })
     .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.device_user_grants, |c| {
+        SnapshotFrame::DeviceUserGrants(c)
+    })
+    .await?;
     stream_pair_chunks(&mut stream, &cipher, &snapshot.categories, |c| {
         SnapshotFrame::Categories(c)
     })
@@ -396,6 +400,7 @@ async fn run_host_session(
         if let Some(ref u) = join.user {
             upsert_user(&db, u).await?;
             upsert_space_member(&db, &space_id, &u.id, "member").await?;
+            upsert_device_user_grant(&db, &space_id, &join.device_id, &u.id).await?;
         }
 
         sqlx::query_file!(
@@ -559,6 +564,7 @@ pub async fn run_joiner(
                 model_versions: Vec::new(),
                 devices: Vec::new(),
                 space_devices: Vec::new(),
+                device_user_grants: Vec::new(),
             };
             apply_header(tx, &header).await?;
             for frame in frames {
@@ -698,6 +704,25 @@ async fn upsert_space_member(
     .execute(db)
     .await
     .map_err(|e| AppError::Db(format!("upsert_space_member: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_device_user_grant(
+    db: &SqlitePool,
+    space_id: &str,
+    device_id: &str,
+    user_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/upsert_device_user_grant.sql",
+        space_id,
+        device_id,
+        user_id,
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device_user_grant: {e}")))?;
     Ok(())
 }
 
@@ -931,6 +956,7 @@ async fn apply_header(
         model_versions: Vec::new(),
         devices: Vec::new(),
         space_devices: Vec::new(),
+        device_user_grants: Vec::new(),
     };
     crate::sync::snapshot::apply_snapshot_frame(
         tx,

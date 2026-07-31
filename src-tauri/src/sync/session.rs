@@ -550,6 +550,10 @@ where
         crate::sync::snapshot::SnapshotFrame::SpaceDevices(chunk)
     })
     .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.device_user_grants, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::DeviceUserGrants(chunk)
+    })
+    .await?;
     stream_chunked(wr, &space_id_owned, snapshot.categories, |chunk| {
         crate::sync::snapshot::SnapshotFrame::Categories(chunk)
     })
@@ -715,6 +719,7 @@ where
                         model_versions: vec![],
                         devices: vec![],
                         space_devices: vec![],
+                        device_user_grants: vec![],
                     });
                 }
                 snapshot_buf.push(chunk);
@@ -980,6 +985,19 @@ fn validate_payload_keys(row: &ChangeRow, payload: &TablePayload) -> Result<(), 
                 return Err(mismatch("device.row_id", &expected, &row.row_id));
             }
         }
+        TablePayload::DeviceUserGrant(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch(
+                    "device_user_grant.space_id",
+                    &p.space_id,
+                    &row.space_id,
+                ));
+            }
+            let expected = format!("{}:{}:{}", p.space_id, p.device_id, p.user_id);
+            if expected != row.row_id {
+                return Err(mismatch("device_user_grant.row_id", &expected, &row.row_id));
+            }
+        }
         TablePayload::ModelVersion(p) => {
             if p.space_id != row.space_id {
                 return Err(mismatch("model.space_id", &p.space_id, &row.space_id));
@@ -1012,6 +1030,21 @@ fn validate_delete_key(row: &ChangeRow, batch_space_id: &str) -> Result<(), AppE
                 return Err(AppError::InvalidInput(format!(
                     "validate_batch: invalid composite delete key {:?} for {}",
                     row.row_id, row.table_name
+                )));
+            }
+            if parts[0] != batch_space_id {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: delete key space {} != batch space {}",
+                    parts[0], batch_space_id
+                )));
+            }
+        }
+        "device_user_grants" => {
+            let parts: Vec<&str> = row.row_id.split(':').collect();
+            if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: invalid composite delete key {:?} for device_user_grants",
+                    row.row_id
                 )));
             }
             if parts[0] != batch_space_id {
@@ -1124,7 +1157,8 @@ fn table_priority(table_name: &str) -> u8 {
         "spaces" => 0,
         "accounts" | "categories" | "space_settings" | "space_devices" | "model_versions" => 1,
         "space_members" => 2,
-        "transactions" | "account_summaries" => 3,
+        "device_user_grants" => 3,
+        "transactions" | "account_summaries" => 4,
         _ => 4,
     }
 }

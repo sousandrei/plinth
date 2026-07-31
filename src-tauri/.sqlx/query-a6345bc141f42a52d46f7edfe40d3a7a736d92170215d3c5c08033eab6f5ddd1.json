@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO device_user_grants (space_id, device_id, user_id, granted_at)\nVALUES (?1, ?2, ?3, ?4)\nON CONFLICT (space_id, device_id, user_id) DO UPDATE SET\n    granted_at = excluded.granted_at\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "a6345bc141f42a52d46f7edfe40d3a7a736d92170215d3c5c08033eab6f5ddd1"
+}

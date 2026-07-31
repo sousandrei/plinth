@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT space_id, device_id, user_id, granted_at\nFROM device_user_grants\nWHERE space_id = ?1\nORDER BY device_id, user_id\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_user_grants",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "device_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_user_grants",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "user_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_user_grants",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "name": "granted_at",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_user_grants",
+            "name": "granted_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "013d55814732bbefe5324e3d67fffbee0e65fa09b8ff9408c2a2c731f1199d71"
+}

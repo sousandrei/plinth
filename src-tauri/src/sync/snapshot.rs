@@ -48,6 +48,14 @@ pub struct WireSpaceDevice {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireDeviceUserGrant {
+    pub space_id: String,
+    pub device_id: String,
+    pub user_id: String,
+    pub granted_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireUser {
     pub id: String,
     pub name: String,
@@ -160,6 +168,7 @@ pub struct SpaceSnapshot {
     pub model_versions: Vec<WireModelVersion>,
     pub devices: Vec<WireDevice>,
     pub space_devices: Vec<WireSpaceDevice>,
+    pub device_user_grants: Vec<WireDeviceUserGrant>,
 }
 
 /// Tagged envelope sent over both the pairing transport (encrypted TCP)
@@ -173,6 +182,7 @@ pub enum SnapshotFrame {
     RowWinners(Vec<WireRowWinner>),
     Devices(Vec<WireDevice>),
     SpaceDevices(Vec<WireSpaceDevice>),
+    DeviceUserGrants(Vec<WireDeviceUserGrant>),
     Members(Vec<WireMember>),
     Users(Vec<WireUser>),
     Categories(Vec<WireCategory>),
@@ -362,6 +372,15 @@ pub async fn collect_snapshot(
         });
     }
 
+    let device_user_grants: Vec<WireDeviceUserGrant> = sqlx::query_file_as!(
+        WireDeviceUserGrant,
+        "queries/snapshots/list_device_user_grants_for_space.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot device_user_grants: {e}")))?;
+
     tx.commit()
         .await
         .map_err(|e| AppError::Db(format!("collect_snapshot commit: {e}")))?;
@@ -388,6 +407,7 @@ pub async fn collect_snapshot(
         model_versions,
         devices,
         space_devices,
+        device_user_grants,
     })
 }
 
@@ -535,6 +555,11 @@ pub async fn apply_snapshot_frame(
                 upsert_space_device(tx, sd).await?;
             }
         }
+        SnapshotFrame::DeviceUserGrants(chunk) => {
+            for grant in chunk {
+                upsert_device_user_grant(tx, grant).await?;
+            }
+        }
         SnapshotFrame::Members(chunk) => {
             for m in chunk {
                 upsert_space_member(tx, m).await?;
@@ -668,6 +693,23 @@ async fn upsert_space_device(
     .execute(&mut **tx)
     .await
     .map_err(|e| AppError::Db(format!("upsert_space_device: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_device_user_grant(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    grant: &WireDeviceUserGrant,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_device_user_grant.sql",
+        grant.space_id,
+        grant.device_id,
+        grant.user_id,
+        grant.granted_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_device_user_grant: {e}")))?;
     Ok(())
 }
 

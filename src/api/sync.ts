@@ -52,6 +52,9 @@ export const joinSpace = (
 ): Promise<SpaceUsers> =>
   invoke<SpaceUsers>('join_space', { peerDeviceId, token, deviceDisplayName });
 
+export const recordDeviceUserGrant = (spaceId: string): Promise<void> =>
+  invoke<void>('record_device_user_grant', { spaceId });
+
 export const acceptPairTokenFromPeer = (
   peerDeviceId: string,
   token: string,
