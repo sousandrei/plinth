@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM pending_pairings\nWHERE space_id = ?1\n  AND device_id = ?2;\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "a2de740c276d314fe66cb65f499a3e4aa28e869fa7069f385139f77e3d8b00cd"
+}

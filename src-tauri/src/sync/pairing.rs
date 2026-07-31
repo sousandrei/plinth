@@ -111,6 +111,9 @@ enum PairFrame {
     Chunk(SnapshotFrame),
     ModelData(ModelData),
     End,
+    SnapshotApplied,
+    PairCommitted,
+    PairFailed(String),
 }
 
 /// Stream snapshot data in chunks, producing one `PairFrame::Chunk`
@@ -280,6 +283,24 @@ async fn run_host_session(
     // Receive JoinPayload from the joiner.
     let join: JoinPayload = read_encrypted(&mut stream, &cipher).await?;
 
+    if let Err(error) = create_pending_pairing(
+        &db,
+        &space_id,
+        &join.device_id,
+        &join.device_name,
+        &join.cert_pem,
+    )
+    .await
+    {
+        let _ = write_encrypted(
+            &mut stream,
+            &cipher,
+            &PairFrame::PairFailed(error.to_string()),
+        )
+        .await;
+        return Err(error);
+    }
+
     // Stream the space data: header first, then chunked table data, then
     // an End marker. Each frame is independently encrypted and stays
     // under the 1 MB cap regardless of space size.
@@ -344,24 +365,54 @@ async fn run_host_session(
 
     write_encrypted(&mut stream, &cipher, &PairFrame::End).await?;
 
-    // Persist the joiner as a device and grant it access to this space.
-    upsert_device_and_grant(
-        &db,
-        &space_id,
-        &join.device_id,
-        &join.device_name,
-        &join.cert_pem,
-    )
-    .await?;
-
-    // Only add a new member if the joiner sent a user payload.
-    // If `user` is None, the joiner is an existing member joining on a new
-    // device — just trust the device, don't create a duplicate membership.
-    if let Some(ref u) = join.user {
-        upsert_user(&db, u).await?;
-        upsert_space_member(&db, &space_id, &u.id, "member").await?;
+    match read_encrypted::<PairFrame>(&mut stream, &cipher).await? {
+        PairFrame::SnapshotApplied => {}
+        other => {
+            return Err(AppError::Internal(format!(
+                "pairing: expected SnapshotApplied, got {:?}",
+                std::mem::discriminant(&other)
+            )));
+        }
     }
 
+    let commit_result = async {
+        upsert_device_and_grant(
+            &db,
+            &space_id,
+            &join.device_id,
+            &join.device_name,
+            &join.cert_pem,
+        )
+        .await?;
+
+        if let Some(ref u) = join.user {
+            upsert_user(&db, u).await?;
+            upsert_space_member(&db, &space_id, &u.id, "member").await?;
+        }
+
+        sqlx::query_file!(
+            "queries/sync/delete_pending_pairing.sql",
+            space_id,
+            join.device_id
+        )
+        .execute(&db)
+        .await
+        .map_err(|e| AppError::Db(format!("delete_pending_pairing: {e}")))?;
+        Ok::<(), AppError>(())
+    }
+    .await;
+
+    if let Err(error) = commit_result {
+        let _ = write_encrypted(
+            &mut stream,
+            &cipher,
+            &PairFrame::PairFailed(error.to_string()),
+        )
+        .await;
+        return Err(error);
+    }
+
+    write_encrypted(&mut stream, &cipher, &PairFrame::PairCommitted).await?;
     stream.shutdown().await.ok();
     Ok(())
 }
@@ -438,17 +489,43 @@ pub async fn run_joiner(
     let space_name = header.space.name.clone();
     let users = header.users.clone();
 
+    let mut frames = Vec::new();
+    loop {
+        let frame: PairFrame = read_encrypted(&mut stream, &cipher).await?;
+        match frame {
+            PairFrame::Header(_) => {
+                return Err(AppError::Internal("pairing: duplicate Header frame".into()));
+            }
+            PairFrame::Chunk(_) | PairFrame::ModelData(_) => frames.push(frame),
+            PairFrame::End => break,
+            PairFrame::SnapshotApplied | PairFrame::PairCommitted | PairFrame::PairFailed(_) => {
+                return Err(AppError::Internal(
+                    "pairing: unexpected control frame".into(),
+                ));
+            }
+        }
+    }
+
+    let mut model_data = Vec::new();
+    for frame in &frames {
+        if let PairFrame::ModelData(data) = frame {
+            if data.space_id != space_id {
+                return Err(AppError::InvalidInput(
+                    "pairing: model data space mismatch".into(),
+                ));
+            }
+            model_data.push(data.clone());
+        }
+    }
+
     // Persist everything received. Run inside apply_guard so the
     // change_log override is set to the host's device_id — every
     // change_log trigger on a synced table stamps the host's id, so
     // the inserted rows originated on the host and don't echo back as
     // local changes on subsequent sync sessions.
     //
-    // The stream is moved into the closure so the remaining frames
-    // can be read inside the transaction. A mid-stream failure rolls
-    // back every DB write; the joiner can then retry pairing.
     let app_for_models = app.clone();
-    let model_data = crate::sync::apply_guard::run_as_device(&db, &host_device_id, move |tx| {
+    crate::sync::apply_guard::run_as_device(&db, &host_device_id, move |tx| {
         Box::pin(async move {
             // Build a SpaceSnapshot skeleton from the header so we can
             // pass it to the reusable `apply_snapshot_frame` helper.
@@ -475,14 +552,9 @@ pub async fn run_joiner(
                 devices: Vec::new(),
                 space_devices: Vec::new(),
             };
-            let mut model_data = Vec::new();
             apply_header(tx, &header).await?;
-            loop {
-                let frame: PairFrame = read_encrypted(&mut stream, &cipher).await?;
+            for frame in frames {
                 match frame {
-                    PairFrame::Header(_) => {
-                        return Err(AppError::Internal("pairing: duplicate Header frame".into()));
-                    }
                     PairFrame::Chunk(chunk) => {
                         // Lift the space identity if we ever get a Space
                         // chunk (defensive — host sends it in the header).
@@ -492,20 +564,18 @@ pub async fn run_joiner(
                         crate::sync::snapshot::apply_snapshot_frame(tx, &snapshot, &chunk).await?;
                     }
                     PairFrame::ModelData(data) => {
-                        if data.space_id != snapshot.space.id {
-                            return Err(AppError::InvalidInput(
-                                "pairing: model data space mismatch".into(),
-                            ));
-                        }
-                        model_data.push(data);
+                        let _ = data;
                     }
-                    PairFrame::End => {
-                        stream.shutdown().await.ok();
-                        break;
+                    PairFrame::Header(_)
+                    | PairFrame::End
+                    | PairFrame::SnapshotApplied
+                    | PairFrame::PairCommitted
+                    | PairFrame::PairFailed(_) => {
+                        return Err(AppError::Internal("pairing: unexpected frame".into()));
                     }
                 }
             }
-            Ok(model_data)
+            Ok(())
         })
     })
     .await
@@ -535,6 +605,19 @@ pub async fn run_joiner(
         crate::sync::model_sync::apply_model(&app_for_models, &db, &data).await?;
     }
 
+    write_encrypted(&mut stream, &cipher, &PairFrame::SnapshotApplied).await?;
+    match read_encrypted::<PairFrame>(&mut stream, &cipher).await? {
+        PairFrame::PairCommitted => {}
+        PairFrame::PairFailed(error) => return Err(AppError::Internal(error)),
+        other => {
+            return Err(AppError::Internal(format!(
+                "pairing: expected PairCommitted, got {:?}",
+                std::mem::discriminant(&other)
+            )));
+        }
+    }
+    stream.shutdown().await.ok();
+
     Ok(PairingResult {
         space_id,
         space_name,
@@ -546,6 +629,35 @@ pub async fn run_joiner(
 // Host-side upserts (run outside apply_guard — the host is creating
 // its own rows, not applying a peer's data)
 // ---------------------------------------------------------------------------
+
+async fn create_pending_pairing(
+    db: &SqlitePool,
+    space_id: &str,
+    device_id: &str,
+    display_name: &str,
+    cert_pem: &str,
+) -> Result<(), AppError> {
+    let validated = crate::sync::cert_validation::parse_and_canonicalize(cert_pem)
+        .map_err(|e| AppError::InvalidInput(format!("pairing pending cert: {e}")))?;
+    crate::sync::cert_validation::check_device_id_match(&validated, device_id)
+        .map_err(|e| AppError::InvalidInput(format!("pairing pending cert: {e}")))?;
+    crate::sync::cert_validation::check_against_existing(db, device_id, &validated.fingerprint)
+        .await
+        .map_err(|e| AppError::InvalidInput(format!("pairing pending cert: {e}")))?;
+
+    sqlx::query_file!(
+        "queries/sync/upsert_pending_pairing.sql",
+        space_id,
+        device_id,
+        display_name,
+        cert_pem,
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    )
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_pending_pairing: {e}")))?;
+    Ok(())
+}
 
 async fn upsert_user(db: &SqlitePool, user: &WireUser) -> Result<(), AppError> {
     let pin = user.pin_hash.clone();
@@ -883,5 +995,30 @@ mod tests {
             &decoded[2],
             PairFrame::Chunk(SnapshotFrame::SpaceSettings(_))
         ));
+    }
+
+    #[test]
+    fn pairing_commit_control_frames_roundtrip() {
+        let frames = [
+            PairFrame::SnapshotApplied,
+            PairFrame::PairCommitted,
+            PairFrame::PairFailed("host database failure".into()),
+        ];
+
+        let decoded: Vec<PairFrame> = frames
+            .iter()
+            .map(|frame| {
+                postcard::from_bytes(
+                    &postcard::to_allocvec(frame).expect("pair frame should serialize"),
+                )
+                .expect("pair frame should deserialize")
+            })
+            .collect();
+
+        assert!(matches!(&decoded[0], PairFrame::SnapshotApplied));
+        assert!(matches!(&decoded[1], PairFrame::PairCommitted));
+        assert!(
+            matches!(&decoded[2], PairFrame::PairFailed(message) if message == "host database failure")
+        );
     }
 }
