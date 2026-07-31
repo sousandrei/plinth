@@ -326,6 +326,10 @@ async fn run_host_session(
         SnapshotFrame::Devices(c)
     })
     .await?;
+    stream_pair_chunks(&mut stream, &cipher, &snapshot.durable_revocations, |c| {
+        SnapshotFrame::DurableRevocations(c)
+    })
+    .await?;
     stream_pair_chunks(&mut stream, &cipher, &snapshot.space_devices, |c| {
         SnapshotFrame::SpaceDevices(c)
     })
@@ -565,6 +569,7 @@ pub async fn run_joiner(
                 devices: Vec::new(),
                 space_devices: Vec::new(),
                 device_user_grants: Vec::new(),
+                durable_revocations: Vec::new(),
             };
             apply_header(tx, &header).await?;
             for frame in frames {
@@ -955,6 +960,7 @@ async fn apply_header(
         devices: Vec::new(),
         space_devices: Vec::new(),
         device_user_grants: Vec::new(),
+        durable_revocations: Vec::new(),
     };
     crate::sync::snapshot::apply_snapshot_frame(
         tx,

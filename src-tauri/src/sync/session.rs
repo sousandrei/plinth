@@ -546,6 +546,10 @@ where
         crate::sync::snapshot::SnapshotFrame::Devices(chunk)
     })
     .await?;
+    stream_chunked(wr, &space_id_owned, snapshot.durable_revocations, |chunk| {
+        crate::sync::snapshot::SnapshotFrame::DurableRevocations(chunk)
+    })
+    .await?;
     stream_chunked(wr, &space_id_owned, snapshot.space_devices, |chunk| {
         crate::sync::snapshot::SnapshotFrame::SpaceDevices(chunk)
     })
@@ -721,6 +725,7 @@ where
                         devices: vec![],
                         space_devices: vec![],
                         device_user_grants: vec![],
+                        durable_revocations: vec![],
                     });
                 }
                 snapshot_buf.push(chunk);
@@ -1006,6 +1011,22 @@ fn validate_payload_keys(row: &ChangeRow, payload: &TablePayload) -> Result<(), 
                 return Err(mismatch("device_user_grant.row_id", &expected, &row.row_id));
             }
         }
+        TablePayload::DurableRevocation(p) => {
+            if p.space_id != row.space_id {
+                return Err(mismatch(
+                    "durable_revocation.space_id",
+                    &p.space_id,
+                    &row.space_id,
+                ));
+            }
+            if p.revocation_id != row.row_id {
+                return Err(mismatch(
+                    "durable_revocation.revocation_id",
+                    &p.revocation_id,
+                    &row.row_id,
+                ));
+            }
+        }
         TablePayload::ModelVersion(p) => {
             if p.space_id != row.space_id {
                 return Err(mismatch("model.space_id", &p.space_id, &row.space_id));
@@ -1059,6 +1080,14 @@ fn validate_delete_key(row: &ChangeRow, batch_space_id: &str) -> Result<(), AppE
                 return Err(AppError::InvalidInput(format!(
                     "validate_batch: delete key space {} != batch space {}",
                     parts[0], batch_space_id
+                )));
+            }
+        }
+        "durable_revocations" => {
+            if row.row_id.is_empty() || row.space_id != batch_space_id {
+                return Err(AppError::InvalidInput(format!(
+                    "validate_batch: invalid durable revocation delete key {:?}",
+                    row.row_id
                 )));
             }
         }
@@ -1163,10 +1192,12 @@ pub(crate) async fn apply_remote_row(
 fn table_priority(table_name: &str) -> u8 {
     match table_name {
         "spaces" => 0,
-        "accounts" | "categories" | "space_settings" | "space_devices" | "model_versions" => 1,
-        "space_members" => 2,
-        "device_user_grants" => 3,
-        "transactions" | "account_summaries" => 4,
+        "accounts" | "categories" | "space_settings" | "model_versions" => 1,
+        "durable_revocations" => 2,
+        "space_devices" => 3,
+        "space_members" => 4,
+        "device_user_grants" => 5,
+        "transactions" | "account_summaries" => 6,
         _ => 4,
     }
 }

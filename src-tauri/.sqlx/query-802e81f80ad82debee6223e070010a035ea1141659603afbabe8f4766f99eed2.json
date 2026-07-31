@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO durable_revocations (\n    revocation_id, space_id, target_device_id, certificate_fingerprint,\n    winning_revision, requesting_owner_id, status, target_acknowledged\n)\nVALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "802e81f80ad82debee6223e070010a035ea1141659603afbabe8f4766f99eed2"
+}

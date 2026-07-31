@@ -145,31 +145,45 @@ pub async fn remove_space_device(
         ));
     }
 
-    let cert = sqlx::query!(
-        "SELECT cert_pem FROM devices WHERE device_id = ?1",
-        device_id
-    )
-    .fetch_optional(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("remove_space_device fetch cert: {e}")))?;
-
-    if let Some(_c) = cert {
-        // Step 30.4: revocation is the absence of a space_devices row.
-        // No tombstone table needed — the change_log row carrying the
-        // DELETE is itself the durable record, and the cert falls out
-        // of the TLS trust set automatically.
-    }
-
     let mut tx = db
         .inner()
         .begin()
         .await
         .map_err(|e| AppError::Db(format!("remove_space_device begin: {e}")))?;
     require_owner_tx(&mut tx, &active.space_id, &active.user_id).await?;
+    let fingerprint = sqlx::query_file!("queries/sync/get_device_fingerprint.sql", &device_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_device fingerprint: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("device {device_id}")))?
+        .fingerprint;
+    if fingerprint.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "device {device_id} has no certificate fingerprint"
+        )));
+    }
+    let sync_seq = sqlx::query_file_scalar!("queries/settings/get_setting.sql", "sync_seq")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| AppError::Db(format!("remove_space_device revision: {e}")))?
+        .parse::<i64>()
+        .map_err(|e| AppError::Internal(format!("invalid sync_seq: {e}")))?;
+    sqlx::query_file!(
+        "queries/sync/create_durable_revocation.sql",
+        uuid::Uuid::new_v4().simple().to_string(),
+        &active.space_id,
+        &device_id,
+        fingerprint,
+        sync_seq + 1,
+        &active.user_id
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("remove_space_device revocation: {e}")))?;
     sqlx::query_file!(
         "queries/sync/delete_space_device.sql",
-        active.space_id,
-        device_id
+        &active.space_id,
+        &device_id
     )
     .execute(&mut *tx)
     .await

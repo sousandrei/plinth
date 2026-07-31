@@ -1,16 +1,16 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT cert_pem FROM devices WHERE device_id = ?1",
+  "query": "SELECT fingerprint AS \"fingerprint!: String\"\nFROM devices\nWHERE device_id = ?1\n",
   "describe": {
     "columns": [
       {
-        "name": "cert_pem",
+        "name": "fingerprint!: String",
         "ordinal": 0,
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "devices",
-            "name": "cert_pem"
+            "name": "fingerprint"
           }
         }
       }
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "ebc1d30c44772eba9a173032359093912b9d06d2f5138964cce3325789e88b2d"
+  "hash": "6783b60ce4169da16f6b647738d9782e91803c1a1183ff1933522efd41f66361"
 }

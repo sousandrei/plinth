@@ -116,6 +116,19 @@ pub struct DeviceUserGrantPayload {
     pub granted_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableRevocationPayload {
+    pub revocation_id: String,
+    pub space_id: String,
+    pub target_device_id: String,
+    pub certificate_fingerprint: String,
+    pub winning_revision: i64,
+    pub requesting_owner_id: String,
+    pub status: String,
+    pub target_acknowledged: i64,
+    pub created_at: String,
+}
+
 /// One row of the `model_versions` registry — the mesh-wide record of
 /// which trained-model versions exist, authored by whom, and their
 /// MD5s for transfer integrity. The on-disk weights + card files are
@@ -147,6 +160,7 @@ pub enum TablePayload {
     SpaceSetting(SpaceSettingPayload),
     SpaceDevice(SpaceDevicePayload),
     DeviceUserGrant(DeviceUserGrantPayload),
+    DurableRevocation(DurableRevocationPayload),
     ModelVersion(ModelVersionPayload),
 }
 
@@ -164,6 +178,7 @@ impl TablePayload {
             Self::SpaceSetting(_) => "space_settings",
             Self::SpaceDevice(_) => "space_devices",
             Self::DeviceUserGrant(_) => "device_user_grants",
+            Self::DurableRevocation(_) => "durable_revocations",
             Self::ModelVersion(_) => "model_versions",
         }
     }
@@ -182,6 +197,7 @@ impl TablePayload {
             Self::SpaceSetting(p) => serde_json::to_string(p),
             Self::SpaceDevice(p) => serde_json::to_string(p),
             Self::DeviceUserGrant(p) => serde_json::to_string(p),
+            Self::DurableRevocation(p) => serde_json::to_string(p),
             Self::ModelVersion(p) => serde_json::to_string(p),
         }
     }
@@ -212,6 +228,7 @@ pub fn from_json(table_name: &str, json: &str) -> Result<TablePayload, PayloadEr
         "space_settings" => decode!(SpaceSetting, SpaceSettingPayload),
         "space_devices" => decode!(SpaceDevice, SpaceDevicePayload),
         "device_user_grants" => decode!(DeviceUserGrant, DeviceUserGrantPayload),
+        "durable_revocations" => decode!(DurableRevocation, DurableRevocationPayload),
         "model_versions" => decode!(ModelVersion, ModelVersionPayload),
         other => Err(PayloadError::UnknownTable(other.to_string())),
     }

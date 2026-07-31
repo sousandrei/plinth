@@ -677,6 +677,7 @@ async fn snapshot_applies_users_before_memberships() {
         devices: vec![],
         space_devices: vec![],
         device_user_grants: vec![],
+        durable_revocations: vec![],
     };
 
     // Apply on B with FKs enabled, using the production dependency order:
@@ -3011,6 +3012,7 @@ async fn snapshot_apply_deletes_tombstoned_rows() {
         devices: vec![],
         space_devices: vec![],
         device_user_grants: vec![],
+        durable_revocations: vec![],
     };
 
     // Production apply path: under apply_guard, with host as author.
@@ -3340,6 +3342,7 @@ async fn snapshot_apply_creates_no_local_change_log() {
             paired_at: ts.into(),
         }],
         device_user_grants: vec![],
+        durable_revocations: vec![],
     };
 
     // Apply on B with the production apply_guard path.

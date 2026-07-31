@@ -56,6 +56,19 @@ pub struct WireDeviceUserGrant {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireDurableRevocation {
+    pub revocation_id: String,
+    pub space_id: String,
+    pub target_device_id: String,
+    pub certificate_fingerprint: String,
+    pub winning_revision: i64,
+    pub requesting_owner_id: String,
+    pub status: String,
+    pub target_acknowledged: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireUser {
     pub id: String,
     pub name: String,
@@ -168,6 +181,7 @@ pub struct SpaceSnapshot {
     pub devices: Vec<WireDevice>,
     pub space_devices: Vec<WireSpaceDevice>,
     pub device_user_grants: Vec<WireDeviceUserGrant>,
+    pub durable_revocations: Vec<WireDurableRevocation>,
 }
 
 /// Tagged envelope sent over both the pairing transport (encrypted TCP)
@@ -182,6 +196,7 @@ pub enum SnapshotFrame {
     Devices(Vec<WireDevice>),
     SpaceDevices(Vec<WireSpaceDevice>),
     DeviceUserGrants(Vec<WireDeviceUserGrant>),
+    DurableRevocations(Vec<WireDurableRevocation>),
     Members(Vec<WireMember>),
     Users(Vec<WireUser>),
     Categories(Vec<WireCategory>),
@@ -375,6 +390,15 @@ pub async fn collect_snapshot(
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot device_user_grants: {e}")))?;
 
+    let durable_revocations: Vec<WireDurableRevocation> = sqlx::query_file_as!(
+        WireDurableRevocation,
+        "queries/snapshots/list_durable_revocations_for_space.sql",
+        space_id
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Db(format!("collect_snapshot durable_revocations: {e}")))?;
+
     tx.commit()
         .await
         .map_err(|e| AppError::Db(format!("collect_snapshot commit: {e}")))?;
@@ -402,6 +426,7 @@ pub async fn collect_snapshot(
         devices,
         space_devices,
         device_user_grants,
+        durable_revocations,
     })
 }
 
@@ -554,6 +579,11 @@ pub async fn apply_snapshot_frame(
                 upsert_device_user_grant(tx, grant).await?;
             }
         }
+        SnapshotFrame::DurableRevocations(chunk) => {
+            for revocation in chunk {
+                upsert_durable_revocation(tx, revocation).await?;
+            }
+        }
         SnapshotFrame::Members(chunk) => {
             for m in chunk {
                 upsert_space_member(tx, m).await?;
@@ -678,7 +708,7 @@ async fn upsert_space_device(
     sd: &WireSpaceDevice,
 ) -> Result<(), AppError> {
     sqlx::query_file!(
-        "queries/sync/apply/upsert_space_device.sql",
+        "queries/sync/upsert_space_device.sql",
         sd.space_id,
         sd.device_id,
         sd.trust_mode,
@@ -704,6 +734,28 @@ async fn upsert_device_user_grant(
     .execute(&mut **tx)
     .await
     .map_err(|e| AppError::Db(format!("upsert_device_user_grant: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_durable_revocation(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    revocation: &WireDurableRevocation,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_durable_revocation.sql",
+        revocation.revocation_id,
+        revocation.space_id,
+        revocation.target_device_id,
+        revocation.certificate_fingerprint,
+        revocation.winning_revision,
+        revocation.requesting_owner_id,
+        revocation.status,
+        revocation.target_acknowledged,
+        revocation.created_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_durable_revocation: {e}")))?;
     Ok(())
 }
 

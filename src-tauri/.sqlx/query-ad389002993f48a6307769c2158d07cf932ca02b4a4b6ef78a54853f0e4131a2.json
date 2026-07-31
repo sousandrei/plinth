@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM durable_revocations WHERE revocation_id = ?1\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "ad389002993f48a6307769c2158d07cf932ca02b4a4b6ef78a54853f0e4131a2"
+}

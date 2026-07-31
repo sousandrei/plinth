@@ -5,8 +5,8 @@ use crate::error::AppError;
 use crate::sync::conflict_detector::{self, HotFieldConflict, LocalSnapshot};
 use crate::sync::payloads::{
     AccountPayload, AccountSummaryPayload, CategoryPayload, DeviceUserGrantPayload,
-    ModelVersionPayload, SpaceDevicePayload, SpaceMemberPayload, SpacePayload, SpaceSettingPayload,
-    TablePayload, TransactionPayload, UserSnapshot,
+    DurableRevocationPayload, ModelVersionPayload, SpaceDevicePayload, SpaceMemberPayload,
+    SpacePayload, SpaceSettingPayload, TablePayload, TransactionPayload, UserSnapshot,
 };
 use crate::sync::wire::ChangeRow;
 
@@ -63,8 +63,9 @@ async fn apply_upsert(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
         TablePayload::Transaction(p) => upsert_transaction(tx, row, p).await,
         TablePayload::AccountSummary(p) => upsert_account_summary(tx, p).await,
         TablePayload::SpaceSetting(p) => upsert_space_setting(tx, p).await,
-        TablePayload::SpaceDevice(p) => upsert_space_device(tx, p).await,
+        TablePayload::SpaceDevice(p) => upsert_space_device(tx, row, p).await,
         TablePayload::DeviceUserGrant(p) => upsert_device_user_grant(tx, p).await,
+        TablePayload::DurableRevocation(p) => upsert_durable_revocation(tx, p).await,
         TablePayload::ModelVersion(p) => upsert_model_version(tx, p).await,
     }
 }
@@ -156,6 +157,15 @@ async fn apply_delete(tx: &mut Transaction<'_, Sqlite>, row: &ChangeRow) -> Resu
             .execute(&mut **tx)
             .await
             .map_err(|e| AppError::Db(format!("delete_device_user_grant: {e}")))?;
+        }
+        "durable_revocations" => {
+            sqlx::query_file!(
+                "queries/sync/apply/delete_durable_revocation.sql",
+                row.row_id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| AppError::Db(format!("delete_durable_revocation: {e}")))?;
         }
         "model_versions" => {
             // Trigger emits row_id as `space_id:version` (see
@@ -274,6 +284,12 @@ pub async fn apply_tombstone(
             .execute(&mut **tx)
             .await
             .map_err(|e| AppError::Db(format!("tombstone device_user_grants: {e}")))?;
+        }
+        "durable_revocations" => {
+            sqlx::query_file!("queries/sync/apply/delete_durable_revocation.sql", row_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| AppError::Db(format!("tombstone durable_revocations: {e}")))?;
         }
         "model_versions" => {
             let (space_id, version) = split_composite(row_id, "model_versions")?;
@@ -462,6 +478,7 @@ async fn upsert_space_setting(
 
 async fn upsert_space_device(
     tx: &mut Transaction<'_, Sqlite>,
+    row: &ChangeRow,
     p: &SpaceDevicePayload,
 ) -> Result<(), AppError> {
     // Step 30.2: change_log only carries the device_id (no cert).
@@ -475,11 +492,12 @@ async fn upsert_space_device(
         .map_err(|e| AppError::Db(format!("upsert_device_stub: {e}")))?;
 
     sqlx::query_file!(
-        "queries/sync/apply/upsert_space_device.sql",
+        "queries/sync/apply/upsert_space_device_guarded.sql",
         p.space_id,
         p.device_id,
         p.trust_mode,
-        p.paired_at
+        p.paired_at,
+        row.seq
     )
     .execute(&mut **tx)
     .await
@@ -501,6 +519,28 @@ async fn upsert_device_user_grant(
     .execute(&mut **tx)
     .await
     .map_err(|e| AppError::Db(format!("upsert_device_user_grant: {e}")))?;
+    Ok(())
+}
+
+async fn upsert_durable_revocation(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: &DurableRevocationPayload,
+) -> Result<(), AppError> {
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_durable_revocation.sql",
+        p.revocation_id,
+        p.space_id,
+        p.target_device_id,
+        p.certificate_fingerprint,
+        p.winning_revision,
+        p.requesting_owner_id,
+        p.status,
+        p.target_acknowledged,
+        p.created_at
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| AppError::Db(format!("upsert_durable_revocation: {e}")))?;
     Ok(())
 }
 
@@ -777,6 +817,103 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count, 1, "converge to one logical grant");
+    }
+
+    #[tokio::test]
+    async fn durable_revocation_blocks_older_space_device_grant() {
+        let pool = fresh_pool().await;
+        let ts = "2024-01-01T00:00:00Z";
+
+        sqlx::query_file!(
+            "queries/tests/insert_space_fixture.sql",
+            "s1",
+            "test",
+            ts,
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query_file!("queries/users/create_user.sql", "owner", "Owner", ts, ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query_file!(
+            "queries/spaces/add_space_member.sql",
+            "s1",
+            "owner",
+            "owner",
+            ts
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO devices (device_id, cert_pem, fingerprint, display_name) VALUES ('peer-1', 'CERT', 'fp-1', 'Peer')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let revocation = ChangeRow {
+            id: "revoke-1".into(),
+            space_id: "s1".into(),
+            table_name: "durable_revocations".into(),
+            row_id: "revoke-1".into(),
+            operation: "insert".into(),
+            payload: Some(TablePayload::DurableRevocation(DurableRevocationPayload {
+                revocation_id: "revoke-1".into(),
+                space_id: "s1".into(),
+                target_device_id: "peer-1".into(),
+                certificate_fingerprint: "fp-1".into(),
+                winning_revision: 6,
+                requesting_owner_id: "owner".into(),
+                status: "pending".into(),
+                target_acknowledged: 0,
+                created_at: ts.into(),
+            })),
+            seq: 6,
+            device_id: "owner-device".into(),
+            changed_at: ts.into(),
+        };
+        let mut tx = pool.begin().await.unwrap();
+        apply_change(&mut tx, &revocation).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let grant = ChangeRow {
+            id: "grant-1".into(),
+            space_id: "s1".into(),
+            table_name: "space_devices".into(),
+            row_id: "s1:peer-1".into(),
+            operation: "insert".into(),
+            payload: Some(TablePayload::SpaceDevice(SpaceDevicePayload {
+                space_id: "s1".into(),
+                device_id: "peer-1".into(),
+                trust_mode: crate::sync::trust_mode::TrustMode::Active,
+                paired_at: ts.into(),
+            })),
+            seq: 5,
+            device_id: "peer-1".into(),
+            changed_at: ts.into(),
+        };
+        let mut tx = pool.begin().await.unwrap();
+        apply_change(&mut tx, &grant).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM space_devices WHERE space_id = 's1' AND device_id = 'peer-1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0);
+        let tombstone_count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM durable_revocations WHERE revocation_id = 'revoke-1'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tombstone_count, 1);
     }
 
     #[tokio::test]
