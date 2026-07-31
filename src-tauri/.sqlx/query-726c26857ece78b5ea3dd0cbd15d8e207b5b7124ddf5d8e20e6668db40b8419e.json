@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT pin_hash\nFROM users\nWHERE id = ?\n",
+  "query": "SELECT c.pin_hash\nFROM users u\nLEFT JOIN local_user_credentials c ON c.user_id = u.id\nWHERE u.id = ?\n",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "users",
+            "table": "local_user_credentials",
             "name": "pin_hash"
           }
         }
@@ -22,5 +22,5 @@
       true
     ]
   },
-  "hash": "d3d4bb68a67f5741b131cabce344fd0a5bd8b69204155e8ce44ecf3aad7b330e"
+  "hash": "726c26857ece78b5ea3dd0cbd15d8e207b5b7124ddf5d8e20e6668db40b8419e"
 }

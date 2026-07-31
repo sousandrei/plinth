@@ -348,7 +348,6 @@ async fn upsert_embedded_user(
         "queries/sync/apply/upsert_user.sql",
         u.id,
         u.name,
-        u.pin_hash,
         u.created_at,
         u.updated_at
     )

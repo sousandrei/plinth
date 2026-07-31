@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "-- Snapshot: list every user that is a member of this space.\nSELECT u.id, u.name, u.pin_hash, u.created_at, u.updated_at\nFROM users u\nJOIN space_members sm ON sm.user_id = u.id\nWHERE sm.space_id = ?1\nORDER BY u.name ASC",
+  "query": "SELECT id, name,\n       EXISTS (SELECT 1 FROM local_user_credentials c WHERE c.user_id = users.id)\n           AS \"has_pin!: bool\",\n       created_at, updated_at\nFROM users\nORDER BY created_at ASC\n",
   "describe": {
     "columns": [
       {
@@ -26,15 +26,10 @@
         }
       },
       {
-        "name": "pin_hash",
+        "name": "has_pin!: bool",
         "ordinal": 2,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "pin_hash"
-          }
-        }
+        "type_info": "Integer",
+        "origin": "Expression"
       },
       {
         "name": "created_at",
@@ -60,15 +55,15 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
       false,
       false,
-      true,
+      false,
       false,
       false
     ]
   },
-  "hash": "9d537d81e688d21c5cb963d5a75349fdff418de51cdf776d2f6e547e0f164c88"
+  "hash": "074a25ed683811caa4c4a2fc1ec22e348b26bfe360fd9c52496373712ebe3af2"
 }

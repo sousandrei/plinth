@@ -34,7 +34,6 @@ pub struct SpacePayload {
 pub struct UserSnapshot {
     pub id: String,
     pub name: String,
-    pub pin_hash: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -269,7 +268,6 @@ mod tests {
             "user": {
                 "id": "u-1",
                 "name": "Alice",
-                "pin_hash": "argon2:...",
                 "created_at": "2024-01-01T00:00:00Z",
                 "updated_at": "2024-01-01T00:00:00Z"
             }

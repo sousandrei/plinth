@@ -674,12 +674,10 @@ async fn create_pending_pairing(
 }
 
 async fn upsert_user(db: &SqlitePool, user: &WireUser) -> Result<(), AppError> {
-    let pin = user.pin_hash.clone();
     sqlx::query_file!(
         "queries/sync/upsert_user.sql",
         user.id,
         user.name,
-        pin,
         user.created_at,
         user.updated_at,
     )

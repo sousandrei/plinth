@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name, (pin_hash IS NOT NULL) AS \"has_pin!: bool\", created_at, updated_at\nFROM users\nORDER BY created_at ASC\n",
+  "query": "SELECT id, name, EXISTS (SELECT 1 FROM local_user_credentials c WHERE c.user_id = users.id) AS \"has_pin!: bool\", created_at, updated_at\nFROM users\nWHERE id = ?\n",
   "describe": {
     "columns": [
       {
@@ -55,7 +55,7 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       false,
@@ -65,5 +65,5 @@
       false
     ]
   },
-  "hash": "b8da1a1ffa5a25b6e29f73aa63684d91b9f712920fcbb68e1af056592f703361"
+  "hash": "1d769683831e0b6aaf1859eeac0a6e30a0f770f664726e2efcd4421c1723de7b"
 }

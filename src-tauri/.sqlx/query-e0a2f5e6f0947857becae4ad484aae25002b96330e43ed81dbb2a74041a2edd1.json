@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name AS \"name!\", pin_hash, created_at AS \"created_at!\", updated_at AS \"updated_at!\"\nFROM users\nWHERE id = ?1\n",
+  "query": "-- Snapshot: list every user that is a member of this space.\nSELECT u.id, u.name, u.created_at, u.updated_at\nFROM users u\nJOIN space_members sm ON sm.user_id = u.id\nWHERE sm.space_id = ?1\nORDER BY u.name ASC\n",
   "describe": {
     "columns": [
       {
-        "name": "id!",
+        "name": "id",
         "ordinal": 0,
         "type_info": "Text",
         "origin": {
@@ -15,7 +15,7 @@
         }
       },
       {
-        "name": "name!",
+        "name": "name",
         "ordinal": 1,
         "type_info": "Text",
         "origin": {
@@ -26,19 +26,8 @@
         }
       },
       {
-        "name": "pin_hash",
+        "name": "created_at",
         "ordinal": 2,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "pin_hash"
-          }
-        }
-      },
-      {
-        "name": "created_at!",
-        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -48,8 +37,8 @@
         }
       },
       {
-        "name": "updated_at!",
-        "ordinal": 4,
+        "name": "updated_at",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -65,10 +54,9 @@
     "nullable": [
       false,
       false,
-      true,
       false,
       false
     ]
   },
-  "hash": "23fb7524ebee5829648a76be2774533b4bf912b0b0a778db796ad805fbb444ad"
+  "hash": "e0a2f5e6f0947857becae4ad484aae25002b96330e43ed81dbb2a74041a2edd1"
 }

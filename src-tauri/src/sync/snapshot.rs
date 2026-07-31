@@ -59,7 +59,6 @@ pub struct WireDeviceUserGrant {
 pub struct WireUser {
     pub id: String,
     pub name: String,
-    pub pin_hash: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -248,7 +247,7 @@ pub async fn collect_snapshot(
             .await
             .map_err(|e| AppError::Db(format!("collect_snapshot members: {e}")))?;
 
-    let mut users: Vec<WireUser> = sqlx::query_file_as!(
+    let users: Vec<WireUser> = sqlx::query_file_as!(
         WireUser,
         "queries/snapshots/list_users_for_space.sql",
         space_id
@@ -256,11 +255,6 @@ pub async fn collect_snapshot(
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::Db(format!("collect_snapshot users: {e}")))?;
-
-    // Step 31.1: Users without local credentials (PIN hash must not leak)
-    for u in &mut users {
-        u.pin_hash = None;
-    }
 
     let categories: Vec<WireCategory> = sqlx::query_file_as!(
         WireCategory,
@@ -721,7 +715,6 @@ async fn upsert_user(
         "queries/sync/apply/upsert_user.sql",
         u.id,
         u.name,
-        u.pin_hash,
         u.created_at,
         u.updated_at
     )

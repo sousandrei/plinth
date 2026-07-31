@@ -658,14 +658,12 @@ async fn snapshot_applies_users_before_memberships() {
             WireUser {
                 id: "u1".into(),
                 name: "Alice".into(),
-                pin_hash: None,
                 created_at: ts.into(),
                 updated_at: ts.into(),
             },
             WireUser {
                 id: "u2".into(),
                 name: "Bob".into(),
-                pin_hash: None,
                 created_at: ts.into(),
                 updated_at: ts.into(),
             },
@@ -2664,7 +2662,7 @@ async fn sql_check_constraint_rejects_unknown_trust_mode() {
 /// captures the complete, consistent space state:
 /// - Header versions (snapshot schema version, protocol version, snapshot ID)
 /// - High-water vector and row winners/tombstones
-/// - Space metadata, members, and sanitized users (without local credentials / pin_hash)
+/// - Space metadata, members, and users without local credentials
 /// - Device roster and space grants (including trust modes)
 /// - Explicit empty sections (categories, accounts, etc. as empty Vecs)
 #[tokio::test]
@@ -2675,10 +2673,19 @@ async fn collect_snapshot_captures_complete_consistent_state() {
 
     a.insert_space("s1", "Main Space").await;
 
-    // Create a user with a local credential (pin_hash)
+    // Create a user and a local credential on this installation.
     sqlx::query!(
-        "INSERT INTO users (id, name, pin_hash, created_at, updated_at) \
-         VALUES ('u1', 'Alice', 'argon2_secret_hash', ?1, ?1)",
+        "INSERT INTO users (id, name, created_at, updated_at) \
+         VALUES ('u1', 'Alice', ?1, ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO local_user_credentials (user_id, pin_hash, updated_at) \
+         VALUES ('u1', 'argon2_secret_hash', ?1)",
         ts
     )
     .execute(&a.pool)
@@ -2727,14 +2734,13 @@ async fn collect_snapshot_captures_complete_consistent_state() {
         "row_winners contains entry for the space"
     );
 
-    // 3. User sanitization (local credentials stripped)
+    // 3. Users contain profile data only.
     let alice = snap
         .users
         .iter()
         .find(|u| u.id == "u1")
         .expect("Alice must be in users");
     assert_eq!(alice.name, "Alice");
-    assert_eq!(alice.pin_hash, None, "PIN hash must NOT leak in snapshot");
 
     // 4. Device and space grants
     assert!(snap.devices.iter().any(|d| d.device_id == "peer-B"));
@@ -2750,6 +2756,66 @@ async fn collect_snapshot_captures_complete_consistent_state() {
     assert!(snap.accounts.is_empty());
     assert!(snap.transactions.is_empty());
     assert!(snap.account_summaries.is_empty());
+}
+
+#[tokio::test]
+async fn remote_user_upsert_cannot_replace_local_credential() {
+    let dir = TempDir::new().unwrap();
+    let a = TestDevice::create("device-A", &dir).await;
+    let ts = "2024-01-01T00:00:00Z";
+
+    sqlx::query!(
+        "INSERT INTO users (id, name, created_at, updated_at) VALUES ('u1', 'Alice', ?1, ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO local_user_credentials (user_id, pin_hash, updated_at) \
+         VALUES ('u1', 'local_hash', ?1)",
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_user.sql",
+        "u1",
+        "Alice from peer",
+        ts,
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    let local_hash: String =
+        sqlx::query_scalar("SELECT pin_hash FROM local_user_credentials WHERE user_id = 'u1'")
+            .fetch_one(&a.pool)
+            .await
+            .unwrap();
+    assert_eq!(local_hash, "local_hash");
+
+    sqlx::query_file!(
+        "queries/sync/apply/upsert_user.sql",
+        "u2",
+        "Bob from peer",
+        ts,
+        ts
+    )
+    .execute(&a.pool)
+    .await
+    .unwrap();
+
+    let has_local_credential: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM local_user_credentials WHERE user_id = 'u2')",
+    )
+    .fetch_one(&a.pool)
+    .await
+    .unwrap();
+    assert!(!has_local_credential);
 }
 
 // ---------------------------------------------------------------------------

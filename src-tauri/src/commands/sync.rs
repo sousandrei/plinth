@@ -283,7 +283,6 @@ pub async fn accept_pair_token_from_peer(
     let joining = WireUser {
         id: user_row.id,
         name: user_row.name,
-        pin_hash: user_row.pin_hash,
         created_at: user_row.created_at,
         updated_at: user_row.updated_at,
     };
@@ -379,7 +378,6 @@ pub async fn accept_pair_token(
     let joining = WireUser {
         id: user_row.id,
         name: user_row.name,
-        pin_hash: user_row.pin_hash,
         created_at: user_row.created_at,
         updated_at: user_row.updated_at,
     };

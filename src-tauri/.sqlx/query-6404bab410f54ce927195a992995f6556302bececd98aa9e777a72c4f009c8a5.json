@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name, (pin_hash IS NOT NULL) AS \"has_pin!: bool\", created_at, updated_at\nFROM users\nWHERE id = ?\n",
+  "query": "SELECT id AS \"id!\", name AS \"name!\", created_at AS \"created_at!\", updated_at AS \"updated_at!\"\nFROM users\nWHERE id = ?1\n",
   "describe": {
     "columns": [
       {
-        "name": "id",
+        "name": "id!",
         "ordinal": 0,
         "type_info": "Text",
         "origin": {
@@ -15,7 +15,7 @@
         }
       },
       {
-        "name": "name",
+        "name": "name!",
         "ordinal": 1,
         "type_info": "Text",
         "origin": {
@@ -26,14 +26,8 @@
         }
       },
       {
-        "name": "has_pin!: bool",
+        "name": "created_at!",
         "ordinal": 2,
-        "type_info": "Integer",
-        "origin": "Expression"
-      },
-      {
-        "name": "created_at",
-        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -43,8 +37,8 @@
         }
       },
       {
-        "name": "updated_at",
-        "ordinal": 4,
+        "name": "updated_at!",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -61,9 +55,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "e9d6851fc0c5647cd2f1e3f49c4e9786959ad5c2610021b09b0183a1e42159d1"
+  "hash": "6404bab410f54ce927195a992995f6556302bececd98aa9e777a72c4f009c8a5"
 }

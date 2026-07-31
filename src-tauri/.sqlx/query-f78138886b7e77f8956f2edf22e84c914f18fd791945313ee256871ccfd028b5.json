@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO local_user_credentials (user_id, pin_hash, updated_at)\nSELECT id, ?1, ?2\nFROM users\nWHERE id = ?3\nON CONFLICT (user_id) DO UPDATE SET\n    pin_hash = excluded.pin_hash,\n    updated_at = excluded.updated_at\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f78138886b7e77f8956f2edf22e84c914f18fd791945313ee256871ccfd028b5"
+}
