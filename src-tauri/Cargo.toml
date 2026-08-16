@@ -49,7 +49,7 @@ uuid = { version = "1.23", features = ["v4"] }
 
 # P2P sync — local network discovery
 gethostname = "1"
-mdns-sd = "0.20"
+mdns-sd = "0.21"
 
 # Date/time formatting
 chrono = { version = "0.4.45", features = ["serde"] }
