@@ -6,6 +6,8 @@ use std::{
     },
 };
 
+use burn::grad_clipping::GradientClippingConfig;
+use burn::optim::AdamWConfig;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc;
@@ -13,9 +15,10 @@ use tokio::sync::mpsc;
 use crate::{
     ClassifierState, Session,
     classifier::{
-        Classifier, TrainableClassifier,
+        Classifier, TrainableClassifier, TrainingBackend,
         dataset::load_approved,
-        trainer::{TrainingConfig, make_optimizer, precompute_embeddings, split_indices},
+        model::ClassificationHead,
+        trainer::{TrainingConfig, precompute_embeddings, run_epoch, split_indices},
     },
     db::DbPool,
     error::AppError,
@@ -310,17 +313,25 @@ pub async fn fine_tune(
     let classes_clone = classes.clone();
     let total_samples_u32 = u32::try_from(samples.len()).unwrap_or(u32::MAX);
     let train_handle = tokio::task::spawn_blocking(move || -> Result<FinetuneResult, AppError> {
-        let trainable = if from_scratch {
-            TrainableClassifier::load_fresh(&app_data, classes_clone)?
-        } else if let Some(w) = start_weights.as_ref() {
-            TrainableClassifier::load(&app_data, w, classes_clone)?
-        } else {
-            TrainableClassifier::load_fresh(&app_data, classes_clone)?
-        };
+        let mut trainable = TrainableClassifier::load_fresh(&app_data, classes_clone)?;
+        if !from_scratch
+            && let Some(weights) = start_weights.as_ref()
+            && weights.exists()
+            && let Ok(head) = ClassificationHead::<TrainingBackend>::new(
+                trainable.classes.len(),
+                &trainable.device,
+            )
+            .load_weights(weights)
+        {
+            trainable.head = head;
+        }
 
         let split = split_indices(samples.len(), 0.8);
-        let mut optimizer = make_optimizer(&trainable.var_map, &training_config)?;
         let num_classes = trainable.classes.len();
+        let mut optimizer = AdamWConfig::new()
+            .with_weight_decay(training_config.weight_decay as f32)
+            .with_grad_clipping(Some(GradientClippingConfig::Norm(0.1)))
+            .init::<TrainingBackend, ClassificationHead<TrainingBackend>>();
 
         // Pre-compute all MiniLM embeddings once — frozen encoder never
         // runs again during the epoch loop. Emit a progress event per
@@ -344,13 +355,13 @@ pub async fn fine_tune(
 
         let mut last_result = None;
         let mut epoch_history: Vec<FinetuneProgress> = Vec::new();
+        let mut head = trainable.head;
 
         for epoch in 1..=training_config.epochs {
-            let epoch_result = crate::classifier::trainer::run_epoch(
-                &embeddings,
-                &trainable.head,
+            let (updated_head, epoch_result) = run_epoch(
+                head,
                 &mut optimizer,
-                &trainable.var_map,
+                &embeddings,
                 &samples,
                 &split,
                 &training_config,
@@ -358,6 +369,7 @@ pub async fn fine_tune(
                 num_classes,
                 &trainable.device,
             )?;
+            head = updated_head;
 
             let progress = FinetuneProgress {
                 epoch,
@@ -377,7 +389,7 @@ pub async fn fine_tune(
             }
         }
 
-        trainable.save(&save_path)?;
+        head.save_weights(&save_path)?;
 
         let last = last_result.unwrap();
         let epochs_completed = last.epoch;
@@ -717,18 +729,7 @@ pub async fn delete_model(
 
 #[tauri::command]
 pub fn get_training_device() -> String {
-    #[cfg(feature = "cuda")]
-    {
-        "CUDA".to_string()
-    }
-    #[cfg(all(target_os = "macos", not(feature = "cuda")))]
-    {
-        "Metal".to_string()
-    }
-    #[cfg(all(not(target_os = "macos"), not(feature = "cuda")))]
-    {
-        "CPU".to_string()
-    }
+    "WebGPU".to_string()
 }
 
 /// Loads the classifier for the active model version of the given space.

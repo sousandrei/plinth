@@ -1,7 +1,6 @@
 version: '3'
 
 env:
-  CUDARC_CUDA_VERSION: '12040'
   WEBKIT_DISABLE_COMPOSITING_MODE: '1'
 
 tasks:
@@ -66,24 +65,14 @@ tasks:
       - cargo sqlx prepare
 
   package:
-    desc: Build and package the production desktop application (CPU)
+    desc: Build and package the production desktop application with the WGPU backend
     cmds:
       - bun run tauri:build
 
   dev:
-    desc: Run the desktop application in development mode (CPU)
+    desc: Run the desktop application in development mode with the WGPU backend
     cmds:
       - bun run tauri:dev
-
-  dev:cuda:
-    desc: Run the desktop application in development mode with CUDA enabled
-    cmds:
-      - bun run tauri:dev:cuda
-
-  package:cuda:
-    desc: Build and package the production desktop application with CUDA enabled
-    cmds:
-      - bun run tauri:build:cuda
 
   storybook:
     desc: Run Storybook dev server
