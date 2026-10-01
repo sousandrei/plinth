@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/sousandrei/plinth/compare/plinth-v1.5.1...plinth-v1.6.0) (2026-10-01)
+
+
+### Features
+
+* migrate to burn from candle ([419f455](https://github.com/sousandrei/plinth/commit/419f455b20cdc2ca0a309f0db1c73c48899b7155))
+
 ## [1.5.1](https://github.com/sousandrei/plinth/compare/plinth-v1.5.0...plinth-v1.5.1) (2026-07-27)
 
 
