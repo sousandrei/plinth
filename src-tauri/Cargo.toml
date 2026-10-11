@@ -49,13 +49,13 @@ uuid = { version = "1.23", features = ["v4"] }
 
 # P2P sync — local network discovery
 gethostname = "1"
-mdns-sd = "0.20"
+mdns-sd = "0.21"
 
 # Date/time formatting
 chrono = { version = "0.4.45", features = ["serde"] }
 
 # Import pipeline
-boa_engine = "0.21"
+boa_engine = "0.22"
 calamine = { version = "0.36.0", features = ["dates"] }
 csv = "1"
 md-5 = "0.11.0"
@@ -65,7 +65,7 @@ tauri-plugin-dialog = "2"
 # Model inference
 # WGPU provides a cross-platform GPU backend, using platform APIs such as
 # DirectX, Vulkan, and Metal without requiring CUDA Toolkit.
-burn = { version = "~0.21", default-features = false, features = [
+burn = { version = "~0.22", default-features = false, features = [
     "autotune",
     "fusion",
     "metal",
