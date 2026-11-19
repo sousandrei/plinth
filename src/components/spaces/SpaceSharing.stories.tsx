@@ -3,11 +3,6 @@ import type { Meta, StoryObj } from 'storybook-react-rsbuild';
 import { Toaster } from '@/components/ui/Toast';
 import { AuthProvider } from '@/context/AuthContext';
 import { setMock } from '@/lib/tauri-mock';
-import {
-  setIdentifierMock,
-  setOpenMock,
-  setSaveMock,
-} from '@/lib/tauri-plugin-mocks';
 import { SpacesPage } from '@/routes/spaces';
 import type { Space } from '@/types';
 
@@ -25,9 +20,13 @@ const memberSpace: Space = {
   role: 'member',
 };
 const joined: Space = { ...household, id: 'joined', name: 'Joined Space' };
-const seedPath = '/tmp/household-space-seed.json';
-const exportSeed = fn().mockName('export_sync_seed');
-const importSeed = fn().mockName('import_sync_seed');
+const code = 'plinth1.invitation-for-the-story';
+const createInvitation = fn(() => ({
+  code,
+  name: 'join-household',
+  port: 37420,
+}));
+const joinSpace = fn().mockName('join_shared_space');
 const activateSpace = fn().mockName('set_active_space');
 
 const setupSpaces = () => {
@@ -57,18 +56,18 @@ type Story = StoryObj<typeof meta>;
 export const ShareAndJoin: Story = {
   beforeEach: () => {
     const spaces = setupSpaces();
-    setIdentifierMock('plinth-sync-preview');
-    setSaveMock(async () => seedPath);
-    setOpenMock(async () => seedPath);
-    exportSeed.mockClear();
-    importSeed.mockReset().mockImplementation(() => {
+    createInvitation.mockClear();
+    joinSpace.mockReset().mockImplementation(() => {
       spaces.push(joined);
       return joined.id;
     });
     activateSpace.mockClear();
-    setMock('export_sync_seed', exportSeed);
-    setMock('import_sync_seed', importSeed);
+    setMock('create_sync_invitation', createInvitation);
+    setMock('join_shared_space', joinSpace);
     setMock('set_active_space', activateSpace);
+    setMock('discover_sync_peers', [
+      { name: 'join-household', addresses: ['192.168.1.20:37420'] },
+    ]);
   },
   play: async ({ canvas, canvasElement, userEvent }) => {
     const body = within(canvasElement.ownerDocument.body);
@@ -79,20 +78,31 @@ export const ShareAndJoin: Story = {
       canvas.queryByRole('button', { name: 'Share space: Member Space' }),
     ).not.toBeInTheDocument();
     await userEvent.click(share);
-    await waitFor(() =>
-      expect(body.getByText('Space seed saved')).toBeVisible(),
+    await userEvent.click(
+      await body.findByRole('button', { name: 'Create invitation' }),
     );
-    await expect(exportSeed).toHaveBeenCalledWith({
+    await expect(await body.findByLabelText('Invitation code')).toHaveValue(
+      code,
+    );
+    await expect(createInvitation).toHaveBeenCalledWith({
       spaceId: household.id,
-      path: seedPath,
     });
+    await userEvent.keyboard('{Escape}');
     await userEvent.click(
       canvas.getByRole('button', { name: 'Join shared space' }),
     );
+    await userEvent.click(
+      await body.findByRole('button', { name: 'join-household' }),
+    );
+    await userEvent.type(body.getByLabelText('Invitation code'), code);
+    await userEvent.click(body.getByRole('button', { name: /^Join$/ }));
     await waitFor(() =>
       expect(body.getByText('Shared space joined')).toBeVisible(),
     );
-    await expect(importSeed).toHaveBeenCalledWith({ path: seedPath });
+    await expect(joinSpace).toHaveBeenCalledWith({
+      code,
+      address: 'mdns:join-household',
+    });
     await expect(activateSpace).toHaveBeenCalledWith({ spaceId: joined.id });
     await expect(
       (await canvas.findByText('Joined Space')).closest(
@@ -102,17 +112,25 @@ export const ShareAndJoin: Story = {
   },
 };
 
-export const RegularProfile: Story = {
+export const DiscoveryUnavailable: Story = {
   beforeEach: () => {
     setupSpaces();
+    setMock('discover_sync_peers', () => {
+      throw new Error('unavailable');
+    });
   },
-  play: async ({ canvas }) => {
-    await canvas.findByText('Household');
+  play: async ({ canvas, canvasElement, userEvent }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(
+      await canvas.findByRole('button', { name: 'Join shared space' }),
+    );
     await expect(
-      canvas.queryByRole('button', { name: 'Join shared space' }),
-    ).not.toBeInTheDocument();
+      await body.findByLabelText('Host or IP address (optional)'),
+    ).toBeVisible();
     await expect(
-      canvas.queryByRole('button', { name: 'Share space: Household' }),
-    ).not.toBeInTheDocument();
+      await body.findByText(
+        'Discovery unavailable. You can enter an address below.',
+      ),
+    ).toBeInTheDocument();
   },
 };

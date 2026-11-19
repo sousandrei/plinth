@@ -1,5 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import { listMySpaces, setActiveSpace } from '@/api/spaces';
+import { JoinSharedSpaceDialog } from '@/components/spaces/SharedSpaceDialogs';
+import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/util';
 import type { Space } from '@/types';
 
@@ -10,6 +13,7 @@ interface SpacePickerStageProps {
 export const SpacePickerStage = ({
   onSuccess,
 }: SpacePickerStageProps): React.JSX.Element => {
+  const [joinOpen, setJoinOpen] = useState(false);
   const { data: spaces = [], isLoading } = useQuery({
     queryKey: ['my-spaces'],
     queryFn: listMySpaces,
@@ -58,6 +62,16 @@ export const SpacePickerStage = ({
             </button>
           ))}
         </div>
+      )}
+
+      <Button variant="secondary" onClick={() => setJoinOpen(true)}>
+        Join shared space
+      </Button>
+      {joinOpen && (
+        <JoinSharedSpaceDialog
+          onClose={() => setJoinOpen(false)}
+          onJoined={onSuccess}
+        />
       )}
 
       {activateMutation.isError && (

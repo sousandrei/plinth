@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Toggle } from '@/components/ui/Toggle';
 import type { Space, SpaceMember } from '@/types';
+import { SyncDevices } from './SyncDevices';
 
 interface SpaceEditDialogProps {
   space: Space;
@@ -314,6 +315,8 @@ export const SpaceEditDialog = ({
           )}
         </div>
       )}
+
+      <SyncDevices spaceId={space.id} canManage={isOwner} />
 
       <div className="border-t border-border-subtle pt-4 flex gap-2">
         {isOwner ? (

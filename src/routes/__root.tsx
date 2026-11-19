@@ -1,4 +1,6 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { createRootRoute, Outlet } from '@tanstack/react-router';
+import { listen } from '@tauri-apps/api/event';
 import { check } from '@tauri-apps/plugin-updater';
 import { useEffect } from 'react';
 import { restartApp } from '@/api/updater';
@@ -13,6 +15,26 @@ export const Route = createRootRoute({
 
 function RootLayout(): React.JSX.Element {
   const { user, spaceId } = useAuth();
+  const query = useQueryClient();
+
+  useEffect(() => {
+    if (!user || !spaceId) return;
+    const subscription = listen<string>('sync-space-updated', ({ payload }) => {
+      if (payload !== spaceId) return;
+      for (const key of [
+        'transactions',
+        'accounts',
+        'categories',
+        'aggregations',
+        'sync-devices',
+      ]) {
+        void query.invalidateQueries({ queryKey: [key] });
+      }
+    }).catch(() => undefined);
+    return () => {
+      void subscription.then((unsubscribe) => unsubscribe?.());
+    };
+  }, [query, user, spaceId]);
 
   useEffect(() => {
     void (async () => {

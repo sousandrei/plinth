@@ -20,6 +20,25 @@ export interface SpaceMember {
   role: string;
 }
 
+export interface NearbySyncPeer {
+  name: string;
+  addresses: string[];
+}
+
+export interface SyncInvitation {
+  code: string;
+  name: string;
+  port: number;
+}
+
+export interface SyncDevice {
+  id: string;
+  name: string;
+  address: string | null;
+  last_success: number | null;
+  error: string | null;
+}
+
 export interface Account {
   id: string;
   name: string;
