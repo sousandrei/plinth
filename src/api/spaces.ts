@@ -1,3 +1,4 @@
+import { getIdentifier } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import type { ExportResult, ImportResult, Space, SpaceMember } from '@/types';
 
@@ -56,3 +57,12 @@ export const importSpaceData = (
   path: string,
 ): Promise<ImportResult> =>
   invoke<ImportResult>('import_space_data', { spaceId, path });
+
+export const isSyncPreviewProfile = async (): Promise<boolean> =>
+  (await getIdentifier()) === 'plinth-sync-preview';
+
+export const exportSyncSeed = (spaceId: string, path: string): Promise<void> =>
+  invoke<void>('export_sync_seed', { spaceId, path });
+
+export const importSyncSeed = (path: string): Promise<string> =>
+  invoke<string>('import_sync_seed', { path });

@@ -52,11 +52,11 @@ export function clearMocks(): void {
 
 export async function invoke<T = unknown>(
   command: string,
-  _args?: Record<string, unknown> | unknown[],
+  args?: Record<string, unknown> | unknown[],
 ): Promise<T> {
   if (command in storyMocks) {
     const mock = storyMocks[command];
-    return (typeof mock === 'function' ? mock() : mock) as T;
+    return (typeof mock === 'function' ? mock(args) : mock) as T;
   }
   return defaultForCommand(command) as T;
 }

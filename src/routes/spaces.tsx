@@ -1,10 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
-import { save } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { useState } from 'react';
 import {
   createSpace,
   exportSpaceData,
+  exportSyncSeed,
+  importSyncSeed,
+  isSyncPreviewProfile,
   listMySpaces,
   setActiveSpace,
 } from '@/api/spaces';
@@ -18,6 +21,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
+import { toast } from '@/components/ui/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { cn } from '@/lib/util';
 import type { Space } from '@/types';
@@ -26,7 +30,7 @@ export const Route = createFileRoute('/spaces')({
   component: SpacesPage,
 });
 
-function SpacesPage(): React.JSX.Element {
+export function SpacesPage(): React.JSX.Element {
   const { user, spaceId, setSpaceId } = useAuth();
   const queryClient = useQueryClient();
   const [editingSpace, setEditingSpace] = useState<Space | null>(null);
@@ -39,6 +43,12 @@ function SpacesPage(): React.JSX.Element {
   const { data: spaces = [], isLoading } = useQuery({
     queryKey: ['my-spaces'],
     queryFn: listMySpaces,
+  });
+
+  const { data: syncPreview = false } = useQuery({
+    queryKey: ['sync-preview-profile'],
+    queryFn: isSyncPreviewProfile,
+    staleTime: Infinity,
   });
 
   const switchMutation = useMutation({
@@ -59,6 +69,58 @@ function SpacesPage(): React.JSX.Element {
         setNewSpaceOpen(false);
       });
     },
+  });
+
+  const shareMutation = useMutation({
+    mutationFn: async (space: Space) => {
+      const path = await save({
+        defaultPath: `${space.name}-space-seed.json`,
+        filters: [{ name: 'Space seed', extensions: ['json'] }],
+      });
+      if (!path) return;
+      await exportSyncSeed(space.id, path);
+      return path;
+    },
+    onSuccess: (path) => {
+      if (path) {
+        toast.success(
+          'Space seed saved',
+          'Open this file on the other device.',
+        );
+      }
+    },
+    onError: (error) => toast.error('Could not share space', String(error)),
+  });
+
+  const joinMutation = useMutation({
+    mutationFn: async () => {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: 'Space seed', extensions: ['json'] }],
+      });
+      return path ? importSyncSeed(path) : null;
+    },
+    onSuccess: async (id) => {
+      if (!id) return;
+      await queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
+      try {
+        await switchMutation.mutateAsync(id);
+      } catch (error) {
+        toast.warning('Space joined. Could not open it.', String(error));
+        return;
+      }
+      for (const key of [
+        'accounts',
+        'transactions',
+        'categories',
+        'aggregations',
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+      toast.success('Shared space joined');
+    },
+    onError: (error) =>
+      toast.error('Could not join shared space', String(error)),
   });
 
   const handleSpaceDeleted = () => {
@@ -103,6 +165,20 @@ function SpacesPage(): React.JSX.Element {
         </div>
 
         <div className="flex items-center gap-2">
+          {syncPreview && (
+            <Button
+              variant="secondary"
+              onClick={() => joinMutation.mutate()}
+              disabled={
+                joinMutation.isPending ||
+                switchMutation.isPending ||
+                createMutation.isPending
+              }
+              className="text-xs rounded-none h-9"
+            >
+              {joinMutation.isPending ? 'Joining…' : 'Join shared space'}
+            </Button>
+          )}
           <Dialog open={importOpen} onOpenChange={setImportOpen}>
             <DialogTrigger
               render={
@@ -180,6 +256,7 @@ function SpacesPage(): React.JSX.Element {
           return (
             <div
               key={space.id}
+              aria-current={isActive || undefined}
               className={cn(
                 'flex items-center justify-between px-5 py-4',
                 'border border-border-muted bg-canvas-raised',
@@ -204,10 +281,26 @@ function SpacesPage(): React.JSX.Element {
                   <Button
                     variant="secondary"
                     onClick={() => switchMutation.mutate(space.id)}
-                    disabled={switchMutation.isPending}
+                    disabled={
+                      switchMutation.isPending || joinMutation.isPending
+                    }
                     className="text-xs rounded-none h-8 px-3"
                   >
                     Switch
+                  </Button>
+                )}
+                {syncPreview && space.role === 'owner' && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => shareMutation.mutate(space)}
+                    disabled={shareMutation.isPending}
+                    aria-label={`Share space: ${space.name}`}
+                    className="text-xs rounded-none h-8 px-3"
+                  >
+                    {shareMutation.isPending &&
+                    shareMutation.variables.id === space.id
+                      ? 'Sharing…'
+                      : 'Share space'}
                   </Button>
                 )}
                 <Button
