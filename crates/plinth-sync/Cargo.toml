@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 automerge = "0.12"
+if-addrs = "0.15"
 mdns-sd = "0.20"
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 rusqlite = { version = "0.39", features = ["bundled"] }

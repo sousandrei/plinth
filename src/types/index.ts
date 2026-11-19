@@ -30,6 +30,8 @@ export interface SyncInvitation {
   id: string;
   name: string;
   port: number;
+  addresses: string[];
+  nearby_available: boolean;
 }
 
 export interface SyncPairing {

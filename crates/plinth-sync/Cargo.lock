@@ -566,6 +566,7 @@ name = "plinth-sync"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "if-addrs",
  "mdns-sd",
  "rcgen",
  "rusqlite",

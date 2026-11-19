@@ -2,7 +2,8 @@
 
 use std::{
     collections::BTreeMap,
-    net::SocketAddr,
+    io,
+    net::{Ipv4Addr, SocketAddr},
     time::{Duration, Instant},
 };
 
@@ -12,7 +13,23 @@ use crate::transport::Result;
 
 const SERVICE: &str = "_plinth-sync._tcp.local.";
 const TIMEOUT: Duration = Duration::from_secs(5);
-const SCAN_TIMEOUT: Duration = Duration::from_secs(3);
+
+pub fn lan_addresses(port: u16) -> io::Result<Vec<SocketAddr>> {
+    let mut ips: Vec<_> = if_addrs::get_if_addrs()?
+        .into_iter()
+        .filter(|interface| interface.is_oper_up() && !interface.is_p2p())
+        .filter_map(|interface| match interface.ip() {
+            std::net::IpAddr::V4(ip) if is_lan_address(ip) => Some(ip),
+            _ => None,
+        })
+        .collect();
+    ips.sort_unstable_by_key(|ip| (!ip.is_private(), ip.is_link_local(), *ip));
+    ips.dedup();
+    Ok(ips
+        .into_iter()
+        .map(|ip| SocketAddr::new(ip.into(), port))
+        .collect())
+}
 
 /// A connection candidate announced on the LAN. Pairing verifies its identity.
 #[derive(Debug)]
@@ -92,7 +109,7 @@ pub fn discover(name: &str) -> Result<Vec<SocketAddr>> {
 /// List all resolved Plinth peers instead of searching for a known name.
 pub fn discover_peers() -> Result<Vec<DiscoveredPeer>> {
     let mut peers = BTreeMap::new();
-    browse::<()>(SCAN_TIMEOUT, |event| {
+    browse::<()>(TIMEOUT, |event| {
         match event {
             ServiceEvent::ServiceResolved(info) => {
                 if let Some(name) = instance_name(info.get_fullname()) {
@@ -145,13 +162,15 @@ fn resolved_addresses(info: &ResolvedService) -> Vec<SocketAddr> {
     let mut addresses: Vec<_> = info
         .get_addresses_v4()
         .into_iter()
-        .filter(|ip| {
-            !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast() && !ip.is_broadcast()
-        })
+        .filter(|ip| is_lan_address(*ip))
         .map(|ip| SocketAddr::new(ip.into(), port))
         .collect();
     addresses.sort_unstable();
     addresses
+}
+
+fn is_lan_address(ip: Ipv4Addr) -> bool {
+    !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast() && !ip.is_broadcast()
 }
 
 fn browse<T>(
@@ -203,9 +222,19 @@ mod tests {
         let addresses = listeners
             .each_ref()
             .map(|listener| listener.local_addr().unwrap());
+        assert!(
+            lan_addresses(addresses[0].port())
+                .unwrap()
+                .contains(&addresses[0])
+        );
         let names = ['a', 'b'].map(|suffix| format!("plinth-discovery-{}-{suffix}", process::id()));
         let advertisers = [
-            advertise_with_label(&names[0], addresses[0], Some("Test computer")).unwrap(),
+            advertise_with_label(
+                &names[0],
+                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), addresses[0].port()),
+                Some("Test computer"),
+            )
+            .unwrap(),
             advertise(&names[1], addresses[1]).unwrap(),
         ];
         let peers = discover_peers();

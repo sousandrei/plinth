@@ -26,6 +26,8 @@ const createInvitation = fn(() => ({
   id: 'join-household',
   name: 'Living room PC',
   port: 37420,
+  addresses: ['192.168.1.20:37420'],
+  nearby_available: true,
 }));
 const beginPairing = fn(() => ({
   id: 'outgoing',
@@ -74,12 +76,7 @@ export const ShareAndJoin: Story = {
       return joined.id;
     });
     setMock('create_sync_invitation', createInvitation);
-    setMock('sync_invitation_request', {
-      id: 'incoming',
-      device: 'MacBook',
-      code,
-      same_user: true,
-    });
+    setMock('sync_invitation_request', null);
     setMock('respond_sync_pairing', respond);
     setMock('begin_sync_pairing', beginPairing);
     setMock('join_shared_space', joinSpace);
@@ -104,6 +101,13 @@ export const ShareAndJoin: Story = {
     await userEvent.click(
       await body.findByRole('button', { name: 'Pair my device' }),
     );
+    await expect(await body.findByText('192.168.1.20:37420')).toBeVisible();
+    setMock('sync_invitation_request', {
+      id: 'incoming',
+      device: 'MacBook',
+      code,
+      same_user: true,
+    });
     await expect(await body.findByText(code)).toBeVisible();
     await expect(createInvitation).toHaveBeenCalledWith({
       spaceId: household.id,
@@ -150,6 +154,8 @@ export const ShareAndJoin: Story = {
 export const DiscoveryUnavailable: Story = {
   beforeEach: () => {
     setupSpaces();
+    beginPairing.mockClear();
+    setMock('begin_sync_pairing', beginPairing);
     setMock('discover_sync_peers', () => {
       throw new Error('unavailable');
     });
@@ -165,6 +171,15 @@ export const DiscoveryUnavailable: Story = {
     await expect(
       await body.findByText('Nearby discovery is unavailable.'),
     ).toBeInTheDocument();
+    await userEvent.type(
+      body.getByLabelText('Host or IP address'),
+      '192.168.1.20:37420',
+    );
+    await userEvent.click(body.getByRole('button', { name: 'Connect' }));
+    await expect(await body.findByText(code)).toBeVisible();
+    await expect(beginPairing).toHaveBeenCalledWith({
+      address: '192.168.1.20:37420',
+    });
   },
 };
 

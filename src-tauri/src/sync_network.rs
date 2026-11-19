@@ -82,6 +82,8 @@ pub struct SyncInvitation {
     pub id: String,
     pub name: String,
     pub port: u16,
+    pub addresses: Vec<SocketAddr>,
+    pub nearby_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -397,9 +399,11 @@ impl Network {
         self.incoming.lock().map_err(|_| state_error())?.take();
         let listener = bind(INVITE_PORT).await?;
         let address = listener.local_addr().map_err(io_error)?;
+        let addresses = discovery::lan_addresses(address.port()).unwrap_or_default();
         let id = format!("join-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
         let label = local_device_label(&self.name);
         let advertisement = discovery::advertise_invitation(&id, address, &label).ok();
+        let nearby_available = advertisement.is_some();
         let invitation_id = id.clone();
         let owner = user_id.clone();
         let network = self.clone();
@@ -436,6 +440,8 @@ impl Network {
             id,
             name: label,
             port: address.port(),
+            addresses,
+            nearby_available,
         })
     }
 

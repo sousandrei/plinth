@@ -89,16 +89,30 @@ export const ShareSpaceDialog = ({
           ) : invitation.data ? (
             <>
               <p role="status">
-                Waiting for a device to select {invitation.data.name}. Available
-                for five minutes.
+                {invitation.data.nearby_available
+                  ? `Select ${invitation.data.name} on the other device within five minutes.`
+                  : 'Nearby advertising could not start. Connect by address within five minutes.'}
               </p>
-              <details className="text-sm text-muted-foreground">
-                <summary className="cursor-pointer">Remote connection</summary>
-                <p className="mt-2">
-                  Give the other device your host address and port{' '}
-                  {invitation.data.port}.
+              <div className="space-y-2 text-sm">
+                <p className="text-muted-foreground">
+                  If this device doesn’t appear, open{' '}
+                  <strong>Join by address</strong> on the other device.
                 </p>
-              </details>
+                {invitation.data.addresses.length > 0 ? (
+                  <ul aria-label="Local addresses" className="space-y-1">
+                    {invitation.data.addresses.map((address) => (
+                      <li key={address}>
+                        <code className="select-all font-mono">{address}</code>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p role="status">
+                    No local IPv4 address found. If you know the host address,
+                    use port {invitation.data.port}.
+                  </p>
+                )}
+              </div>
             </>
           ) : (
             <div className="flex flex-wrap gap-2">
@@ -344,7 +358,7 @@ export const JoinSharedSpaceDialog = ({
                     {nearby.isError
                       ? 'Nearby discovery is unavailable.'
                       : nearby.data
-                        ? 'No nearby devices are sharing yet.'
+                        ? 'No nearby invitations found. Leave the sharing dialog open on the other device.'
                         : 'Looking for nearby devices…'}
                   </p>
                 )}
