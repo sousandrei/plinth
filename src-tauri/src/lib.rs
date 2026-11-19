@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod import;
+mod sync_import;
 mod sync_network;
 mod sync_preview;
 

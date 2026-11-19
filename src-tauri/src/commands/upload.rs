@@ -10,6 +10,11 @@ use crate::import::{
     registry::{ParserUnit, find, scan},
 };
 use crate::{AppError, Session};
+use crate::{
+    commands::{accounts::Account, spaces::ExportTransaction},
+    sync_import,
+    sync_preview::SyncPreview,
+};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -125,6 +130,7 @@ pub async fn upload_file(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     classifier: State<'_, crate::ClassifierState>,
+    preview: State<'_, SyncPreview>,
 ) -> Result<UploadResult, AppError> {
     let space_id = session.require()?.space_id;
     let path = PathBuf::from(&file_path);
@@ -175,6 +181,7 @@ pub async fn upload_file(
     let account_id: String;
     let mut inserted = 0i64;
     let mut skipped = 0i64;
+    let mut sync_edits = Vec::new();
 
     match parse_result {
         ParseResult::Transactions {
@@ -193,6 +200,16 @@ pub async fn upload_file(
                 &unit_currency,
             )
             .await?;
+            let account =
+                sqlx::query_file_as!(Account, "queries/accounts/get_account.sql", account_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if account.space_id != space_id {
+                return Err(AppError::InvalidInput(
+                    "this bank account belongs to another space".into(),
+                ));
+            }
+            let mut creations = preview.is_paired_space(&space_id).await?.then(Vec::new);
             insert_transactions(
                 &mut tx,
                 &classifier,
@@ -203,9 +220,13 @@ pub async fn upload_file(
                     inserted: &mut inserted,
                     skipped: &mut skipped,
                     logs: &mut logs,
+                    creations: creations.as_mut(),
                 },
             )
             .await?;
+            if let Some(records) = creations {
+                sync_edits = sync_import::encode(account, records)?;
+            }
         }
 
         ParseResult::MonthlyBalance {
@@ -247,9 +268,18 @@ pub async fn upload_file(
         }
     }
 
-    tx.commit()
+    if sync_edits.is_empty() {
+        tx.commit().await?;
+    } else {
+        let store = preview.inner().clone();
+        tokio::spawn(async move {
+            store.stage_batch(space_id, sync_edits).await?;
+            tx.commit().await?;
+            Ok::<_, AppError>(())
+        })
         .await
-        .map_err(|e| AppError::Db(format!("upload commit: {e}")))?;
+        .map_err(|error| AppError::Internal(format!("save shared bank import: {error}")))??;
+    }
 
     Ok(UploadResult {
         inserted,
@@ -290,6 +320,7 @@ struct ImportAccumulator<'a> {
     inserted: &'a mut i64,
     skipped: &'a mut i64,
     logs: &'a mut Vec<String>,
+    creations: Option<&'a mut Vec<ExportTransaction>>,
 }
 
 async fn insert_transactions(
@@ -334,6 +365,22 @@ async fn insert_transactions(
 
         if rows > 0 {
             *acc.inserted += 1;
+            if let Some(records) = acc.creations.as_deref_mut() {
+                records.push(ExportTransaction {
+                    id: parsed.id.clone(),
+                    booking_date: parsed.booking_date.clone(),
+                    value_date: parsed.value_date.clone(),
+                    reference: parsed.reference.clone(),
+                    text: parsed.text.clone(),
+                    currency: currency.to_owned(),
+                    amount: parsed.amount,
+                    balance: parsed.balance,
+                    approved: 0,
+                    note: String::new(),
+                    category,
+                    account_id: account_id.to_owned(),
+                });
+            }
             acc.logs.push(format!(
                 "  [INSERTED] {} — {} ({} {})",
                 parsed.booking_date,

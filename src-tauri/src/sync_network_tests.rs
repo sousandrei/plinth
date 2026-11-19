@@ -1,5 +1,8 @@
 use super::*;
-use crate::{commands::transactions, db};
+use crate::{
+    commands::{accounts::Account, spaces::ExportTransaction, transactions},
+    db, sync_import,
+};
 
 async fn profile(directory: &Path, user: &str) -> (DbPool, SyncPreview, Arc<Network>, TcpListener) {
     let store = SyncPreview::open(directory.to_owned()).await.unwrap();
@@ -162,6 +165,38 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     transactions::update_in_preview(&source_db, &source_store, &space, "purchase", patch)
         .await
         .unwrap();
+    let new_account = Account {
+        id: "savings".into(),
+        name: "Savings".into(),
+        currency: "SEK".into(),
+        account_type: "savings".into(),
+        account_source: "bank".into(),
+        color: "#334455".into(),
+        space_id: space.clone(),
+    };
+    let imported = ExportTransaction {
+        id: "new-bank-transaction".into(),
+        booking_date: date.into(),
+        value_date: date.into(),
+        reference: "ref".into(),
+        text: "New bank purchase".into(),
+        currency: "SEK".into(),
+        amount: -500,
+        balance: 8500,
+        approved: 0,
+        note: String::new(),
+        category: "Other".into(),
+        account_id: new_account.id.clone(),
+    };
+    let creation = sync_import::encode(new_account, vec![imported]).unwrap();
+    source_store
+        .stage_batch(space.clone(), creation.clone())
+        .await
+        .unwrap();
+    source_store
+        .stage_batch(space.clone(), creation)
+        .await
+        .unwrap();
     let automatic = tokio::spawn(
         target
             .clone()
@@ -169,6 +204,50 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     );
     tokio::time::timeout(Duration::from_secs(15), async {
         while note(&target_db, &space).await != "edited offline" {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let imported = sqlx::query_file!(
+        "queries/transactions/get_transaction_edit_fields.sql",
+        r#"["new-bank-transaction"]"#,
+        space
+    )
+    .fetch_all(&target_db)
+    .await
+    .unwrap();
+    assert_eq!(imported.len(), 1);
+    let account = sqlx::query_file_as!(Account, "queries/accounts/get_account.sql", "savings")
+        .fetch_one(&target_db)
+        .await
+        .unwrap();
+    assert_eq!(account.space_id, space);
+    let reply =
+        serde_json::from_value(serde_json::json!({"note": "edited on the receiving device"}))
+            .unwrap();
+    transactions::update_in_preview(
+        &target_db,
+        &target_store,
+        &space,
+        "new-bank-transaction",
+        reply,
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let received = sqlx::query_file!(
+                "queries/transactions/get_transaction_edit_fields.sql",
+                r#"["new-bank-transaction"]"#,
+                space
+            )
+            .fetch_one(&source_db)
+            .await
+            .unwrap();
+            if received.note == "edited on the receiving device" {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })

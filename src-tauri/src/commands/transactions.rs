@@ -72,6 +72,7 @@ pub(crate) fn valid_sync_fields(fields: &plinth_sync::Fields) -> bool {
         "approved" => value.is_boolean(),
         "note" => value.is_string(),
         "category" => value.is_null() || value.is_string(),
+        crate::sync_import::CREATED => crate::sync_import::valid_creation(value),
         _ => false,
     })
 }

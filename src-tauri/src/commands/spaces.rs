@@ -713,14 +713,26 @@ pub(crate) async fn make_sync_seed(
     space_id: &str,
     user_id: &str,
 ) -> Result<SyncSeed, AppError> {
+    let (tx, seed) = prepare_sync_seed_export(db, space_id, user_id).await?;
+    tx.commit().await?;
+    Ok(seed)
+}
+
+pub(crate) async fn prepare_sync_seed_export(
+    db: &DbPool,
+    space_id: &str,
+    user_id: &str,
+) -> Result<(sqlx::Transaction<'static, Sqlite>, SyncSeed), AppError> {
     let mut tx = db.begin().await?;
     require_owner(space_id, user_id, &mut *tx).await?;
     let snapshot = read_space_export(&mut tx, space_id).await?;
-    tx.commit().await?;
-    Ok(SyncSeed {
-        space_id: space_id.to_owned(),
-        snapshot,
-    })
+    Ok((
+        tx,
+        SyncSeed {
+            space_id: space_id.to_owned(),
+            snapshot,
+        },
+    ))
 }
 
 #[tauri::command]

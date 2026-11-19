@@ -78,6 +78,7 @@ pub async fn delete_account(
     id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    preview: State<'_, crate::sync_preview::SyncPreview>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
@@ -102,6 +103,11 @@ pub async fn delete_account(
         .begin()
         .await
         .map_err(|e| AppError::Db(format!("delete_account begin tx: {e}")))?;
+    if preview.is_paired_space(&data.space_id).await? {
+        return Err(AppError::InvalidInput(
+            "Remove paired devices before deleting an account in this space.".into(),
+        ));
+    }
 
     sqlx::query_file!("queries/accounts/delete_account_transactions.sql", id)
         .execute(&mut *tx)

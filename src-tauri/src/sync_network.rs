@@ -342,7 +342,8 @@ impl Network {
         .await
         .map_err(join_error)??;
 
-        let seed = spaces::make_sync_seed(db, &offer.space_id, &offer.user_id).await?;
+        let (snapshot, seed) =
+            spaces::prepare_sync_seed_export(db, &offer.space_id, &offer.user_id).await?;
         let data = encode(&Bootstrap {
             seed,
             port: self.port,
@@ -362,6 +363,7 @@ impl Network {
         store
             .with_store(move |store| store.pair_device(&peer))
             .await?;
+        snapshot.commit().await?;
         tokio::task::spawn_blocking(move || {
             transport::write_frame(&mut stream, &data, transport::MAX_SPACE_SNAPSHOT)
                 .map_err(io_error)

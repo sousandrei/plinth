@@ -17,10 +17,7 @@ use tauri::State;
 use tokio::net::TcpListener;
 
 use crate::{
-    Session,
-    commands::transactions::{apply_pending_transaction_edit, valid_sync_fields},
-    db::DbPool,
-    error::AppError,
+    Session, commands::transactions::valid_sync_fields, db::DbPool, error::AppError, sync_import,
 };
 
 pub const IDENTIFIER: &str = "plinth-sync-preview";
@@ -196,7 +193,7 @@ impl SyncPreview {
 
     pub(crate) async fn replay(&self, conn: &mut SqliteConnection) -> Result<(), AppError> {
         while let Some(edit) = self.with_store(|store| store.next_pending_edit()).await? {
-            apply_pending_transaction_edit(&mut *conn, &edit).await?;
+            sync_import::project(&mut *conn, &edit).await?;
             self.with_store(move |store| store.complete_edit(edit.sequence))
                 .await?;
             if let Some(inner) = &self.0 {
@@ -204,6 +201,17 @@ impl SyncPreview {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn is_paired_space(&self, space_id: &str) -> Result<bool, AppError> {
+        let space_id = space_id.to_owned();
+        self.with_store(move |store| {
+            Ok(store
+                .paired_devices()?
+                .iter()
+                .any(|peer| peer.space_id == space_id))
+        })
+        .await
     }
 
     pub(crate) async fn exchange_peer(
