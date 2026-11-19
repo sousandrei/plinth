@@ -141,13 +141,19 @@ fn failed_persistence_does_not_acknowledge_and_retry_is_idempotent() {
         )
         .unwrap();
     let previous = r.state.clone();
-    assert!(right.receive(&mut r, &update).is_err());
+    assert!(right.receive_projected(&mut r, &update, |_| true).is_err());
     assert_eq!(r.state, previous);
     assert!(right.snapshot(SPACE).unwrap().is_empty());
+    assert!(right.next_pending_edit().unwrap().is_none());
 
     right.db.execute_batch("DROP TRIGGER fail_write;").unwrap();
-    right.receive(&mut r, &update).unwrap();
-    right.receive(&mut r, &update).unwrap();
+    assert!(matches!(
+        right.receive_projected(&mut r, &update, |_| false),
+        Err(Error::InvalidField)
+    ));
+    assert_eq!(r.state, previous);
+    right.receive_projected(&mut r, &update, |_| true).unwrap();
+    right.receive_projected(&mut r, &update, |_| true).unwrap();
     assert_eq!(
         right
             .db
@@ -160,6 +166,13 @@ fn failed_persistence_does_not_acknowledge_and_retry_is_idempotent() {
     drop(right);
     let mut right = Store::open(&db).unwrap();
     assert_field(&right, "category", "Groceries");
+    let pending = right.next_pending_edit().unwrap().unwrap();
+    assert_eq!(
+        pending.fields,
+        [("category".into(), json!("Groceries"))].into()
+    );
+    right.complete_edit(pending.sequence).unwrap();
+    assert!(right.next_pending_edit().unwrap().is_none());
     exchange(&mut left, &mut right);
     assert_eq!(
         left.snapshot(SPACE).unwrap(),

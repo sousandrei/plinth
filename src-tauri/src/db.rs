@@ -49,8 +49,8 @@ pub(crate) async fn init(
         preview.replay(&mut conn).await?;
         conn.close().await?;
 
-        // Holding the only lease through the queue acknowledgement keeps bulk
-        // writes and imports from overtaking an unfinished category edit.
+        // The only lease stays with the projector until the sync queue records
+        // completion, so a retry cannot overwrite a later finance write.
         let on_open = preview.clone();
         let on_acquire = preview.clone();
         pool_options = pool_options

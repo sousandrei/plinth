@@ -1,17 +1,18 @@
 use std::{env, path::Path, process};
 
-use plinth_sync::{Session, Store};
+use plinth_sync::{Session, Store, transport};
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
 use super::{
-    TransactionPatch, apply_pending_transaction_edit, apply_transaction_patch, update_in_preview,
+    TransactionPatch, apply_pending_transaction_edit, apply_transaction_patch,
+    bulk_edit_in_preview, update_in_preview,
 };
 use crate::{
     commands::spaces::ExportTransaction,
     db::{self, DbPool},
     error::AppError,
-    sync_preview::SyncPreview,
+    sync_preview::{SyncPreview, accept_peer},
 };
 
 const SPACE: &str = "personal";
@@ -53,11 +54,11 @@ async fn seed_finance_db(path: &Path) -> DbPool {
     .execute(&db)
     .await
     .unwrap();
-    import_sample_transaction(&db, "Other").await;
+    import_sample_transaction(&db, "Other", false).await;
     db
 }
 
-async fn import_sample_transaction(db: &DbPool, category: &str) {
+async fn import_sample_transaction(db: &DbPool, category: &str, preserve_edits: bool) {
     let date = "2026-01-01";
     sqlx::query_file!(
         "queries/spaces/import_transaction.sql",
@@ -73,6 +74,7 @@ async fn import_sample_transaction(db: &DbPool, category: &str) {
         "Keep this note",
         category,
         "checking",
+        preserve_edits,
     )
     .execute(db)
     .await
@@ -274,7 +276,7 @@ async fn replay_skips_transactions_removed_with_their_space() {
 }
 
 #[tokio::test]
-async fn preview_category_edit_preserves_newer_bulk_and_import_writes() {
+async fn preview_replays_pending_edits_before_bulk_writes_and_imports() {
     let temp = tempfile::tempdir().unwrap();
     let finance_path = temp.path().join("finance.sqlite");
     seed_finance_db(&finance_path).await.close().await;
@@ -310,17 +312,23 @@ async fn preview_category_edit_preserves_newer_bulk_and_import_writes() {
         )
         .await
         .unwrap();
-    let ids_json = serde_json::to_string(&[ID]).unwrap();
-    sqlx::query_file!(
-        "queries/transactions/bulk_categorize.sql",
-        "Travel",
+    let ids_json = serde_json::to_string(&[ID, ID, "missing"]).unwrap();
+    let matched = bulk_edit_in_preview(
+        &db,
+        &preview,
+        SPACE.into(),
         ids_json,
-        SPACE
+        TransactionPatch {
+            category: Some(Some("Travel".into())),
+            approved: None,
+            note: None,
+        },
     )
-    .execute(&db)
     .await
     .unwrap();
+    assert_eq!(matched, 1);
     assert_eq!(read_transaction(&db).await.category, "Travel");
+    assert_eq!(store.snapshot(SPACE).unwrap()[ID]["category"], "Travel");
     assert!(store.next_pending_edit().unwrap().is_none());
 
     preview
@@ -331,11 +339,128 @@ async fn preview_category_edit_preserves_newer_bulk_and_import_writes() {
         )
         .await
         .unwrap();
-    import_sample_transaction(&db, "Imported").await;
-    assert_eq!(read_transaction(&db).await.category, "Imported");
+    import_sample_transaction(&db, "Imported", true).await;
+    assert_eq!(read_transaction(&db).await.category, "Older again");
     assert!(store.next_pending_edit().unwrap().is_none());
     db.close().await;
     let restarted = db::init(&finance_path, &preview).await.unwrap();
-    assert_eq!(read_transaction(&restarted).await.category, "Imported");
+    assert_eq!(read_transaction(&restarted).await.category, "Older again");
     restarted.close().await;
+}
+
+#[tokio::test]
+async fn paired_previews_exchange_offline_transaction_edits_over_tls() {
+    let left_dir = tempfile::tempdir().unwrap();
+    let right_dir = tempfile::tempdir().unwrap();
+    let left_identity =
+        rcgen::generate_simple_self_signed(vec![transport::TLS_NAME.into()]).unwrap();
+    let right_identity =
+        rcgen::generate_simple_self_signed(vec![transport::TLS_NAME.into()]).unwrap();
+    for (dir, own, other) in [
+        (left_dir.path(), &left_identity, &right_identity),
+        (right_dir.path(), &right_identity, &left_identity),
+    ] {
+        std::fs::write(dir.join("peer.der"), own.cert.der()).unwrap();
+        std::fs::write(dir.join("key.der"), own.signing_key.serialize_der()).unwrap();
+        std::fs::write(dir.join("trusted-peer.der"), other.cert.der()).unwrap();
+    }
+
+    let left_path = left_dir.path().join("finance.sqlite");
+    let right_path = right_dir.path().join("finance.sqlite");
+    seed_finance_db(&left_path).await.close().await;
+    seed_finance_db(&right_path).await.close().await;
+    let left = SyncPreview::open(left_dir.path().to_owned()).await.unwrap();
+    let right = SyncPreview::open(right_dir.path().to_owned())
+        .await
+        .unwrap();
+    let left_db = db::init(&left_path, &left).await.unwrap();
+    let right_db = db::init(&right_path, &right).await.unwrap();
+    update_in_preview(
+        &left_db,
+        &left,
+        SPACE,
+        ID,
+        TransactionPatch {
+            approved: None,
+            note: Some("Bought offline".into()),
+            category: None,
+        },
+    )
+    .await
+    .unwrap();
+    bulk_edit_in_preview(
+        &left_db,
+        &left,
+        SPACE.into(),
+        json!([ID]).to_string(),
+        TransactionPatch {
+            approved: Some(true),
+            note: None,
+            category: None,
+        },
+    )
+    .await
+    .unwrap();
+    update_in_preview(
+        &right_db,
+        &right,
+        SPACE,
+        ID,
+        TransactionPatch {
+            approved: Some(false),
+            note: Some("Keep this note".into()),
+            category: Some(None),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(read_transaction(&left_db).await.category, "Other");
+    assert_eq!(read_transaction(&right_db).await.approved, 0);
+
+    // A rejected scope cannot project any records, and reconnecting starts a fresh session.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    for (remote_space, should_sync) in [("another-space", false), (SPACE, true), (SPACE, true)] {
+        let local_identity = transport::Identity::load(left_dir.path()).unwrap();
+        let remote_identity = transport::Identity::load(right_dir.path()).unwrap();
+        let listening = async {
+            let accepted = accept_peer(&listener).await.unwrap();
+            left.exchange_peer(
+                &left_db,
+                SPACE.into(),
+                local_identity,
+                address,
+                Some(accepted),
+            )
+            .await
+        };
+        let connecting = right.exchange_peer(
+            &right_db,
+            remote_space.into(),
+            remote_identity,
+            address,
+            None,
+        );
+        let (local, remote) = tokio::join!(listening, connecting);
+        if should_sync {
+            local.unwrap();
+            remote.unwrap();
+        } else {
+            assert!(local.unwrap_err().to_string().contains("different spaces"));
+            assert!(remote.unwrap_err().to_string().contains("different spaces"));
+            assert_eq!(read_transaction(&left_db).await.category, "Other");
+            assert_eq!(read_transaction(&right_db).await.approved, 0);
+        }
+    }
+
+    for (db, dir) in [(&left_db, left_dir.path()), (&right_db, right_dir.path())] {
+        let row = read_transaction(db).await;
+        assert_eq!(row.approved, 1);
+        assert_eq!(row.note, "Bought offline");
+        assert!(row.category.is_empty());
+        assert_eq!(row.amount, -1500);
+        let store = Store::open(dir.join("sync.sqlite")).unwrap();
+        assert!(store.next_pending_edit().unwrap().is_none());
+        db.close().await;
+    }
 }

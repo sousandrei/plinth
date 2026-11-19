@@ -3,161 +3,49 @@
 
 use std::{
     env, fs,
-    io::{self, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    io::{Read, Write},
+    net::{SocketAddr, TcpListener},
     path::Path,
-    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use plinth_sync::transport::{self, Identity, Result, TLS_NAME};
 use plinth_sync::{Session, Store};
-use rustls::{
-    ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
-    pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-    server::WebPkiClientVerifier,
-};
+use rustls::{RootCertStore, pki_types::CertificateDer};
 
 const SERVICE: &str = "_plinth-sync._tcp.local.";
-const TLS_NAME: &str = "plinth-peer.local";
 const SPACE: &str = "demo";
-const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-struct Identity {
-    cert: CertificateDer<'static>,
-    key: PrivatePkcs8KeyDer<'static>,
-    trusted: CertificateDer<'static>,
-}
-
-impl Identity {
-    fn load(dir: &Path) -> Result<Self> {
-        Ok(Self {
-            cert: fs::read(dir.join("peer.der"))?.into(),
-            key: fs::read(dir.join("key.der"))?.into(),
-            trusted: fs::read(dir.join("trusted-peer.der"))?.into(),
-        })
-    }
-
-    fn roots(&self) -> Result<RootCertStore> {
-        let mut roots = RootCertStore::empty();
-        roots.add(self.trusted.clone())?;
-        Ok(roots)
-    }
-
-    fn check_peer(&self, certs: Option<&[CertificateDer<'_>]>) -> Result<()> {
-        if certs.and_then(|chain| chain.first()) != Some(&self.trusted) {
-            return Err("peer certificate does not match the paired certificate".into());
-        }
-        Ok(())
-    }
-}
-
-fn send(stream: &mut impl Write, message: Option<&[u8]>) -> io::Result<()> {
-    let bytes = message.unwrap_or_default();
-    if bytes.len() > MAX_MESSAGE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "message too large",
-        ));
-    }
-    stream.write_all(&(bytes.len() as u32).to_be_bytes())?;
-    stream.write_all(bytes)?;
-    stream.flush()
-}
-
-fn receive(stream: &mut impl Read) -> io::Result<Vec<u8>> {
-    let mut length = [0; 4];
-    stream.read_exact(&mut length)?;
-    let length = u32::from_be_bytes(length) as usize;
-    if length > MAX_MESSAGE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "message too large",
-        ));
-    }
-    let mut message = vec![0; length];
-    stream.read_exact(&mut message)?;
-    Ok(message)
-}
-
-fn exchange(store: &mut Store, stream: &mut (impl Read + Write), initiator: bool) -> Result<()> {
+fn exchange(dir: &Path, stream: &mut (impl Read + Write), initiator: bool) -> Result<()> {
+    let mut store = Store::open(dir.join("sync.sqlite"))?;
     let mut session = Session::new(SPACE);
-    loop {
-        // The listener replies only after committing any edits in the request.
-        if initiator {
-            let message = store.next_message(&mut session)?;
-            send(stream, message.as_deref())?;
-            let reply = receive(stream)?;
-            if reply.is_empty() && message.is_none() {
-                return Ok(());
-            }
-            if !reply.is_empty() {
-                store.receive(&mut session, &reply)?;
-            }
-        } else {
-            let request = receive(stream)?;
-            if !request.is_empty() {
-                store.receive(&mut session, &request)?;
-            }
-            let reply = store.next_message(&mut session)?;
-            send(stream, reply.as_deref())?;
-            if request.is_empty() && reply.is_none() {
-                return Ok(());
-            }
+    transport::exchange(stream, SPACE, initiator, |incoming| {
+        if let Some(bytes) = incoming {
+            store.receive(&mut session, bytes)?;
         }
-    }
-}
-
-fn timeouts(stream: &TcpStream) -> io::Result<()> {
-    stream.set_read_timeout(Some(TIMEOUT))?;
-    stream.set_write_timeout(Some(TIMEOUT))
+        Ok(store.next_message(&mut session)?)
+    })
 }
 
 fn connect(dir: &Path, addr: SocketAddr) -> Result<()> {
-    let identity = Identity::load(dir)?;
-    let config = ClientConfig::builder()
-        .with_root_certificates(identity.roots()?)
-        .with_client_auth_cert(vec![identity.cert.clone()], identity.key.clone_key().into())?;
-    let mut conn = ClientConnection::new(Arc::new(config), TLS_NAME.try_into()?)?;
-    let mut socket = TcpStream::connect_timeout(&addr, TIMEOUT)?;
-    timeouts(&socket)?;
-    conn.complete_io(&mut socket)?;
-    identity.check_peer(conn.peer_certificates())?;
-    let mut stream = StreamOwned::new(conn, socket);
-    exchange(
-        &mut Store::open(dir.join("sync.sqlite"))?,
-        &mut stream,
-        true,
-    )?;
+    let mut stream = Identity::load(dir)?.connect(addr)?;
+    exchange(dir, &mut stream, true)?;
     println!("SYNCED {addr}");
     Ok(())
 }
 
 fn listen(dir: &Path, addr: SocketAddr, name: Option<&str>) -> Result<()> {
     let identity = Identity::load(dir)?;
-    let verifier = WebPkiClientVerifier::builder(Arc::new(identity.roots()?)).build()?;
-    let config = ServerConfig::builder()
-        .with_client_cert_verifier(verifier)
-        .with_single_cert(vec![identity.cert.clone()], identity.key.clone_key().into())?;
     let listener = TcpListener::bind(addr)?;
     let addr = listener.local_addr()?;
     let advertiser = name.map(|name| advertise(name, addr)).transpose()?;
     let result = (|| -> Result<()> {
         println!("READY {addr}");
-        let (mut socket, remote) = listener.accept()?;
-        timeouts(&socket)?;
-        let mut conn = ServerConnection::new(Arc::new(config))?;
-        conn.complete_io(&mut socket)?;
-        identity.check_peer(conn.peer_certificates())?;
-        let mut stream = StreamOwned::new(conn, socket);
-        exchange(
-            &mut Store::open(dir.join("sync.sqlite"))?,
-            &mut stream,
-            false,
-        )?;
+        let (socket, remote) = listener.accept()?;
+        let mut stream = identity.accept(socket)?;
+        exchange(dir, &mut stream, false)?;
         println!("SYNCED {remote}");
         Ok(())
     })();
@@ -276,34 +164,5 @@ fn main() -> Result<()> {
             Err("no discovered address connected successfully".into())
         }
         _ => Err("usage: peer init DIR | trust DIR CERT | edit DIR RECORD FIELD VALUE | show DIR | listen DIR IP:PORT [NAME] | connect DIR IP:PORT | discover DIR NAME".into()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn frames_keep_messages_and_end_markers_separate() {
-        let mut stream = Vec::new();
-        send(&mut stream, Some(b"edits")).unwrap();
-        send(&mut stream, None).unwrap();
-        let mut reader = stream.as_slice();
-        assert_eq!(receive(&mut reader).unwrap(), b"edits");
-        assert!(receive(&mut reader).unwrap().is_empty());
-    }
-
-    #[test]
-    fn rejects_oversized_and_truncated_frames() {
-        let oversized = ((MAX_MESSAGE + 1) as u32).to_be_bytes();
-        assert_eq!(
-            receive(&mut oversized.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
-        let truncated = [0, 0, 0, 2, 1];
-        assert_eq!(
-            receive(&mut truncated.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::UnexpectedEof
-        );
     }
 }

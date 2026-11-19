@@ -22,7 +22,9 @@ tokio = { version = "1", features = [
     "rt",
     "rt-multi-thread",
     "macros",
+    "net",
     "sync",
+    "time",
 ] }
 
 # SQLite — async pool with compile-time checked queries
@@ -76,4 +78,5 @@ tauri-plugin-updater = "2.10.1"
 plinth-sync = { path = "../crates/plinth-sync" }
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 tempfile = "3"

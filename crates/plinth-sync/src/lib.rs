@@ -15,6 +15,8 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use serde_json::Value;
 use thiserror::Error;
 
+pub mod transport;
+
 #[cfg(test)]
 mod tests;
 
@@ -98,7 +100,7 @@ impl Store {
         timestamp_ms: i64,
         fields: &Fields,
     ) -> Result<(), Error> {
-        self.write_patch(space_id, record_id, timestamp_ms, fields, false)
+        self.write_patches(space_id, timestamp_ms, [(record_id, fields)], false)
     }
 
     /// Commit the edit and its local projection entry together.
@@ -109,18 +111,30 @@ impl Store {
         timestamp_ms: i64,
         fields: &Fields,
     ) -> Result<(), Error> {
-        self.write_patch(space_id, record_id, timestamp_ms, fields, true)
+        self.stage_edits(space_id, timestamp_ms, [(record_id, fields)])
     }
 
-    fn write_patch(
+    pub fn stage_edits<'a>(
         &mut self,
         space_id: &str,
-        record_id: &str,
         timestamp_ms: i64,
-        fields: &Fields,
+        edits: impl IntoIterator<Item = (&'a str, &'a Fields)>,
+    ) -> Result<(), Error> {
+        self.write_patches(space_id, timestamp_ms, edits, true)
+    }
+
+    fn write_patches<'a>(
+        &mut self,
+        space_id: &str,
+        timestamp_ms: i64,
+        edits: impl IntoIterator<Item = (&'a str, &'a Fields)>,
         stage_projection: bool,
     ) -> Result<(), Error> {
-        if fields.is_empty() {
+        let mut edits = edits
+            .into_iter()
+            .filter(|(_, fields)| !fields.is_empty())
+            .peekable();
+        if edits.peek().is_none() {
             return Ok(());
         }
         let tx = self
@@ -129,20 +143,19 @@ impl Store {
         let mut doc = load(&tx, space_id)?.with_actor(self.actor.clone());
         let before = doc.get_heads();
 
-        // Flat keys let peers independently create fields for the same record.
-        for (name, value) in fields {
-            let key = serde_json::to_string(&(record_id, name))?;
-            let value = serde_json::to_vec(&(timestamp_ms, value))?;
-            doc.put(ROOT, key, ScalarValue::Bytes(value))?;
+        for (record_id, fields) in edits {
+            // Flat keys let peers independently create fields for the same record.
+            for (name, value) in fields {
+                let key = serde_json::to_string(&(record_id, name))?;
+                let value = serde_json::to_vec(&(timestamp_ms, value))?;
+                doc.put(ROOT, key, ScalarValue::Bytes(value))?;
+            }
+            if stage_projection {
+                enqueue(&tx, space_id, record_id, fields)?;
+            }
         }
 
         append_delta(&tx, space_id, &mut doc, &before)?;
-        if stage_projection {
-            tx.execute(
-                "INSERT INTO pending_edits (space_id, record_id, fields) VALUES (?1, ?2, ?3)",
-                params![space_id, record_id, serde_json::to_vec(fields)?],
-            )?;
-        }
         tx.commit()?;
         Ok(())
     }
@@ -189,12 +202,32 @@ impl Store {
 
     /// Persist incoming edits before the session can acknowledge them.
     pub fn receive(&mut self, session: &mut Session, bytes: &[u8]) -> Result<(), Error> {
+        self.receive_message(session, bytes, None)
+    }
+
+    /// Commit incoming history and queue its changed resolved fields together.
+    pub fn receive_projected(
+        &mut self,
+        session: &mut Session,
+        bytes: &[u8],
+        validate: fn(&Fields) -> bool,
+    ) -> Result<(), Error> {
+        self.receive_message(session, bytes, Some(validate))
+    }
+
+    fn receive_message(
+        &mut self,
+        session: &mut Session,
+        bytes: &[u8],
+        validate: Option<fn(&Fields) -> bool>,
+    ) -> Result<(), Error> {
         let message = Message::decode(bytes).map_err(|err| Error::Message(err.to_string()))?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut doc = load(&tx, &session.space_id)?;
         let before = doc.get_heads();
+        let previous = validate.map(|_| project(&doc)).transpose()?;
         let mut state = session.state.clone();
         doc.sync().receive_sync_message(&mut state, message)?;
 
@@ -202,7 +235,21 @@ impl Store {
             return Err(Error::MissingDependencies);
         }
         if doc.get_heads() != before {
-            project(&doc)?;
+            let resolved = project(&doc)?;
+            if let Some((validate, previous)) = validate.zip(previous) {
+                for (record_id, mut fields) in resolved {
+                    if let Some(old) = previous.get(&record_id) {
+                        fields.retain(|name, value| old.get(name) != Some(value));
+                    }
+                    if fields.is_empty() {
+                        continue;
+                    }
+                    if !validate(&fields) {
+                        return Err(Error::InvalidField);
+                    }
+                    enqueue(&tx, &session.space_id, &record_id, &fields)?;
+                }
+            }
             append_delta(&tx, &session.space_id, &mut doc, &before)?;
         }
 
@@ -227,6 +274,14 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+}
+
+fn enqueue(db: &Connection, space_id: &str, record_id: &str, fields: &Fields) -> Result<(), Error> {
+    db.execute(
+        "INSERT INTO pending_edits (space_id, record_id, fields) VALUES (?1, ?2, ?3)",
+        params![space_id, record_id, serde_json::to_vec(fields)?],
+    )?;
+    Ok(())
 }
 
 fn load(db: &Connection, space_id: &str) -> Result<AutoCommit, Error> {

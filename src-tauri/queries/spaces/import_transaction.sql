@@ -9,7 +9,7 @@ ON CONFLICT(id) DO UPDATE SET
     currency     = excluded.currency,
     amount       = excluded.amount,
     balance      = excluded.balance,
-    approved     = excluded.approved,
-    note         = excluded.note,
-    category     = excluded.category,
+    approved     = CASE WHEN ?13 THEN transactions.approved ELSE excluded.approved END,
+    note         = CASE WHEN ?13 THEN transactions.note ELSE excluded.note END,
+    category     = CASE WHEN ?13 THEN transactions.category ELSE excluded.category END,
     account_id   = excluded.account_id

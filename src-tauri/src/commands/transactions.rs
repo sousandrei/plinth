@@ -37,8 +37,8 @@ pub struct TransactionPage {
     pub page_count: i64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct TransactionPatch {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TransactionPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     approved: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,6 +49,31 @@ struct TransactionPatch {
         skip_serializing_if = "Option::is_none"
     )]
     category: Option<Option<String>>,
+}
+
+fn changed_fields(
+    mut patch: TransactionPatch,
+    approved: bool,
+    note: &str,
+    category: Option<&str>,
+) -> Result<plinth_sync::Fields, AppError> {
+    patch.approved = patch.approved.filter(|value| *value != approved);
+    patch.note = patch.note.filter(|value| value != note);
+    patch.category = patch
+        .category
+        .filter(|value| value.as_deref().unwrap_or_default() != category.unwrap_or_default());
+    serde_json::to_value(patch)
+        .and_then(serde_json::from_value)
+        .map_err(|error| AppError::Internal(format!("encode transaction patch: {error}")))
+}
+
+pub(crate) fn valid_sync_fields(fields: &plinth_sync::Fields) -> bool {
+    fields.iter().all(|(name, value)| match name.as_str() {
+        "approved" => value.is_boolean(),
+        "note" => value.is_string(),
+        "category" => value.is_null() || value.is_string(),
+        _ => false,
+    })
 }
 
 fn present_category<'de, D>(value: D) -> Result<Option<Option<String>>, D::Error>
@@ -168,19 +193,12 @@ pub async fn list_transactions(
 #[tauri::command]
 pub async fn update_transaction(
     id: String,
-    approved: bool,
-    note: String,
-    category: Option<String>,
+    patch: TransactionPatch,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     preview: State<'_, SyncPreview>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
-    let patch = TransactionPatch {
-        approved: Some(approved),
-        note: Some(note),
-        category: Some(category),
-    };
     if !preview.active() {
         return apply_transaction_patch(db.inner(), &data.space_id, &id, &patch).await;
     }
@@ -198,35 +216,63 @@ async fn update_in_preview(
     preview: &SyncPreview,
     space_id: &str,
     id: &str,
-    mut patch: TransactionPatch,
+    patch: TransactionPatch,
 ) -> Result<(), AppError> {
+    let ids = serde_json::to_string(&[id])
+        .map_err(|error| AppError::Internal(format!("encode transaction ID: {error}")))?;
+    if edit_in_preview(db, preview, space_id, &ids, patch).await? == 0 {
+        return Err(AppError::NotFound(format!("transaction {id}")));
+    }
+    Ok(())
+}
+
+async fn edit_in_preview(
+    db: &DbPool,
+    preview: &SyncPreview,
+    space_id: &str,
+    ids_json: &str,
+    patch: TransactionPatch,
+) -> Result<u64, AppError> {
     let mut conn = db.acquire().await?;
-    let current = sqlx::query_file!(
+    let rows = sqlx::query_file!(
         "queries/transactions/get_transaction_edit_fields.sql",
-        id,
+        ids_json,
         space_id
     )
-    .fetch_optional(&mut *conn)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("transaction {id}")))?;
-    let changed_category = patch.category.as_ref().is_some_and(|category| {
-        category.as_deref().unwrap_or_default() != current.category.as_deref().unwrap_or_default()
-    });
-    if !changed_category {
-        return apply_transaction_patch(&mut *conn, space_id, id, &patch).await;
+    .fetch_all(&mut *conn)
+    .await?;
+    let matched = rows.len() as u64;
+    let mut edits = Vec::new();
+    for row in rows {
+        let fields = changed_fields(
+            patch.clone(),
+            row.approved,
+            &row.note,
+            row.category.as_deref(),
+        )?;
+        if !fields.is_empty() {
+            edits.push((row.id, fields));
+        }
     }
+    if !edits.is_empty() {
+        preview.stage_batch(space_id.to_owned(), edits).await?;
+        preview.replay(&mut conn).await?;
+    }
+    Ok(matched)
+}
 
-    patch.approved = patch
-        .approved
-        .filter(|approved| *approved != current.approved);
-    patch.note = patch.note.filter(|note| *note != current.note);
-    let fields = serde_json::to_value(patch)
-        .and_then(serde_json::from_value)
-        .map_err(|error| AppError::Internal(format!("encode transaction patch: {error}")))?;
-    preview
-        .stage(space_id.to_owned(), id.to_owned(), fields)
-        .await?;
-    preview.replay(&mut conn).await
+async fn bulk_edit_in_preview(
+    db: &DbPool,
+    preview: &SyncPreview,
+    space_id: String,
+    ids_json: String,
+    patch: TransactionPatch,
+) -> Result<u64, AppError> {
+    let db = db.clone();
+    let preview = preview.clone();
+    tokio::spawn(async move { edit_in_preview(&db, &preview, &space_id, &ids_json, patch).await })
+        .await
+        .map_err(|error| AppError::Internal(format!("bulk transaction preview task: {error}")))?
 }
 
 pub(crate) async fn apply_pending_transaction_edit<'a>(
@@ -279,10 +325,26 @@ pub async fn bulk_approve_transactions(
     approved: bool,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    preview: State<'_, SyncPreview>,
 ) -> Result<u64, AppError> {
     let data = session.require()?;
     let ids_json = serde_json::to_string(&ids)
         .map_err(|e| AppError::Internal(format!("bulk_approve_transactions: {e}")))?;
+
+    if preview.active() {
+        return bulk_edit_in_preview(
+            db.inner(),
+            preview.inner(),
+            data.space_id,
+            ids_json,
+            TransactionPatch {
+                approved: Some(approved),
+                note: None,
+                category: None,
+            },
+        )
+        .await;
+    }
 
     let rows = sqlx::query_file!(
         "queries/transactions/bulk_approve.sql",
@@ -304,10 +366,26 @@ pub async fn bulk_categorize_transactions(
     category: Option<String>,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    preview: State<'_, SyncPreview>,
 ) -> Result<u64, AppError> {
     let data = session.require()?;
     let ids_json = serde_json::to_string(&ids)
         .map_err(|e| AppError::Internal(format!("bulk_categorize_transactions: {e}")))?;
+
+    if preview.active() {
+        return bulk_edit_in_preview(
+            db.inner(),
+            preview.inner(),
+            data.space_id,
+            ids_json,
+            TransactionPatch {
+                approved: None,
+                note: None,
+                category: Some(category),
+            },
+        )
+        .await;
+    }
 
     let rows = sqlx::query_file!(
         "queries/transactions/bulk_categorize.sql",

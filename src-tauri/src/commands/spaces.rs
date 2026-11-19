@@ -531,6 +531,7 @@ pub async fn import_space_data(
     path: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    preview: State<'_, crate::sync_preview::SyncPreview>,
 ) -> Result<ImportResult, AppError> {
     let data = session.require_user()?;
     require_member(&space_id, &data.user_id, db.inner()).await?;
@@ -590,6 +591,8 @@ pub async fn import_space_data(
         .map_err(|e| AppError::Db(format!("import_space_data account: {e}")))?;
     }
 
+    // The preview can seed new rows from a backup without overwriting shared edits.
+    let preserve_edits = preview.active();
     for t in &payload.transactions {
         sqlx::query_file!(
             "queries/spaces/import_transaction.sql",
@@ -605,6 +608,7 @@ pub async fn import_space_data(
             t.note,
             t.category,
             t.account_id,
+            preserve_edits,
         )
         .execute(&mut *tx)
         .await

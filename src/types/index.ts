@@ -45,6 +45,10 @@ export interface Transaction {
   account_id: string;
 }
 
+export type TransactionPatch = Partial<
+  Pick<Transaction, 'approved' | 'note' | 'category'>
+>;
+
 export interface Category {
   id: string;
   name: string;

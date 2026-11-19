@@ -1,5 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ListTransactionsParams, TransactionPage } from '@/types';
+import type {
+  ListTransactionsParams,
+  TransactionPage,
+  TransactionPatch,
+} from '@/types';
 
 export const listTransactions = (
   params: ListTransactionsParams,
@@ -18,11 +22,8 @@ export const listTransactions = (
 
 export const updateTransaction = (
   id: string,
-  approved: boolean,
-  note: string,
-  category: string | null,
-): Promise<void> =>
-  invoke<void>('update_transaction', { id, approved, note, category });
+  patch: TransactionPatch,
+): Promise<void> => invoke<void>('update_transaction', { id, patch });
 
 export const bulkApproveTransactions = (
   ids: string[],

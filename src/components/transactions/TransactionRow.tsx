@@ -52,7 +52,7 @@ export const TransactionRow = ({
 
   const categoryMutation = useMutation({
     mutationFn: ({ category }: { category: string | null }) =>
-      updateTransaction(t.id, t.approved, t.note, category),
+      updateTransaction(t.id, { category }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['categories'] });
@@ -60,7 +60,7 @@ export const TransactionRow = ({
   });
 
   const approveMutation = useMutation({
-    mutationFn: () => updateTransaction(t.id, !t.approved, t.note, t.category),
+    mutationFn: () => updateTransaction(t.id, { approved: !t.approved }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['aggregations'] });
@@ -93,7 +93,7 @@ export const TransactionRow = ({
         );
         return;
       }
-      await updateTransaction(t.id, t.approved, t.note, prediction);
+      await updateTransaction(t.id, { category: prediction });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });

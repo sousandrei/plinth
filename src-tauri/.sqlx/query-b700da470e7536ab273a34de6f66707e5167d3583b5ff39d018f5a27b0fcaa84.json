@@ -1,11 +1,22 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT t.approved AS \"approved!: bool\",\n       t.note AS \"note!: String\",\n       t.category\nFROM transactions t\nJOIN accounts a ON a.id = t.account_id\nWHERE t.id = ?1 AND a.space_id = ?2\n",
+  "query": "SELECT t.id,\n       t.approved AS \"approved!: bool\",\n       t.note AS \"note!: String\",\n       t.category\nFROM transactions t\nJOIN accounts a ON a.id = t.account_id\nWHERE t.id IN (SELECT value FROM json_each(?1)) AND a.space_id = ?2\n",
   "describe": {
     "columns": [
       {
-        "name": "approved!: bool",
+        "name": "id",
         "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "approved!: bool",
+        "ordinal": 1,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -16,7 +27,7 @@
       },
       {
         "name": "note!: String",
-        "ordinal": 1,
+        "ordinal": 2,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -27,7 +38,7 @@
       },
       {
         "name": "category",
-        "ordinal": 2,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -43,8 +54,9 @@
     "nullable": [
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "9218a9e4e2cb4e1dd15b3bef3773752532fe3c60f3005df678f45979b8ff2201"
+  "hash": "b700da470e7536ab273a34de6f66707e5167d3583b5ff39d018f5a27b0fcaa84"
 }
