@@ -73,3 +73,7 @@ hf-hub = { version = "1.0.0" }
 tokenizers = "0.23.1"
 
 tauri-plugin-updater = "2.10.1"
+plinth-sync = { path = "../crates/plinth-sync" }
+
+[dev-dependencies]
+tempfile = "3"

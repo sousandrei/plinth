@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
-use sqlx::QueryBuilder;
+use sqlx::{Executor, QueryBuilder, Sqlite};
 use tauri::State;
 
-use crate::{Session, db::DbPool, error::AppError};
+use crate::{Session, db::DbPool, error::AppError, sync_preview::SyncPreview};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Transaction {
@@ -35,6 +35,28 @@ pub struct ListTransactionsParams {
 pub struct TransactionPage {
     pub transactions: Vec<Transaction>,
     pub page_count: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TransactionPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approved: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present_category",
+        skip_serializing_if = "Option::is_none"
+    )]
+    category: Option<Option<String>>,
+}
+
+fn present_category<'de, D>(value: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // An explicit null clears the category. An absent field leaves it alone.
+    Option::deserialize(value).map(Some)
 }
 
 fn build_filter_query(
@@ -151,18 +173,95 @@ pub async fn update_transaction(
     category: Option<String>,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    preview: State<'_, SyncPreview>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
+    let patch = TransactionPatch {
+        approved: Some(approved),
+        note: Some(note),
+        category: Some(category),
+    };
+    if !preview.active() {
+        return apply_transaction_patch(db.inner(), &data.space_id, &id, &patch).await;
+    }
 
+    let db = db.inner().clone();
+    let preview = preview.inner().clone();
+    // Keep the database lease through acknowledgement even if the IPC caller disappears.
+    tokio::spawn(async move { update_in_preview(&db, &preview, &data.space_id, &id, patch).await })
+        .await
+        .map_err(|error| AppError::Internal(format!("transaction preview task: {error}")))?
+}
+
+async fn update_in_preview(
+    db: &DbPool,
+    preview: &SyncPreview,
+    space_id: &str,
+    id: &str,
+    mut patch: TransactionPatch,
+) -> Result<(), AppError> {
+    let mut conn = db.acquire().await?;
+    let current = sqlx::query_file!(
+        "queries/transactions/get_transaction_edit_fields.sql",
+        id,
+        space_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("transaction {id}")))?;
+    let changed_category = patch.category.as_ref().is_some_and(|category| {
+        category.as_deref().unwrap_or_default() != current.category.as_deref().unwrap_or_default()
+    });
+    if !changed_category {
+        return apply_transaction_patch(&mut *conn, space_id, id, &patch).await;
+    }
+
+    patch.approved = patch
+        .approved
+        .filter(|approved| *approved != current.approved);
+    patch.note = patch.note.filter(|note| *note != current.note);
+    let fields = serde_json::to_value(patch)
+        .and_then(serde_json::from_value)
+        .map_err(|error| AppError::Internal(format!("encode transaction patch: {error}")))?;
+    preview
+        .stage(space_id.to_owned(), id.to_owned(), fields)
+        .await?;
+    preview.replay(&mut conn).await
+}
+
+pub(crate) async fn apply_pending_transaction_edit<'a>(
+    db: impl Executor<'a, Database = Sqlite>,
+    edit: &plinth_sync::PendingEdit,
+) -> Result<(), AppError> {
+    let patch = serde_json::to_value(&edit.fields)
+        .and_then(serde_json::from_value)
+        .map_err(|error| AppError::InvalidInput(format!("transaction patch: {error}")))?;
+    match apply_transaction_patch(db, &edit.space_id, &edit.record_id, &patch).await {
+        // Account and space deletion can remove the row before recovery.
+        Err(AppError::NotFound(_)) => Ok(()),
+        result => result,
+    }
+}
+
+async fn apply_transaction_patch<'a>(
+    db: impl Executor<'a, Database = Sqlite>,
+    space_id: &str,
+    id: &str,
+    patch: &TransactionPatch,
+) -> Result<(), AppError> {
+    let note = patch.note.as_deref();
+    let set_category = patch.category.is_some();
+    let category = patch.category.as_ref().and_then(|value| value.as_deref());
     let rows = sqlx::query_file!(
         "queries/transactions/update_transaction.sql",
-        approved,
+        patch.approved,
         note,
+        set_category,
         category,
         id,
-        data.space_id
+        space_id,
     )
-    .execute(db.inner())
+    .execute(db)
     .await
     .map_err(|e| AppError::Db(format!("update_transaction: {e}")))?
     .rows_affected();
@@ -223,3 +322,7 @@ pub async fn bulk_categorize_transactions(
 
     Ok(rows)
 }
+
+#[cfg(test)]
+#[path = "transaction_sync_tests.rs"]
+mod sync_tests;

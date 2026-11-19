@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod import;
+mod sync_preview;
 
 pub use error::AppError;
 use std::sync::{Arc, Mutex};

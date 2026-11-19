@@ -21,6 +21,14 @@ mod tests;
 pub type Fields = BTreeMap<String, Value>;
 pub type Snapshot = BTreeMap<String, Fields>;
 
+#[derive(Debug)]
+pub struct PendingEdit {
+    pub sequence: i64,
+    pub space_id: String,
+    pub record_id: String,
+    pub fields: Fields,
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("SQLite: {0}")]
@@ -67,7 +75,13 @@ impl Store {
                  space_id TEXT NOT NULL,
                  bytes BLOB NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS documents_by_space ON documents(space_id);",
+             CREATE INDEX IF NOT EXISTS documents_by_space ON documents(space_id);
+             CREATE TABLE IF NOT EXISTS pending_edits (
+                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                 space_id TEXT NOT NULL,
+                 record_id TEXT NOT NULL,
+                 fields BLOB NOT NULL
+             );",
         )?;
 
         Ok(Self {
@@ -84,6 +98,31 @@ impl Store {
         timestamp_ms: i64,
         fields: &Fields,
     ) -> Result<(), Error> {
+        self.write_patch(space_id, record_id, timestamp_ms, fields, false)
+    }
+
+    /// Commit the edit and its local projection entry together.
+    pub fn stage_edit(
+        &mut self,
+        space_id: &str,
+        record_id: &str,
+        timestamp_ms: i64,
+        fields: &Fields,
+    ) -> Result<(), Error> {
+        self.write_patch(space_id, record_id, timestamp_ms, fields, true)
+    }
+
+    fn write_patch(
+        &mut self,
+        space_id: &str,
+        record_id: &str,
+        timestamp_ms: i64,
+        fields: &Fields,
+        stage_projection: bool,
+    ) -> Result<(), Error> {
+        if fields.is_empty() {
+            return Ok(());
+        }
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -98,7 +137,40 @@ impl Store {
         }
 
         append_delta(&tx, space_id, &mut doc, &before)?;
+        if stage_projection {
+            tx.execute(
+                "INSERT INTO pending_edits (space_id, record_id, fields) VALUES (?1, ?2, ?3)",
+                params![space_id, record_id, serde_json::to_vec(fields)?],
+            )?;
+        }
         tx.commit()?;
+        Ok(())
+    }
+
+    /// A single projection worker reads queued edits in order and retries
+    /// the same edit after a restart until it has been completed.
+    pub fn next_pending_edit(&self) -> Result<Option<PendingEdit>, Error> {
+        let mut stmt = self.db.prepare(
+            "SELECT sequence, space_id, record_id, fields FROM pending_edits
+             ORDER BY sequence LIMIT 1",
+        )?;
+        let mut rows = stmt.query([])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let fields: Vec<u8> = row.get(3)?;
+        Ok(Some(PendingEdit {
+            sequence: row.get(0)?,
+            space_id: row.get(1)?,
+            record_id: row.get(2)?,
+            fields: serde_json::from_slice(&fields)?,
+        }))
+    }
+
+    /// Remove an entry once the application has committed or skipped it.
+    pub fn complete_edit(&mut self, sequence: i64) -> Result<(), Error> {
+        self.db
+            .execute("DELETE FROM pending_edits WHERE sequence = ?1", [sequence])?;
         Ok(())
     }
 

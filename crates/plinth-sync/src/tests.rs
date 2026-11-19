@@ -203,3 +203,48 @@ fn committed_changes_survive_process_exit_and_checkpoint() {
     assert_field(&peer, "description", "Updated after checkpoint");
     assert_field(&peer, "category", "Groceries");
 }
+
+#[test]
+fn staging_failure_rolls_back_the_document_and_pending_edit() {
+    let mut store = Store::open(":memory:").unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TEMP TRIGGER fail_stage BEFORE INSERT ON pending_edits
+             BEGIN SELECT RAISE(ABORT, 'simulated queue failure'); END;",
+        )
+        .unwrap();
+
+    let fields = [("category".into(), json!("Groceries"))].into();
+    assert!(store.stage_edit(SPACE, RECORD, 10, &fields).is_err());
+    assert!(store.snapshot(SPACE).unwrap().is_empty());
+    assert!(store.next_pending_edit().unwrap().is_none());
+}
+
+#[test]
+fn queued_edits_keep_their_order_across_a_checkpoint() {
+    let mut store = Store::open(":memory:").unwrap();
+    for (timestamp, category) in [(10, "Groceries"), (20, "Household")] {
+        store
+            .stage_edit(
+                SPACE,
+                RECORD,
+                timestamp,
+                &[("category".into(), json!(category))].into(),
+            )
+            .unwrap();
+    }
+    store.checkpoint(SPACE).unwrap();
+
+    let first = store.next_pending_edit().unwrap().unwrap();
+    assert_eq!(first.fields["category"], json!("Groceries"));
+    store.complete_edit(first.sequence).unwrap();
+    store.complete_edit(first.sequence).unwrap();
+
+    let second = store.next_pending_edit().unwrap().unwrap();
+    assert!(second.sequence > first.sequence);
+    assert_eq!(second.fields["category"], json!("Household"));
+    store.complete_edit(second.sequence).unwrap();
+    assert!(store.next_pending_edit().unwrap().is_none());
+    assert_field(&store, "category", "Household");
+}

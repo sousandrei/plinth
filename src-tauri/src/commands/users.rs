@@ -276,7 +276,11 @@ pub async fn remove_user(user_id: String, db: State<'_, DbPool>) -> Result<(), A
 }
 
 #[tauri::command]
-pub async fn factory_reset(app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<(), AppError> {
+pub async fn factory_reset(
+    app: tauri::AppHandle,
+    db: State<'_, DbPool>,
+    preview: State<'_, crate::sync_preview::SyncPreview>,
+) -> Result<(), AppError> {
     // 1. Close the database pool so connections are terminated
     db.close().await;
 
@@ -303,6 +307,8 @@ pub async fn factory_reset(app: tauri::AppHandle, db: State<'_, DbPool>) -> Resu
         std::fs::remove_file(db_shm)
             .map_err(|e| AppError::Io(format!("factory_reset: delete db-shm: {e}")))?;
     }
+
+    preview.reset().await?;
 
     // 4. Restart the app
     app.restart();

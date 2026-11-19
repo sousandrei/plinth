@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.approved AS \"approved!: bool\",\n       t.note AS \"note!: String\",\n       t.category\nFROM transactions t\nJOIN accounts a ON a.id = t.account_id\nWHERE t.id = ?1 AND a.space_id = ?2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approved!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "approved"
+          }
+        }
+      },
+      {
+        "name": "note!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "name": "category",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transactions",
+            "name": "category"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "9218a9e4e2cb4e1dd15b3bef3773752532fe3c60f3005df678f45979b8ff2201"
+}

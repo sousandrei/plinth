@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transactions\nSET approved = COALESCE(?1, approved),\n    note = COALESCE(?2, note),\n    category = CASE WHEN ?3 THEN ?4 ELSE category END\nWHERE id = ?5\n  AND account_id IN (SELECT id FROM accounts WHERE space_id = ?6)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "3caa4a14bd5c79b39365c2193971567b77474cf3e9247e7f4434ebd6345ec007"
+}
