@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use plinth_sync::{Fields, Session as PeerSession, Store, transport};
+use plinth_sync::{Fields, Session as PeerSession, Store, discovery, transport};
 use sqlx::SqliteConnection;
 use tauri::State;
 use tokio::net::TcpListener;
@@ -30,6 +30,11 @@ struct PreviewStore {
     store: Mutex<Option<Store>>,
 }
 
+pub(crate) enum PeerConnection {
+    Connect(Vec<SocketAddr>),
+    Accept(TcpStream),
+}
+
 #[tauri::command]
 pub async fn sync_preview_exchange(
     address: String,
@@ -40,28 +45,53 @@ pub async fn sync_preview_exchange(
 ) -> Result<(), AppError> {
     let paired = preview.0.as_ref().ok_or(AppError::Forbidden)?;
     let space_id = session.require()?.space_id;
-    let address: SocketAddr = address
-        .parse()
-        .map_err(|error| AppError::InvalidInput(format!("peer address: {error}")))?;
-    if address.ip().is_unspecified() || address.port() == 0 {
-        return Err(AppError::InvalidInput(
-            "use a specific IP address and port".into(),
-        ));
-    }
     let directory = paired.directory.join("peer");
     let identity = tokio::task::spawn_blocking(move || transport::Identity::load(&directory))
         .await
         .map_err(task_error)?
         .map_err(peer_error)?;
-    let socket = if listen {
+    let connection = if listen {
+        let address: SocketAddr = address
+            .parse()
+            .map_err(|error| AppError::InvalidInput(format!("listen address: {error}")))?;
+        if address.ip().is_unspecified() || address.port() == 0 {
+            return Err(AppError::InvalidInput(
+                "use a specific listen IP and port".into(),
+            ));
+        }
         let listener = TcpListener::bind(address).await.map_err(peer_io_error)?;
-        Some(accept_peer(&listener).await?)
+        PeerConnection::Accept(accept_peer(&listener).await?)
     } else {
-        None
+        PeerConnection::Connect(resolve_peer(address).await?)
     };
     preview
-        .exchange_peer(db.inner(), space_id, identity, address, socket)
+        .exchange_peer(db.inner(), space_id, identity, connection)
         .await
+}
+
+pub(crate) async fn resolve_peer(address: String) -> Result<Vec<SocketAddr>, AppError> {
+    let addresses = if let Some(name) = address.strip_prefix("mdns:") {
+        let name = name.to_owned();
+        tokio::task::spawn_blocking(move || discovery::discover(&name))
+            .await
+            .map_err(task_error)?
+            .map_err(peer_error)?
+    } else {
+        tokio::net::lookup_host(address)
+            .await
+            .map_err(peer_io_error)?
+            .collect()
+    };
+    let addresses: Vec<_> = addresses
+        .into_iter()
+        .filter(|address| !address.ip().is_unspecified() && address.port() != 0)
+        .collect();
+    if addresses.is_empty() {
+        return Err(AppError::InvalidInput(
+            "use a reachable peer address and port".into(),
+        ));
+    }
+    Ok(addresses)
 }
 
 pub(crate) async fn accept_peer(listener: &TcpListener) -> Result<TcpStream, AppError> {
@@ -142,20 +172,19 @@ impl SyncPreview {
         db: &DbPool,
         space_id: String,
         identity: transport::Identity,
-        address: SocketAddr,
-        accepted: Option<TcpStream>,
+        connection: PeerConnection,
     ) -> Result<(), AppError> {
         let preview = self.clone();
         let db = db.clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            let (mut stream, initiator): (Box<dyn ReadWrite>, _) = match accepted {
-                Some(socket) => (
+            let (mut stream, initiator): (Box<dyn ReadWrite>, _) = match connection {
+                PeerConnection::Accept(socket) => (
                     Box::new(identity.accept(socket).map_err(peer_error)?),
                     false,
                 ),
-                None => (
-                    Box::new(identity.connect(address).map_err(peer_error)?),
+                PeerConnection::Connect(addresses) => (
+                    Box::new(identity.connect_any(addresses).map_err(peer_error)?),
                     true,
                 ),
             };

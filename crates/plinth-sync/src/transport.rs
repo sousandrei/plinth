@@ -4,7 +4,7 @@ use std::{
     fs,
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -14,6 +14,8 @@ use rustls::{
     pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     server::WebPkiClientVerifier,
 };
+
+use crate::{Session, Store};
 
 pub const TLS_NAME: &str = "plinth-peer.local";
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
@@ -25,26 +27,63 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 pub struct Identity {
     cert: CertificateDer<'static>,
     key: PrivatePkcs8KeyDer<'static>,
-    trusted: CertificateDer<'static>,
+    trusted: Vec<CertificateDer<'static>>,
+}
+
+pub struct PeerListener<'a> {
+    identity: &'a Identity,
+    config: Arc<ServerConfig>,
 }
 
 impl Identity {
+    pub fn init(dir: &Path) -> Result<()> {
+        let directory = fs::DirBuilder::new();
+        #[cfg(unix)]
+        let directory = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut directory = directory;
+            directory.mode(0o700);
+            directory
+        };
+        let identity = rcgen::generate_simple_self_signed(vec![TLS_NAME.into()])?;
+        directory.create(dir)?;
+        fs::write(dir.join("key.der"), identity.signing_key.serialize_der())?;
+        fs::write(dir.join("peer.der"), identity.cert.der())?;
+        Ok(())
+    }
+
     pub fn load(dir: &Path) -> Result<Self> {
+        Self::load_with_trusted(dir, &[dir.join("trusted-peer.der")])
+    }
+
+    pub fn load_with_trusted(dir: &Path, certificates: &[PathBuf]) -> Result<Self> {
+        if certificates.is_empty() {
+            return Err("at least one paired certificate is required".into());
+        }
+        let trusted = certificates
+            .iter()
+            .map(|path| fs::read(path).map(CertificateDer::from))
+            .collect::<io::Result<_>>()?;
         Ok(Self {
             cert: fs::read(dir.join("peer.der"))?.into(),
             key: fs::read(dir.join("key.der"))?.into(),
-            trusted: fs::read(dir.join("trusted-peer.der"))?.into(),
+            trusted,
         })
     }
 
     fn roots(&self) -> Result<RootCertStore> {
         let mut roots = RootCertStore::empty();
-        roots.add(self.trusted.clone())?;
+        for certificate in &self.trusted {
+            roots.add(certificate.clone())?;
+        }
         Ok(roots)
     }
 
     fn check_peer(&self, certs: Option<&[CertificateDer<'_>]>) -> Result<()> {
-        if certs.and_then(|chain| chain.first()) != Some(&self.trusted) {
+        if !certs
+            .and_then(|chain| chain.first())
+            .is_some_and(|cert| self.trusted.contains(cert))
+        {
             return Err("peer certificate does not match the paired certificate".into());
         }
         Ok(())
@@ -52,6 +91,17 @@ impl Identity {
 }
 
 impl Identity {
+    pub fn connect_any(&self, addresses: Vec<SocketAddr>) -> Result<impl Read + Write + use<>> {
+        let mut last_error = "no peer address was resolved".into();
+        for address in addresses {
+            match self.connect(address) {
+                Ok(stream) => return Ok(stream),
+                Err(error) => last_error = format!("{address}: {error}").into(),
+            }
+        }
+        Err(last_error)
+    }
+
     pub fn connect(&self, addr: SocketAddr) -> Result<impl Read + Write + use<>> {
         let mut config =
             ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
@@ -68,7 +118,7 @@ impl Identity {
         Ok(StreamOwned::new(conn, socket))
     }
 
-    pub fn accept(&self, mut socket: TcpStream) -> Result<impl Read + Write + use<>> {
+    pub fn listener(&self) -> Result<PeerListener<'_>> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let verifier =
             WebPkiClientVerifier::builder_with_provider(Arc::new(self.roots()?), provider.clone())
@@ -78,13 +128,41 @@ impl Identity {
             .with_client_cert_verifier(verifier)
             .with_single_cert(vec![self.cert.clone()], self.key.clone_key().into())?;
         config.alpn_protocols = vec![ALPN.to_vec()];
-        let mut conn = ServerConnection::new(Arc::new(config))?;
+        Ok(PeerListener {
+            identity: self,
+            config: Arc::new(config),
+        })
+    }
+
+    pub fn accept(&self, socket: TcpStream) -> Result<impl Read + Write + use<>> {
+        self.listener()?.accept(socket)
+    }
+}
+
+impl PeerListener<'_> {
+    pub fn accept(&self, mut socket: TcpStream) -> Result<impl Read + Write + use<>> {
+        let mut conn = ServerConnection::new(self.config.clone())?;
         timeouts(&socket)?;
         conn.complete_io(&mut socket)?;
-        self.check_peer(conn.peer_certificates())?;
+        self.identity.check_peer(conn.peer_certificates())?;
         check_protocol(conn.alpn_protocol())?;
         Ok(StreamOwned::new(conn, socket))
     }
+}
+
+pub fn exchange_store(
+    store: &mut Store,
+    stream: &mut (impl Read + Write),
+    space: &str,
+    initiator: bool,
+) -> Result<()> {
+    let mut session = Session::new(space);
+    exchange(stream, space, initiator, |incoming| {
+        if let Some(bytes) = incoming {
+            store.receive(&mut session, bytes)?;
+        }
+        Ok(store.next_message(&mut session)?)
+    })
 }
 
 fn check_protocol(protocol: Option<&[u8]>) -> Result<()> {

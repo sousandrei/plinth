@@ -1,4 +1,10 @@
-use std::{env, path::Path, process};
+use std::{
+    env, fs,
+    io::{BufRead, BufReader},
+    net::SocketAddr,
+    path::Path,
+    process,
+};
 
 use plinth_sync::{Session, Store, transport};
 use serde_json::json;
@@ -12,7 +18,7 @@ use crate::{
     commands::spaces::ExportTransaction,
     db::{self, DbPool},
     error::AppError,
-    sync_preview::{SyncPreview, accept_peer},
+    sync_preview::{PeerConnection, SyncPreview, accept_peer, resolve_peer},
 };
 
 const SPACE: &str = "personal";
@@ -429,8 +435,7 @@ async fn paired_previews_exchange_offline_transaction_edits_over_tls() {
                 &left_db,
                 SPACE.into(),
                 local_identity,
-                address,
-                Some(accepted),
+                PeerConnection::Accept(accepted),
             )
             .await
         };
@@ -438,8 +443,7 @@ async fn paired_previews_exchange_offline_transaction_edits_over_tls() {
             &right_db,
             remote_space.into(),
             remote_identity,
-            address,
-            None,
+            PeerConnection::Connect(vec![address]),
         );
         let (local, remote) = tokio::join!(listening, connecting);
         if should_sync {
@@ -463,4 +467,132 @@ async fn paired_previews_exchange_offline_transaction_edits_over_tls() {
         assert!(store.next_pending_edit().unwrap().is_none());
         db.close().await;
     }
+}
+
+struct HeadlessPeer(process::Child);
+
+impl Drop for HeadlessPeer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires PLINTH_TEST_HEADLESS pointing to the built plinth-sync-peer executable"]
+async fn separate_desktop_previews_sync_through_restarted_headless_peer() {
+    let binary = env::var_os("PLINTH_TEST_HEADLESS").expect("set PLINTH_TEST_HEADLESS");
+    let lan_ip = env::var("PLINTH_TEST_LAN_IP").ok();
+    let bind = format!("{}:0", lan_ip.as_deref().unwrap_or("127.0.0.1"));
+    let name = format!("headless-test-{}", process::id());
+    let temp = tempfile::tempdir().unwrap();
+    let daemon_dir = temp.path().join("daemon");
+    let alice_dir = temp.path().join("alice");
+    let bob_dir = temp.path().join("bob");
+    let unpaired_dir = temp.path().join("unpaired");
+    for directory in [&daemon_dir, &alice_dir, &bob_dir, &unpaired_dir] {
+        transport::Identity::init(directory).unwrap();
+    }
+    for directory in [&alice_dir, &bob_dir, &unpaired_dir] {
+        fs::copy(
+            daemon_dir.join("peer.der"),
+            directory.join("trusted-peer.der"),
+        )
+        .unwrap();
+    }
+
+    let start = |advertise| {
+        let mut command = process::Command::new(&binary);
+        command.arg("serve").arg(&daemon_dir).args([SPACE, &bind]);
+        if advertise {
+            command.args(["--mdns", &name]);
+        }
+        let mut child = HeadlessPeer(
+            command
+                .arg(alice_dir.join("peer.der"))
+                .arg(bob_dir.join("peer.der"))
+                .stdout(process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut ready = String::new();
+        BufReader::new(child.0.stdout.as_mut().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        let address: SocketAddr = ready
+            .trim()
+            .strip_prefix("READY ")
+            .unwrap()
+            .parse()
+            .unwrap();
+        (child, address)
+    };
+
+    let alice_path = alice_dir.join("finance.sqlite");
+    seed_finance_db(&alice_path).await.close().await;
+    let alice = SyncPreview::open(alice_dir.clone()).await.unwrap();
+    let alice_db = db::init(&alice_path, &alice).await.unwrap();
+    update_in_preview(
+        &alice_db,
+        &alice,
+        SPACE,
+        ID,
+        TransactionPatch {
+            approved: Some(true),
+            note: Some("Edited on Alice's device".into()),
+            category: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (daemon, address) = start(false);
+    let direct = PeerConnection::Connect(resolve_peer(address.to_string()).await.unwrap());
+    let unauthorized = transport::Identity::load(&unpaired_dir).unwrap();
+    assert!(
+        alice
+            .exchange_peer(&alice_db, SPACE.into(), unauthorized, direct)
+            .await
+            .is_err()
+    );
+    let direct = PeerConnection::Connect(resolve_peer(address.to_string()).await.unwrap());
+    alice
+        .exchange_peer(
+            &alice_db,
+            SPACE.into(),
+            transport::Identity::load(&alice_dir).unwrap(),
+            direct,
+        )
+        .await
+        .unwrap();
+    alice_db.close().await;
+    drop(alice);
+    drop(daemon);
+
+    let (daemon, address) = start(lan_ip.is_some());
+    let bob_path = bob_dir.join("finance.sqlite");
+    seed_finance_db(&bob_path).await.close().await;
+    let bob = SyncPreview::open(bob_dir.clone()).await.unwrap();
+    let bob_db = db::init(&bob_path, &bob).await.unwrap();
+    let destination = if lan_ip.is_some() {
+        format!("mdns:{name}")
+    } else {
+        address.to_string()
+    };
+    assert_eq!(read_transaction(&bob_db).await.approved, 0);
+    let discovered = resolve_peer(destination).await.unwrap();
+    assert!(discovered.contains(&address));
+    bob.exchange_peer(
+        &bob_db,
+        SPACE.into(),
+        transport::Identity::load(&bob_dir).unwrap(),
+        PeerConnection::Connect(discovered),
+    )
+    .await
+    .unwrap();
+    let received = read_transaction(&bob_db).await;
+    assert_eq!(received.approved, 1);
+    assert_eq!(received.note, "Edited on Alice's device");
+    assert_eq!(received.category, "Other");
+    bob_db.close().await;
+    drop(daemon);
 }

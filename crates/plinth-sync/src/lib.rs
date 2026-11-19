@@ -15,6 +15,7 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use serde_json::Value;
 use thiserror::Error;
 
+pub mod discovery;
 pub mod transport;
 
 #[cfg(test)]
