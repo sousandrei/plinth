@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n    SELECT 1 FROM spaces WHERE id = ?1\n    UNION ALL\n    SELECT 1 FROM json_each(?2, '$.categories') AS entry\n    JOIN categories ON categories.id = entry.value ->> 'id'\n    UNION ALL\n    SELECT 1 FROM json_each(?2, '$.accounts') AS entry\n    JOIN accounts ON accounts.id = entry.value ->> 'id'\n    UNION ALL\n    SELECT 1 FROM json_each(?2, '$.transactions') AS entry\n    JOIN transactions ON transactions.id = entry.value ->> 'id'\n) AS \"exists!: bool\"\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "exists!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "059fb611c14eb293ebe279f4ae53d6f5a10fa9e0a26079cc2136e687c9bae4ff"
+}

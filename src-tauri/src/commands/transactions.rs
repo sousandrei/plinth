@@ -211,7 +211,7 @@ pub async fn update_transaction(
         .map_err(|error| AppError::Internal(format!("transaction preview task: {error}")))?
 }
 
-async fn update_in_preview(
+pub(crate) async fn update_in_preview(
     db: &DbPool,
     preview: &SyncPreview,
     space_id: &str,

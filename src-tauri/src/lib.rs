@@ -189,6 +189,8 @@ pub fn run() {
             commands::settings::set_app_setting,
             commands::spaces::export_space_data,
             commands::spaces::import_space_data,
+            commands::spaces::export_sync_seed,
+            commands::spaces::import_sync_seed,
             commands::updater::restart_app,
         ])
         .run(tauri::generate_context!())

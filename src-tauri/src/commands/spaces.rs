@@ -1,10 +1,13 @@
+use std::{collections::HashSet, io::Write};
+
 use serde::{Deserialize, Serialize};
+use sqlx::{Executor, Sqlite, SqliteConnection};
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::{
     ClassifierState, Session, commands::training::load_active_classifier, db::DbPool,
-    error::AppError,
+    error::AppError, sync_preview::SyncPreview,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
@@ -108,6 +111,12 @@ pub struct ImportResult {
     pub accounts: usize,
     pub transactions: usize,
     pub account_summaries: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct SyncSeed {
+    space_id: String,
+    snapshot: ExportPayload,
 }
 
 // ---------------------------------------------------------------------------
@@ -458,9 +467,28 @@ pub async fn export_space_data(
 ) -> Result<ExportResult, AppError> {
     let data = session.require_user()?;
     require_member(&space_id, &data.user_id, db.inner()).await?;
+    let mut tx = db.begin().await?;
+    let payload = read_space_export(&mut tx, &space_id).await?;
+    tx.commit().await?;
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| AppError::Internal(format!("export_space_data serialize: {e}")))?;
+    std::fs::write(&path, json)
+        .map_err(|e| AppError::Io(format!("export_space_data write: {e}")))?;
 
+    Ok(ExportResult {
+        categories: payload.categories.len(),
+        accounts: payload.accounts.len(),
+        transactions: payload.transactions.len(),
+        account_summaries: payload.account_summaries.len(),
+    })
+}
+
+async fn read_space_export(
+    conn: &mut SqliteConnection,
+    space_id: &str,
+) -> Result<ExportPayload, AppError> {
     let space = sqlx::query_file!("queries/spaces/get_space_name.sql", space_id)
-        .fetch_optional(db.inner())
+        .fetch_optional(&mut *conn)
         .await
         .map_err(|e| AppError::Db(format!("export_space_data space: {e}")))?
         .ok_or_else(|| AppError::NotFound(format!("space {space_id}")))?;
@@ -470,7 +498,7 @@ pub async fn export_space_data(
         "queries/spaces/export_categories.sql",
         space_id
     )
-    .fetch_all(db.inner())
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| AppError::Db(format!("export_space_data categories: {e}")))?;
 
@@ -479,7 +507,7 @@ pub async fn export_space_data(
         "queries/spaces/export_accounts.sql",
         space_id
     )
-    .fetch_all(db.inner())
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| AppError::Db(format!("export_space_data accounts: {e}")))?;
 
@@ -488,7 +516,7 @@ pub async fn export_space_data(
         "queries/spaces/export_transactions.sql",
         space_id
     )
-    .fetch_all(db.inner())
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| AppError::Db(format!("export_space_data transactions: {e}")))?;
 
@@ -497,31 +525,18 @@ pub async fn export_space_data(
         "queries/spaces/export_account_summaries.sql",
         space_id
     )
-    .fetch_all(db.inner())
+    .fetch_all(conn)
     .await
     .map_err(|e| AppError::Db(format!("export_space_data summaries: {e}")))?;
 
-    let payload = ExportPayload {
+    Ok(ExportPayload {
         version: 1,
         exported_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         space: ExportSpaceInfo { name: space.name },
-        categories: categories.clone(),
-        accounts: accounts.clone(),
-        transactions: transactions.clone(),
-        account_summaries: account_summaries.clone(),
-    };
-
-    let json = serde_json::to_string_pretty(&payload)
-        .map_err(|e| AppError::Internal(format!("export_space_data serialize: {e}")))?;
-
-    std::fs::write(&path, json)
-        .map_err(|e| AppError::Io(format!("export_space_data write: {e}")))?;
-
-    Ok(ExportResult {
-        categories: categories.len(),
-        accounts: accounts.len(),
-        transactions: transactions.len(),
-        account_summaries: account_summaries.len(),
+        categories,
+        accounts,
+        transactions,
+        account_summaries,
     })
 }
 
@@ -531,7 +546,7 @@ pub async fn import_space_data(
     path: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    preview: State<'_, crate::sync_preview::SyncPreview>,
+    preview: State<'_, SyncPreview>,
 ) -> Result<ImportResult, AppError> {
     let data = session.require_user()?;
     require_member(&space_id, &data.user_id, db.inner()).await?;
@@ -562,6 +577,26 @@ pub async fn import_space_data(
         .await
         .map_err(|e| AppError::Db(format!("import_space_data clear categories: {e}")))?;
 
+    // Restoring a backup into an existing preview preserves its shared edits.
+    write_space_export(&mut tx, &space_id, &payload, preview.active()).await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Db(format!("import_space_data commit: {e}")))?;
+
+    Ok(ImportResult {
+        categories: payload.categories.len(),
+        accounts: payload.accounts.len(),
+        transactions: payload.transactions.len(),
+        account_summaries: payload.account_summaries.len(),
+    })
+}
+
+async fn write_space_export(
+    conn: &mut SqliteConnection,
+    space_id: &str,
+    payload: &ExportPayload,
+    preserve_edits: bool,
+) -> Result<(), AppError> {
     for c in &payload.categories {
         sqlx::query_file!(
             "queries/spaces/import_category.sql",
@@ -570,7 +605,7 @@ pub async fn import_space_data(
             c.color,
             space_id,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await
         .map_err(|e| AppError::Db(format!("import_space_data category: {e}")))?;
     }
@@ -586,13 +621,11 @@ pub async fn import_space_data(
             a.color,
             space_id,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await
         .map_err(|e| AppError::Db(format!("import_space_data account: {e}")))?;
     }
 
-    // The preview can seed new rows from a backup without overwriting shared edits.
-    let preserve_edits = preview.active();
     for t in &payload.transactions {
         sqlx::query_file!(
             "queries/spaces/import_transaction.sql",
@@ -610,7 +643,7 @@ pub async fn import_space_data(
             t.account_id,
             preserve_edits,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await
         .map_err(|e| AppError::Db(format!("import_space_data transaction: {e}")))?;
     }
@@ -622,28 +655,170 @@ pub async fn import_space_data(
             s.account_id,
             s.balance,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await
         .map_err(|e| AppError::Db(format!("import_space_data summary: {e}")))?;
     }
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Db(format!("import_space_data commit: {e}")))?;
+    Ok(())
+}
 
-    Ok(ImportResult {
-        categories: payload.categories.len(),
-        accounts: payload.accounts.len(),
-        transactions: payload.transactions.len(),
-        account_summaries: payload.account_summaries.len(),
+#[tauri::command]
+pub async fn export_sync_seed(
+    space_id: String,
+    path: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+) -> Result<(), AppError> {
+    let user = session.require_user()?;
+    let seed = make_sync_seed(db.inner(), &space_id, &user.user_id).await?;
+    tokio::task::spawn_blocking(move || {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(path)
+            .map_err(|e| AppError::Io(format!("create sync seed: {e}")))?;
+        let mut writer = std::io::BufWriter::new(file);
+        serde_json::to_writer(&mut writer, &seed)
+            .map_err(|e| AppError::Io(format!("write sync seed: {e}")))?;
+        writer
+            .flush()
+            .map_err(|e| AppError::Io(format!("flush sync seed: {e}")))
     })
+    .await
+    .map_err(|e| AppError::Internal(format!("export sync seed: {e}")))?
+}
+
+async fn make_sync_seed(db: &DbPool, space_id: &str, user_id: &str) -> Result<SyncSeed, AppError> {
+    let mut tx = db.begin().await?;
+    require_owner(space_id, user_id, &mut *tx).await?;
+    let snapshot = read_space_export(&mut tx, space_id).await?;
+    tx.commit().await?;
+    Ok(SyncSeed {
+        space_id: space_id.to_owned(),
+        snapshot,
+    })
+}
+
+#[tauri::command]
+pub async fn import_sync_seed(
+    path: String,
+    session: State<'_, Session>,
+    db: State<'_, DbPool>,
+    preview: State<'_, SyncPreview>,
+) -> Result<String, AppError> {
+    if !preview.active() {
+        return Err(AppError::Forbidden);
+    }
+    let user = session.require_user()?;
+    let seed = tokio::task::spawn_blocking(move || {
+        let file =
+            std::fs::File::open(path).map_err(|e| AppError::Io(format!("open sync seed: {e}")))?;
+        serde_json::from_reader(std::io::BufReader::new(file))
+            .map_err(|e| AppError::InvalidInput(format!("invalid sync seed: {e}")))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("read sync seed: {e}")))??;
+    install_sync_seed(db.inner(), &user.user_id, seed).await
+}
+
+async fn install_sync_seed(db: &DbPool, user_id: &str, seed: SyncSeed) -> Result<String, AppError> {
+    let SyncSeed { space_id, snapshot } = seed;
+    if snapshot.version != 1 || space_id.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "unsupported sync seed or missing space ID".into(),
+        ));
+    }
+    let accounts: HashSet<_> = snapshot
+        .accounts
+        .iter()
+        .map(|account| account.id.as_str())
+        .collect();
+    let categories: HashSet<_> = snapshot
+        .categories
+        .iter()
+        .map(|category| category.id.as_str())
+        .collect();
+    let transactions: HashSet<_> = snapshot
+        .transactions
+        .iter()
+        .map(|transaction| transaction.id.as_str())
+        .collect();
+    let summaries: HashSet<_> = snapshot
+        .account_summaries
+        .iter()
+        .map(|summary| (summary.account_id.as_str(), summary.month.as_str()))
+        .collect();
+    if accounts.len() != snapshot.accounts.len()
+        || categories.len() != snapshot.categories.len()
+        || transactions.len() != snapshot.transactions.len()
+        || summaries.len() != snapshot.account_summaries.len()
+        || snapshot
+            .transactions
+            .iter()
+            .any(|row| !accounts.contains(row.account_id.as_str()))
+        || snapshot
+            .account_summaries
+            .iter()
+            .any(|row| !accounts.contains(row.account_id.as_str()))
+    {
+        return Err(AppError::InvalidInput(
+            "sync seed has duplicate IDs or missing accounts".into(),
+        ));
+    }
+
+    let records = serde_json::to_string(&snapshot)
+        .map_err(|e| AppError::Internal(format!("encode sync seed: {e}")))?;
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    let conflict = sqlx::query_file!(
+        "queries/spaces/has_sync_seed_conflict.sql",
+        space_id,
+        records
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if conflict.exists {
+        return Err(AppError::InvalidInput(
+            "sync seed overlaps with existing space data".into(),
+        ));
+    }
+    sqlx::query_file!(
+        "queries/spaces/create_space.sql",
+        space_id,
+        snapshot.space.name,
+        now
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query_file!(
+        "queries/spaces/add_space_member.sql",
+        space_id,
+        user_id,
+        "owner",
+        now
+    )
+    .execute(&mut *tx)
+    .await?;
+    write_space_export(&mut tx, &space_id, &snapshot, false).await?;
+    tx.commit().await?;
+    Ok(space_id)
 }
 
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 
-async fn require_owner(space_id: &str, user_id: &str, db: &DbPool) -> Result<(), AppError> {
+async fn require_owner<'a>(
+    space_id: &str,
+    user_id: &str,
+    db: impl Executor<'a, Database = Sqlite>,
+) -> Result<(), AppError> {
     let row = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, user_id)
         .fetch_optional(db)
         .await
@@ -666,4 +841,217 @@ async fn require_member(space_id: &str, user_id: &str, db: &DbPool) -> Result<()
         return Err(AppError::Forbidden);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod sync_seed_tests {
+    use super::*;
+    use std::{env, fs, path::Path, time::Duration};
+
+    use crate::{
+        commands::transactions::update_in_preview,
+        sync_preview::{PeerConnection, resolve_peer},
+    };
+    use plinth_sync::transport::Identity;
+
+    const DATE: &str = "2026-11-19";
+    const RECORD: &str = "household-transaction";
+    const OFFLINE_NOTE: &str = "Edited offline on Windows";
+
+    async fn create_user(db: &DbPool, user: &str) {
+        sqlx::query_file!("queries/users/create_user.sql", user, user, DATE, DATE)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    async fn sample_seed() -> SyncSeed {
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = crate::db::init(
+            &source_dir.path().join("finance.sqlite"),
+            &SyncPreview::default(),
+        )
+        .await
+        .unwrap();
+        create_user(&source, "source-owner").await;
+        let space_id = create_space_for_user("source-owner", "Household", &source)
+            .await
+            .unwrap();
+        let account_id = "household-account";
+        sqlx::query_file!(
+            "queries/spaces/import_account.sql",
+            account_id,
+            "Checking",
+            "SEK",
+            "checking",
+            "manual",
+            "#111111",
+            space_id
+        )
+        .execute(&source)
+        .await
+        .unwrap();
+        sqlx::query_file!(
+            "queries/spaces/import_transaction.sql",
+            RECORD,
+            DATE,
+            DATE,
+            "",
+            "Market",
+            "SEK",
+            -1500_i64,
+            9000_i64,
+            1_i64,
+            "Paid",
+            "Groceries",
+            account_id,
+            false
+        )
+        .execute(&source)
+        .await
+        .unwrap();
+        sqlx::query_file!(
+            "queries/spaces/import_account_summary.sql",
+            "2026-11",
+            account_id,
+            9000_i64
+        )
+        .execute(&source)
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            make_sync_seed(&source, &space_id, "local-owner").await,
+            Err(AppError::Forbidden)
+        ));
+        let seed = make_sync_seed(&source, &space_id, "source-owner")
+            .await
+            .unwrap();
+        source.close().await;
+        seed
+    }
+
+    async fn open_preview(directory: &Path) -> (SyncPreview, DbPool) {
+        let preview = SyncPreview::open(directory.to_owned()).await.unwrap();
+        let db = crate::db::init(&directory.join("finance.sqlite"), &preview)
+            .await
+            .unwrap();
+        create_user(&db, "local-owner").await;
+        (preview, db)
+    }
+
+    #[tokio::test]
+    async fn bootstraps_a_fresh_preview_with_stable_ids_and_rejects_overlap() {
+        let destination_dir = tempfile::tempdir().unwrap();
+        let (_preview, destination) = open_preview(destination_dir.path()).await;
+        let seed = sample_seed().await;
+        let space_id = seed.space_id.clone();
+        assert!(!seed.snapshot.categories.is_empty());
+        assert_eq!(seed.snapshot.transactions[0].id, "household-transaction");
+        let mut invalid = seed.clone();
+        invalid.snapshot.categories[1].name = invalid.snapshot.categories[0].name.clone();
+        assert!(matches!(
+            install_sync_seed(&destination, "local-owner", invalid).await,
+            Err(AppError::Db(_))
+        ));
+        let contents = serde_json::to_vec(&seed).unwrap();
+        let decoded: SyncSeed = serde_json::from_slice(&contents).unwrap();
+        assert_eq!(
+            install_sync_seed(&destination, "local-owner", decoded)
+                .await
+                .unwrap(),
+            space_id
+        );
+        let actual = make_sync_seed(&destination, &space_id, "local-owner")
+            .await
+            .unwrap();
+        let mut expected = seed.clone();
+        expected.snapshot.exported_at = actual.snapshot.exported_at.clone();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(matches!(
+            require_member(&space_id, "source-owner", &destination).await,
+            Err(AppError::Forbidden)
+        ));
+        for id in [&space_id, "colliding-space"] {
+            let mut overlapping = seed.clone();
+            overlapping.space_id = id.to_owned();
+            assert!(matches!(
+                install_sync_seed(&destination, "local-owner", overlapping).await,
+                Err(AppError::InvalidInput(_))
+            ));
+        }
+        let existing = sqlx::query_file!("queries/spaces/get_space_name.sql", "colliding-space")
+            .fetch_optional(&destination)
+            .await
+            .unwrap();
+        assert!(existing.is_none());
+        destination.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires two machines and PLINTH_PHYSICAL_SYNC_* settings"]
+    async fn exchange_bootstrapped_space_across_devices() {
+        let directory = std::path::PathBuf::from(env::var_os("PLINTH_PHYSICAL_SYNC_DIR").unwrap());
+        let role = env::var("PLINTH_PHYSICAL_SYNC_ROLE").unwrap();
+        let identity_dir = directory.join("peer");
+        let seed_path = directory.join("space-seed.json");
+        if role == "prepare" {
+            Identity::init(&identity_dir).unwrap();
+            fs::write(seed_path, serde_json::to_vec(&sample_seed().await).unwrap()).unwrap();
+            return;
+        }
+
+        let seed: SyncSeed = serde_json::from_slice(&fs::read(seed_path).unwrap()).unwrap();
+        let profile = tempfile::tempdir_in(&directory).unwrap();
+        let (preview, db) = open_preview(profile.path()).await;
+        let space_id = install_sync_seed(&db, "local-owner", seed).await.unwrap();
+        let address = env::var("PLINTH_PHYSICAL_SYNC_RELAY").unwrap();
+        let addresses = resolve_peer(address).await.unwrap();
+        let exchange = || {
+            preview.exchange_peer(
+                &db,
+                space_id.clone(),
+                Identity::load(&identity_dir).unwrap(),
+                PeerConnection::Connect(addresses.clone()),
+            )
+        };
+
+        match role.as_str() {
+            "publish" => {
+                let patch =
+                    serde_json::from_value(serde_json::json!({ "note": OFFLINE_NOTE })).unwrap();
+                update_in_preview(&db, &preview, &space_id, RECORD, patch)
+                    .await
+                    .unwrap();
+                exchange().await.unwrap();
+                println!("PUBLISHED {space_id} {RECORD}");
+            }
+            "receive" => {
+                let initial = make_sync_seed(&db, &space_id, "local-owner").await.unwrap();
+                assert_eq!(initial.snapshot.transactions[0].note, "Paid");
+                tokio::time::timeout(Duration::from_secs(300), async {
+                    loop {
+                        exchange().await.unwrap();
+                        let current = make_sync_seed(&db, &space_id, "local-owner").await.unwrap();
+                        let row = &current.snapshot.transactions[0];
+                        if row.note == OFFLINE_NOTE {
+                            assert_eq!(row.id, RECORD);
+                            assert_eq!(row.category, "Groceries");
+                            assert_eq!(row.approved, 1);
+                            println!("RECEIVED {space_id} {RECORD}: {}", row.note);
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                })
+                .await
+                .expect("timed out waiting for the offline edit");
+            }
+            _ => panic!("unknown physical sync role: {role}"),
+        }
+        db.close().await;
+    }
 }
