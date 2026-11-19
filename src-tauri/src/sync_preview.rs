@@ -8,6 +8,7 @@ use std::{
 };
 
 use plinth_sync::{Fields, Session as PeerSession, Store, discovery, transport};
+use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 use tauri::State;
 use tokio::net::TcpListener;
@@ -33,6 +34,30 @@ struct PreviewStore {
 pub(crate) enum PeerConnection {
     Connect(Vec<SocketAddr>),
     Accept(TcpStream),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NearbySyncPeer {
+    pub name: String,
+    pub addresses: Vec<SocketAddr>,
+}
+
+#[tauri::command]
+pub async fn discover_sync_peers(
+    session: State<'_, Session>,
+) -> Result<Vec<NearbySyncPeer>, AppError> {
+    session.require_user()?;
+    let peers = tokio::task::spawn_blocking(discovery::discover_peers)
+        .await
+        .map_err(task_error)?
+        .map_err(peer_error)?;
+    Ok(peers
+        .into_iter()
+        .map(|peer| NearbySyncPeer {
+            name: peer.name,
+            addresses: peer.addresses,
+        })
+        .collect())
 }
 
 #[tauri::command]

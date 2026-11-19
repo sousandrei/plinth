@@ -155,6 +155,7 @@ pub fn run() {
             commands::transactions::bulk_approve_transactions,
             commands::transactions::bulk_categorize_transactions,
             sync_preview::sync_preview_exchange,
+            sync_preview::discover_sync_peers,
             commands::categories::list_all_categories,
             commands::categories::create_category,
             commands::categories::delete_category,
