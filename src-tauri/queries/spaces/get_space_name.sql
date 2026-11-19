@@ -1,3 +1,3 @@
 SELECT name
 FROM spaces
-WHERE id = ?1 AND deleted = 0
+WHERE id = ?1

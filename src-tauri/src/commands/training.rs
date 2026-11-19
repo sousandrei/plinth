@@ -22,7 +22,6 @@ use crate::{
     },
     db::DbPool,
     error::AppError,
-    sync::{debounce::DebounceSender, model_sync},
 };
 
 // ---------------------------------------------------------------------------
@@ -149,22 +148,23 @@ fn card_path(dir: &Path, version: u32) -> PathBuf {
     dir.join(format!("model_v{version}.json"))
 }
 
-fn next_version(dir: &PathBuf) -> u32 {
-    // Scan for existing model_vN.safetensors and return N+1.
-    let mut max = 0u32;
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
+fn local_model_versions(dir: &Path) -> Result<Vec<u32>, AppError> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| AppError::Io(format!("list model files: {e}")))?;
+    let mut versions: Vec<u32> = entries
+        .flatten()
+        .filter_map(|entry| {
             let name = entry.file_name();
-            let s = name.to_string_lossy();
-            if let Some(rest) = s.strip_prefix("model_v")
-                && let Some(n) = rest.strip_suffix(".safetensors")
-                && let Ok(v) = n.parse::<u32>()
-            {
-                max = max.max(v);
-            }
-        }
-    }
-    max + 1
+            name.to_str()?
+                .strip_prefix("model_v")?
+                .strip_suffix(".safetensors")?
+                .parse()
+                .ok()
+        })
+        .collect();
+    versions.sort_unstable();
+    versions.dedup();
+    Ok(versions)
 }
 
 fn read_card(dir: &Path, version: u32) -> Option<ModelCard> {
@@ -184,7 +184,7 @@ fn now_iso() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Active model helpers (stored in app_settings)
+// Active model helpers
 // ---------------------------------------------------------------------------
 
 async fn get_active_version(pool: &DbPool, space_id: &str) -> u32 {
@@ -229,7 +229,6 @@ pub async fn fine_tune(
     history: State<'_, TrainingHistory>,
     cancel: State<'_, CancelToken>,
     session: State<'_, Session>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<FinetuneResult, AppError> {
     let active_session = session.require()?;
     let space_id = active_session.space_id.clone();
@@ -240,7 +239,7 @@ pub async fn fine_tune(
     let app_data2 = app_data.clone();
     let dir = models_dir(&app, &space_id)?;
 
-    let version = next_version(&dir);
+    let version = local_model_versions(&dir)?.last().copied().unwrap_or(0) + 1;
 
     // Resolve starting weights: active finetuned version, or none (train fresh).
     let active = get_active_version(&db, &space_id).await;
@@ -479,8 +478,6 @@ pub async fn fine_tune(
     }
 
     set_active_version(&db, &space_id, version).await?;
-    model_sync::register_trained_model(&db, &app, &space_id, version).await?;
-    debounce.notify_mutation();
 
     let _ = app.emit("training://done", ());
 
@@ -507,17 +504,8 @@ pub async fn list_models(
     let dir = models_dir(&app, &active_session.space_id)?;
     let active = get_active_version(&db, &active_session.space_id).await;
 
-    let versions = sqlx::query_file!(
-        "queries/training/list_model_versions.sql",
-        active_session.space_id
-    )
-    .fetch_all(db.inner())
-    .await
-    .map_err(|e| AppError::Db(format!("list_models: {e}")))?;
-
-    let mut cards: Vec<ModelCard> = Vec::new();
-    for row in versions {
-        let v = row.version as u32;
+    let mut cards = Vec::new();
+    for v in local_model_versions(&dir)? {
         if let Some(mut card) = read_card(&dir, v) {
             card.is_active = active == v;
             cards.push(card);
@@ -534,7 +522,6 @@ pub async fn set_active_model(
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
     session: State<'_, Session>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let active_session = session.require()?;
     let dir = models_dir(&app, &active_session.space_id)?;
@@ -546,7 +533,6 @@ pub async fn set_active_model(
     let weights = p;
 
     set_active_version(&db, &active_session.space_id, version).await?;
-    debounce.notify_mutation();
     let mut guard = classifier
         .lock()
         .map_err(|e| AppError::Internal(format!("lock: {e}")))?;
@@ -674,28 +660,19 @@ pub async fn delete_model(
     db: State<'_, DbPool>,
     classifier: State<'_, ClassifierState>,
     session: State<'_, Session>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let active_session = session.require()?;
     let space_id = active_session.space_id.clone();
     let dir = models_dir(&app, &space_id)?;
     let active = get_active_version(&db, &space_id).await;
 
-    // Remove the row from `model_versions` first so the change_log
-    // records the deletion before we touch the filesystem. The
-    // change_log trigger stamps this row with our own device_id; peers
-    // receive the DELETE via the change_log apply path and their
-    // model-sync phase GC removes the orphan files on their side.
-    sqlx::query_file!(
-        "queries/training/delete_model_version.sql",
-        space_id,
-        version
-    )
-    .execute(&*db)
-    .await
-    .map_err(|e| AppError::Db(format!("delete_model_version: {e}")))?;
-
-    model_sync::delete_local_files(&app, &space_id, version)?;
+    for path in [weights_path(&dir, version), card_path(&dir, version)] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(AppError::Io(format!("remove {}: {e}", path.display()))),
+        }
+    }
 
     // If the deleted version was active, unload the classifier — no model
     // is active until the user trains or activates another one.
@@ -721,8 +698,6 @@ pub async fn delete_model(
             let _ = cl.load_version(&weights_path(&dir, active));
         }
     }
-
-    debounce.notify_mutation();
 
     Ok(())
 }

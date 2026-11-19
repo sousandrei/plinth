@@ -1,1 +1,0 @@
-DELETE FROM space_settings WHERE space_id = ?1

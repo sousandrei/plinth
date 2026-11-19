@@ -22,9 +22,7 @@ tokio = { version = "1", features = [
     "rt",
     "rt-multi-thread",
     "macros",
-    "net",
-    "io-util",
-    "time",
+    "sync",
 ] }
 
 # SQLite — async pool with compile-time checked queries
@@ -46,10 +44,6 @@ getrandom = "0.4.3"
 
 # UUIDs for generated IDs
 uuid = { version = "1.23", features = ["v4"] }
-
-# P2P sync — local network discovery
-gethostname = "1"
-mdns-sd = "0.20"
 
 # Date/time formatting
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -78,14 +72,4 @@ burn-store = { version = "~0.21", default-features = false, features = ["std", "
 hf-hub = { version = "1.0.0" }
 tokenizers = "0.23.1"
 
-# For the passsword-authenticated key exchange (PAKE) protocol used in the P2P sync.
-chacha20poly1305 = "0.11"
-postcard = { version = "1", features = ["alloc"] }
-rcgen = "0.14.8"
-rustls-pemfile = "2"
-spake2 = "0.4"
 tauri-plugin-updater = "2.10.1"
-tokio-rustls = { version = "0.26", default-features = false, features = [
-    "ring",
-    "tls12",
-] }

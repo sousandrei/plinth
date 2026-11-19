@@ -1,25 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { listMySpaces, setActiveSpace } from '@/api/spaces';
-import { getDeviceName, getLocalAddress } from '@/api/sync';
 import { listUsers } from '@/api/users';
 import logoClean from '@/assets/logo-clean.svg';
 import { useAuth } from '@/context/AuthContext';
 import type { User } from '@/types';
-import { JoinStage } from './JoinStage';
 import { PinStage } from './PinStage';
 import { RegisterForm } from './RegisterForm';
 import { SpacePickerStage } from './SpacePickerStage';
 import { UserSelect } from './UserSelect';
 
-type Stage =
-  | 'loading'
-  | 'welcome'
-  | 'register'
-  | 'join'
-  | 'select'
-  | 'pin'
-  | 'space';
+type Stage = 'loading' | 'welcome' | 'register' | 'select' | 'pin' | 'space';
 type Direction = 'forward' | 'back';
 
 export const LoginPage = (): React.JSX.Element => {
@@ -33,18 +24,6 @@ export const LoginPage = (): React.JSX.Element => {
   const { data: users, isLoading } = useQuery({
     queryKey: ['users'],
     queryFn: listUsers,
-  });
-
-  const { data: deviceName } = useQuery({
-    queryKey: ['device-name'],
-    queryFn: getDeviceName,
-    staleTime: Infinity,
-  });
-
-  const { data: localAddress } = useQuery({
-    queryKey: ['local-address'],
-    queryFn: getLocalAddress,
-    staleTime: Infinity,
   });
 
   useEffect(() => {
@@ -70,17 +49,6 @@ export const LoginPage = (): React.JSX.Element => {
     setDirection('forward');
     setPreviousStage(stage);
     setStage('register');
-  };
-
-  const handleJoin = () => {
-    setDirection('forward');
-    setPreviousStage(stage);
-    setStage('join');
-  };
-
-  const handleBackFromJoin = () => {
-    setDirection('back');
-    setStage(previousStage || 'welcome');
   };
 
   const handlePinSuccess = async (user: User) => {
@@ -116,11 +84,6 @@ export const LoginPage = (): React.JSX.Element => {
     }
   };
 
-  const handleJoined = (user: User, spaceId: string) => {
-    setUser(user);
-    setSpaceId(spaceId);
-  };
-
   const animClass =
     direction === 'forward'
       ? 'animate-slide-in-right'
@@ -133,12 +96,6 @@ export const LoginPage = (): React.JSX.Element => {
         <span className="text-sm font-semibold tracking-tight font-sans">
           Plinth
         </span>
-        {deviceName && (
-          <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">
-            {deviceName}
-            {localAddress ? ` · ${localAddress}` : ''}
-          </span>
-        )}
       </div>
 
       <div className="w-full max-w-sm px-6">
@@ -172,17 +129,6 @@ export const LoginPage = (): React.JSX.Element => {
               >
                 Get started
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setDirection('forward');
-                  setPreviousStage('welcome');
-                  setStage('join');
-                }}
-                className="w-full px-4 py-3 text-sm font-mono border border-border-muted bg-canvas-raised text-foreground transition-all duration-150 active:scale-[0.98] hover:border-accent hover:bg-accent-muted/20"
-              >
-                Join an existing space
-              </button>
             </div>
           </div>
         )}
@@ -193,19 +139,12 @@ export const LoginPage = (): React.JSX.Element => {
           </div>
         )}
 
-        {stage === 'join' && (
-          <div key="join" className={animClass}>
-            <JoinStage onSuccess={handleJoined} onBack={handleBackFromJoin} />
-          </div>
-        )}
-
         {stage === 'select' && users && (
           <div key="select" className={animClass}>
             <UserSelect
               users={users}
               onSelect={goToPin}
               onAdd={handleAddUser}
-              onJoin={handleJoin}
             />
           </div>
         )}

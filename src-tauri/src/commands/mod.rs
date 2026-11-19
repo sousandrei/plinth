@@ -5,7 +5,6 @@ pub mod categories;
 pub mod minilm;
 pub mod settings;
 pub mod spaces;
-pub mod sync;
 pub mod training;
 pub mod transactions;
 pub mod updater;

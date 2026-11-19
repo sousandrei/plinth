@@ -26,7 +26,7 @@ const accounts: Account[] = [
     name: 'Investment',
     currency: 'USD',
     account_type: 'investment',
-    account_source: 'sync',
+    account_source: 'import',
     color: '#f97316',
     space_id: 'space-1',
   },

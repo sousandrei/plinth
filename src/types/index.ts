@@ -138,45 +138,6 @@ export interface AccountSummary {
   balance: number; // minor units
 }
 
-export interface PeerInfo {
-  device_id: string;
-  name: string;
-  host: string;
-  port: number;
-  last_seen: number;
-}
-
-export interface TrustedDevice {
-  id: string;
-  space_id: string;
-  device_id: string;
-  display_name: string;
-  paired_at: string;
-}
-
-export interface PairToken {
-  token: string;
-  address: string;
-  expires_at_unix: number;
-}
-
-export interface JoinResult {
-  space_id: string;
-  space_name: string;
-}
-
-export interface SyncSummary {
-  dialed: number;
-  ok: number;
-  failed: SyncFailure[];
-}
-
-export interface SyncFailure {
-  device_id: string;
-  name: string;
-  error: string;
-}
-
 // ---------------------------------------------------------------------------
 // Space export / import
 // ---------------------------------------------------------------------------

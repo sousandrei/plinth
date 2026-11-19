@@ -3,7 +3,6 @@ mod commands;
 mod db;
 mod error;
 mod import;
-mod sync;
 
 pub use error::AppError;
 use std::sync::{Arc, Mutex};
@@ -123,16 +122,6 @@ pub fn run() {
             app.manage(commands::training::CancelToken::default());
             app.manage(Session::new());
 
-            let db = app.state::<db::DbPool>().inner().clone();
-            let app_handle = app.handle().clone();
-            let runtime = tauri::async_runtime::block_on(async move {
-                sync::startup::start(app_handle, db).await
-            })?;
-            app.manage(runtime.peers.clone());
-            app.manage(runtime.pairing.clone());
-            app.manage(runtime.debounce.clone());
-            app.manage(runtime.in_flight.clone());
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -155,7 +144,6 @@ pub fn run() {
             commands::spaces::remove_space_member,
             commands::spaces::leave_space,
             commands::spaces::delete_space,
-            commands::spaces::evict_space,
             commands::spaces::rename_space,
             commands::spaces::update_member_role,
             commands::accounts::list_accounts,
@@ -197,16 +185,6 @@ pub fn run() {
             commands::minilm::ensure_minilm,
             commands::settings::get_app_setting,
             commands::settings::set_app_setting,
-            commands::sync::list_peers,
-            commands::sync::force_sync_now,
-            commands::sync::list_trusted_devices,
-            commands::sync::remove_trusted_device,
-            commands::sync::generate_pair_token,
-            commands::sync::accept_pair_token,
-            commands::sync::accept_pair_token_from_peer,
-            commands::sync::join_space,
-            commands::sync::get_device_name,
-            commands::sync::get_local_address,
             commands::spaces::export_space_data,
             commands::spaces::import_space_data,
             commands::updater::restart_app,

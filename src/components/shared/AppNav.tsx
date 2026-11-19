@@ -2,7 +2,6 @@ import { CaretDown } from '@phosphor-icons/react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import { logout } from '@/api/spaces';
 import logoClean from '@/assets/logo-clean.svg';
-import { OnlineIndicator } from '@/components/shared/OnlineIndicator';
 import { Avatar } from '@/components/ui/Avatar';
 import { useAuth } from '@/context/AuthContext';
 import { useDemoMode } from '@/hooks/useDemoMode';
@@ -186,8 +185,6 @@ export const AppNav = (): React.JSX.Element => {
 
           {/* Right — Avatar dropdown */}
           <div className="flex items-stretch gap-3">
-            <OnlineIndicator />
-
             <div className="relative h-full group flex items-center">
               <Avatar name={user?.name ?? '?'} />
 

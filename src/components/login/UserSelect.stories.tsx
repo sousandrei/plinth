@@ -30,19 +30,13 @@ const meta = {
 export default meta;
 
 export const Default = {
-  render: () => (
-    <UserSelect users={users} onSelect={noop} onAdd={noop} onJoin={noop} />
-  ),
+  render: () => <UserSelect users={users} onSelect={noop} onAdd={noop} />,
 };
 
 export const SingleUser = {
-  render: () => (
-    <UserSelect users={[users[0]]} onSelect={noop} onAdd={noop} onJoin={noop} />
-  ),
+  render: () => <UserSelect users={[users[0]]} onSelect={noop} onAdd={noop} />,
 };
 
 export const NoUsers = {
-  render: () => (
-    <UserSelect users={[]} onSelect={noop} onAdd={noop} onJoin={noop} />
-  ),
+  render: () => <UserSelect users={[]} onSelect={noop} onAdd={noop} />,
 };

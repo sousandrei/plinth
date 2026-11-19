@@ -3,10 +3,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
-use crate::{
-    Session, commands::spaces::create_space_for_user, db::DbPool, error::AppError,
-    sync::debounce::DebounceSender,
-};
+use crate::{Session, commands::spaces::create_space_for_user, db::DbPool, error::AppError};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct User {
@@ -32,7 +29,6 @@ pub async fn create_user(
     name: String,
     db: State<'_, DbPool>,
     session: State<'_, Session>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<User, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
@@ -57,17 +53,11 @@ pub async fn create_user(
         .await
         .map_err(|e| AppError::Db(format!("create_user fetch: {e}")))?;
 
-    debounce.notify_mutation();
     Ok(user)
 }
 
 #[tauri::command]
-pub async fn set_pin(
-    user_id: String,
-    pin: String,
-    db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
-) -> Result<(), AppError> {
+pub async fn set_pin(user_id: String, pin: String, db: State<'_, DbPool>) -> Result<(), AppError> {
     if pin.len() < 4 {
         return Err(AppError::InvalidInput(
             "PIN must be at least 4 digits".into(),
@@ -92,7 +82,6 @@ pub async fn set_pin(
         return Err(AppError::NotFound(format!("user {user_id}")));
     }
 
-    debounce.notify_mutation();
     Ok(())
 }
 
@@ -143,7 +132,6 @@ pub async fn update_user_name(
     user_id: String,
     name: String,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<User, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
@@ -167,7 +155,6 @@ pub async fn update_user_name(
         .await
         .map_err(|e| AppError::Db(format!("update_user_name fetch: {e}")))?;
 
-    debounce.notify_mutation();
     Ok(user)
 }
 
@@ -200,7 +187,6 @@ pub async fn create_user_in_space(
     space_id: String,
     db: State<'_, DbPool>,
     session: State<'_, Session>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<User, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
@@ -243,7 +229,6 @@ pub async fn create_user_in_space(
         .await
         .map_err(|e| AppError::Db(format!("create_user_in_space fetch: {e}")))?;
 
-    debounce.notify_mutation();
     Ok(user)
 }
 

@@ -9,7 +9,6 @@ import {
   renameSpace,
   updateMemberRole,
 } from '@/api/spaces';
-import { forceSyncNow } from '@/api/sync';
 import { addAppUser, listUsers, removeUser } from '@/api/users';
 import { Button } from '@/components/ui/Button';
 import {
@@ -20,10 +19,8 @@ import {
 } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
-import { toast } from '@/components/ui/Toast';
 import { Toggle } from '@/components/ui/Toggle';
 import type { Space, SpaceMember } from '@/types';
-import { DevicesSection } from './DevicesSection';
 
 interface SpaceEditDialogProps {
   space: Space;
@@ -139,40 +136,6 @@ export const SpaceEditDialog = ({
       queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
       onDeleted();
     },
-  });
-
-  const syncNowMutation = useMutation({
-    mutationFn: forceSyncNow,
-    onSuccess: (summary) => {
-      const { dialed, ok, failed } = summary;
-      if (dialed === 0) {
-        toast.warning(
-          'No peers dialled',
-          'No trusted devices are on the network right now.',
-        );
-        return;
-      }
-      if (failed.length === 0) {
-        toast.success(
-          'Sync complete',
-          `Synced with ${ok} ${ok === 1 ? 'peer' : 'peers'}.`,
-        );
-        return;
-      }
-      if (ok === 0) {
-        toast.error(
-          'Sync failed',
-          `${failed.map((f) => `${f.name}: ${f.error}`).join('; ')}`,
-        );
-        return;
-      }
-      const failedNames = failed.map((f) => f.name).join(', ');
-      toast.warning(
-        'Sync partial',
-        `Synced with ${ok} of ${dialed}; ${failedNames} failed.`,
-      );
-    },
-    onError: (e) => toast.error('Sync failed', String(e)),
   });
 
   const roleOptions = [
@@ -352,8 +315,6 @@ export const SpaceEditDialog = ({
         </div>
       )}
 
-      {isOwner && <DevicesSection spaceId={space.id} />}
-
       <div className="border-t border-border-subtle pt-4 flex gap-2">
         {isOwner ? (
           <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -410,14 +371,6 @@ export const SpaceEditDialog = ({
             {leaveMutation.isPending ? 'Leaving…' : 'Leave Space'}
           </Button>
         )}
-        <Button
-          variant="secondary"
-          onClick={() => syncNowMutation.mutate()}
-          disabled={syncNowMutation.isPending}
-          className="ml-auto text-xs rounded-none h-9"
-        >
-          {syncNowMutation.isPending ? 'Syncing…' : 'Sync Now'}
-        </Button>
       </div>
     </div>
   );

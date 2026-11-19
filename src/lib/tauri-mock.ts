@@ -6,8 +6,6 @@ const listCommands = new Set([
   'list_users',
   'list_my_spaces',
   'list_space_members',
-  'list_peers',
-  'list_trusted_devices',
   'list_models',
   'list_parsers',
   'list_parser_files',
@@ -24,8 +22,6 @@ const numberCommands = new Set([
 const defaultMocks: Record<string, unknown> = {
   get_session: null,
   get_app_setting: null,
-  get_device_name: 'Storybook',
-  get_local_address: '127.0.0.1',
   get_training_device: 'cpu',
 };
 

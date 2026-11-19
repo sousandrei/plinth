@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT name\nFROM spaces\nWHERE id = ?1 AND deleted = 0\n",
+  "query": "SELECT name\nFROM spaces\nWHERE id = ?1\n",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "606c03fc41f5b7e0a49e152879c99f83664bef88128092ba0cda52feff8dfd66"
+  "hash": "6992289620ff2496dd8cf18aff009951f1e11c1c967a1e1c5e9cd4e8c380d641"
 }

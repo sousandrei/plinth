@@ -39,7 +39,6 @@ const TYPE_LABELS: Record<string, string> = {
 const SOURCE_LABELS: Record<string, string> = {
   manual: 'Manual',
   import: 'Import',
-  sync: 'Sync',
 };
 
 interface AccountRowProps {

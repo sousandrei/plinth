@@ -9,7 +9,6 @@ import {
   setActiveSpace,
 } from '@/api/spaces';
 import { ImportDialog } from '@/components/spaces/ImportDialog';
-import { JoinSpaceModal } from '@/components/spaces/JoinSpaceModal';
 import { SpaceEditDialog } from '@/components/spaces/SpaceEditDialog';
 import { Button } from '@/components/ui/Button';
 import {
@@ -33,7 +32,6 @@ function SpacesPage(): React.JSX.Element {
   const [editingSpace, setEditingSpace] = useState<Space | null>(null);
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
   const [newSpaceName, setNewSpaceName] = useState('');
-  const [joinOpen, setJoinOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [exportMsg, setExportMsg] = useState('');
   const [exportErr, setExportErr] = useState('');
@@ -123,34 +121,6 @@ function SpacesPage(): React.JSX.Element {
               <ImportDialog
                 spaces={spaces}
                 onClose={() => setImportOpen(false)}
-              />
-            </DialogContent>
-          </Dialog>
-
-          <Dialog open={joinOpen} onOpenChange={setJoinOpen}>
-            <DialogTrigger
-              render={
-                <Button
-                  variant="secondary"
-                  className="text-xs rounded-none h-9"
-                >
-                  Join Space
-                </Button>
-              }
-            />
-            <DialogContent
-              title="Join Space"
-              description="Connect to another device on your local network."
-            >
-              <JoinSpaceModal
-                onClose={() => setJoinOpen(false)}
-                onJoined={(sid) => {
-                  setActiveSpace(sid).then(() => {
-                    setSpaceId(sid);
-                    setJoinOpen(false);
-                    queryClient.invalidateQueries({ queryKey: ['my-spaces'] });
-                  });
-                }}
               />
             </DialogContent>
           </Dialog>

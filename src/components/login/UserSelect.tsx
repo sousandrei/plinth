@@ -5,14 +5,12 @@ interface UserSelectProps {
   users: User[];
   onSelect: (user: User) => void;
   onAdd: () => void;
-  onJoin: () => void;
 }
 
 export const UserSelect = ({
   users,
   onSelect,
   onAdd,
-  onJoin,
 }: UserSelectProps): React.JSX.Element => (
   <div className="flex flex-col items-center gap-6 animate-slide-in-right">
     <div className="text-center">
@@ -54,13 +52,6 @@ export const UserSelect = ({
         className="w-full px-4 py-2.5 text-xs font-mono uppercase tracking-widest border border-border-muted bg-canvas-raised text-foreground transition-all duration-150 active:scale-[0.98] hover:border-accent hover:bg-accent-muted/20"
       >
         Add user
-      </button>
-      <button
-        type="button"
-        onClick={onJoin}
-        className="w-full px-4 py-2.5 text-xs font-mono uppercase tracking-widest border border-border-muted bg-canvas-raised text-foreground transition-all duration-150 active:scale-[0.98] hover:border-accent hover:bg-accent-muted/20"
-      >
-        Join a space
       </button>
     </div>
   </div>

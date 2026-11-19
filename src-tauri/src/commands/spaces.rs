@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     ClassifierState, Session, commands::training::load_active_classifier, db::DbPool,
-    error::AppError, sync::debounce::DebounceSender, sync::gc,
+    error::AppError,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
@@ -184,7 +184,6 @@ pub async fn create_space(
     name: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<Space, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("space name cannot be empty".into()));
@@ -210,7 +209,6 @@ pub async fn create_space(
         })
         .ok_or_else(|| AppError::Internal("create_space: not found after insert".into()))?;
 
-    debounce.notify_mutation();
     Ok(space)
 }
 
@@ -300,7 +298,6 @@ pub async fn add_space_member(
     user_id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -318,7 +315,6 @@ pub async fn add_space_member(
     .await
     .map_err(|e| AppError::Db(format!("add_space_member: {e}")))?;
 
-    debounce.notify_mutation();
     Ok(())
 }
 
@@ -327,7 +323,6 @@ pub async fn remove_space_member(
     user_id: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -347,7 +342,6 @@ pub async fn remove_space_member(
     .await
     .map_err(|e| AppError::Db(format!("remove_space_member: {e}")))?;
 
-    debounce.notify_mutation();
     Ok(())
 }
 
@@ -355,7 +349,6 @@ pub async fn remove_space_member(
 pub async fn leave_space(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
 
@@ -380,7 +373,6 @@ pub async fn leave_space(
     .await
     .map_err(|e| AppError::Db(format!("leave_space: {e}")))?;
 
-    debounce.notify_mutation();
     session.clear_space()?;
     Ok(())
 }
@@ -389,123 +381,16 @@ pub async fn leave_space(
 pub async fn delete_space(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
 
-    let space_id = &data.space_id;
-    let mut tx = db
-        .inner()
-        .begin()
+    sqlx::query_file!("queries/spaces/delete_space.sql", data.space_id)
+        .execute(db.inner())
         .await
-        .map_err(|e| AppError::Db(format!("delete_space begin: {e}")))?;
-
-    // Soft-delete the space row (no change_log entry — the update trigger
-    // has WHEN NEW.deleted = 0).
-    sqlx::query_file!("queries/spaces/soft_delete_space.sql", space_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space soft_delete: {e}")))?;
-
-    // Delete child data. Triggers fire for each deletion, populating
-    // change_log with entries that sync will ship to peers.
-    // trusted_devices and evicted_devices are preserved so that sync
-    // queries (which INNER JOIN spaces) continue to match the soft-deleted
-    // space until all peers have consumed the deletion changes.
-    sqlx::query_file!("queries/spaces/delete_space_members.sql", space_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space members: {e}")))?;
-
-    sqlx::query_file!("queries/spaces/delete_space_settings.sql", space_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space settings: {e}")))?;
-
-    sqlx::query_file!("queries/spaces/delete_space_categories.sql", space_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space categories: {e}")))?;
-
-    // Delete transactions and account_summaries before accounts — the
-    // change_log triggers on those tables look up space_id from the accounts
-    // row, which must still exist.
-    sqlx::query_file!("queries/spaces/delete_space_transactions.sql", space_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space transactions: {e}")))?;
-
-    sqlx::query_file!(
-        "queries/spaces/delete_space_account_summaries.sql",
-        space_id
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::Db(format!("delete_space summaries: {e}")))?;
-
-    sqlx::query_file!("queries/spaces/delete_space_accounts.sql", space_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space accounts: {e}")))?;
-
-    // NOT deleted: trusted_devices, evicted_devices (needed for sync queries
-    // to still match), sync_cursors (needed by GC all_peers_consumed pass),
-    // sync_conflicts (harmless, cleaned up by 90-day cap if needed).
-
-    // Increment sync_seq one more time so the space delete entry has a seq
-    // higher than all the child-table deletes above.
-    sqlx::query_file!("queries/spaces/increment_sync_seq.sql")
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space increment_seq: {e}")))?;
-
-    // Manually insert a 'delete' change_log entry for the space itself.
-    sqlx::query_file!("queries/spaces/insert_space_delete_changelog.sql", space_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space changelog: {e}")))?;
-
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space commit: {e}")))?;
-
-    gc::run(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("delete_space gc: {e}")))?;
+        .map_err(|e| AppError::Db(format!("delete_space: {e}")))?;
 
     session.clear_space()?;
-    debounce.notify_mutation();
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn evict_space(
-    space_id: String,
-    session: State<'_, Session>,
-    db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
-) -> Result<(), AppError> {
-    sqlx::query_file!("queries/spaces/delete_space.sql", space_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("evict_space delete_space: {e}")))?;
-
-    sqlx::query_file!("queries/spaces/delete_change_log_for_space.sql", space_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| AppError::Db(format!("evict_space change_log: {e}")))?;
-
-    let session_active = if let Ok(data) = session.require() {
-        data.space_id == space_id
-    } else {
-        false
-    };
-    if session_active {
-        session.clear_space()?;
-    }
-
-    debounce.notify_mutation();
     Ok(())
 }
 
@@ -514,7 +399,6 @@ pub async fn rename_space(
     name: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -529,7 +413,6 @@ pub async fn rename_space(
         .await
         .map_err(|e| AppError::Db(format!("rename_space: {e}")))?;
 
-    debounce.notify_mutation();
     Ok(())
 }
 
@@ -539,7 +422,6 @@ pub async fn update_member_role(
     role: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
     require_owner(&data.space_id, &data.user_id, db.inner()).await?;
@@ -560,7 +442,6 @@ pub async fn update_member_role(
     .await
     .map_err(|e| AppError::Db(format!("update_member_role: {e}")))?;
 
-    debounce.notify_mutation();
     Ok(())
 }
 
@@ -650,7 +531,6 @@ pub async fn import_space_data(
     path: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
-    debounce: State<'_, DebounceSender>,
 ) -> Result<ImportResult, AppError> {
     let data = session.require_user()?;
     require_member(&space_id, &data.user_id, db.inner()).await?;
@@ -747,7 +627,6 @@ pub async fn import_space_data(
         .await
         .map_err(|e| AppError::Db(format!("import_space_data commit: {e}")))?;
 
-    debounce.notify_mutation();
     Ok(ImportResult {
         categories: payload.categories.len(),
         accounts: payload.accounts.len(),

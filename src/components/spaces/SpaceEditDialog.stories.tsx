@@ -41,16 +41,6 @@ const setupMocks = () => {
   });
   setMock('delete_space', null);
   setMock('leave_space', null);
-  setMock('force_sync_now', { dialed: 0, ok: 0, failed: [] });
-  setMock('list_trusted_devices', []);
-  setMock('get_local_device_id', 'dev-local');
-  setMock('get_device_name', 'Storybook');
-  setMock('get_local_address', '127.0.0.1');
-  setMock('generate_pair_token', {
-    token: '482916',
-    address: '127.0.0.1',
-    expires_at_unix: Math.floor(Date.now() / 1000) + 120,
-  });
 };
 
 const meta = {
