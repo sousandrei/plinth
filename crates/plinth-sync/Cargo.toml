@@ -11,4 +11,7 @@ serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
+mdns-sd = "0.20"
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3"
