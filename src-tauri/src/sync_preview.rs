@@ -3,7 +3,10 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -29,6 +32,7 @@ struct PreviewStore {
     _profile_lock: File,
     directory: PathBuf,
     store: Mutex<Option<Store>>,
+    revision: AtomicU64,
 }
 
 pub(crate) enum PeerConnection {
@@ -147,6 +151,7 @@ impl SyncPreview {
                 _profile_lock: profile_lock,
                 directory,
                 store: Mutex::new(Some(store)),
+                revision: AtomicU64::new(0),
             }))))
         })
         .await
@@ -155,6 +160,12 @@ impl SyncPreview {
 
     pub(crate) fn active(&self) -> bool {
         self.0.is_some()
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.0
+            .as_ref()
+            .map_or(0, |inner| inner.revision.load(Ordering::Relaxed))
     }
 
     #[cfg(test)]
@@ -188,6 +199,9 @@ impl SyncPreview {
             apply_pending_transaction_edit(&mut *conn, &edit).await?;
             self.with_store(move |store| store.complete_edit(edit.sequence))
                 .await?;
+            if let Some(inner) = &self.0 {
+                inner.revision.fetch_add(1, Ordering::Relaxed);
+            }
         }
         Ok(())
     }
@@ -229,7 +243,7 @@ impl SyncPreview {
         .map_err(task_error)?
     }
 
-    async fn exchange_step(
+    pub(crate) async fn exchange_step(
         &self,
         db: &DbPool,
         mut session: PeerSession,
@@ -262,7 +276,7 @@ impl SyncPreview {
         .map_err(task_error)?
     }
 
-    async fn with_store<T: Send + 'static>(
+    pub(crate) async fn with_store<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Store) -> Result<T, plinth_sync::Error> + Send + 'static,
     ) -> Result<T, AppError> {

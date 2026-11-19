@@ -32,6 +32,14 @@ pub struct PendingEdit {
     pub fields: Fields,
 }
 
+#[derive(Debug, Clone)]
+pub struct PairedDevice {
+    pub space_id: String,
+    pub name: String,
+    pub certificate: Vec<u8>,
+    pub address: Option<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("SQLite: {0}")]
@@ -84,6 +92,13 @@ impl Store {
                  space_id TEXT NOT NULL,
                  record_id TEXT NOT NULL,
                  fields BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS paired_devices (
+                 space_id TEXT NOT NULL,
+                 certificate BLOB NOT NULL,
+                 name TEXT NOT NULL,
+                 address TEXT,
+                 PRIMARY KEY (space_id, certificate)
              );",
         )?;
 
@@ -91,6 +106,40 @@ impl Store {
             db,
             actor: AutoCommit::new().get_actor().clone(),
         })
+    }
+
+    pub fn pair_device(&self, peer: &PairedDevice) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO paired_devices (space_id, certificate, name, address)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (space_id, certificate) DO UPDATE
+             SET name = excluded.name, address = COALESCE(excluded.address, paired_devices.address)",
+            params![peer.space_id, peer.certificate, peer.name, peer.address],
+        )?;
+        Ok(())
+    }
+
+    pub fn unpair_device(&self, space_id: &str, certificate: &[u8]) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM paired_devices WHERE space_id = ?1 AND certificate = ?2",
+            params![space_id, certificate],
+        )?;
+        Ok(())
+    }
+
+    pub fn paired_devices(&self) -> Result<Vec<PairedDevice>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT space_id, certificate, name, address FROM paired_devices ORDER BY space_id, name",
+        )?;
+        let rows = query.query_map([], |row| {
+            Ok(PairedDevice {
+                space_id: row.get(0)?,
+                certificate: row.get(1)?,
+                name: row.get(2)?,
+                address: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Save a single edit containing the fields that the user changed.

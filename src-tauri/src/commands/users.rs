@@ -280,7 +280,9 @@ pub async fn factory_reset(
     app: tauri::AppHandle,
     db: State<'_, DbPool>,
     preview: State<'_, crate::sync_preview::SyncPreview>,
+    network: State<'_, crate::sync_network::SyncNetwork>,
 ) -> Result<(), AppError> {
+    network.stop();
     // 1. Close the database pool so connections are terminated
     db.close().await;
 
@@ -309,6 +311,20 @@ pub async fn factory_reset(
     }
 
     preview.reset().await?;
+    let identity = data_dir.join("sync-device");
+    if identity.exists() {
+        for name in ["peer.der", "key.der"] {
+            let path = identity.join(name);
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|e| {
+                    AppError::Io(format!("factory_reset: delete sync identity: {e}"))
+                })?;
+            }
+        }
+        std::fs::remove_dir(identity).map_err(|e| {
+            AppError::Io(format!("factory_reset: delete sync identity folder: {e}"))
+        })?;
+    }
 
     // 4. Restart the app
     app.restart();

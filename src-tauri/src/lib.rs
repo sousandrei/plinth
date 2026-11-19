@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod import;
+mod sync_network;
 mod sync_preview;
 
 pub use error::AppError;
@@ -156,6 +157,10 @@ pub fn run() {
             commands::transactions::bulk_categorize_transactions,
             sync_preview::sync_preview_exchange,
             sync_preview::discover_sync_peers,
+            sync_network::create_sync_invitation,
+            sync_network::join_shared_space,
+            sync_network::list_sync_devices,
+            sync_network::remove_sync_device,
             commands::categories::list_all_categories,
             commands::categories::create_category,
             commands::categories::delete_category,

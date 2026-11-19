@@ -114,8 +114,8 @@ pub struct ImportResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct SyncSeed {
-    space_id: String,
+pub(crate) struct SyncSeed {
+    pub(crate) space_id: String,
     snapshot: ExportPayload,
 }
 
@@ -547,6 +547,7 @@ pub async fn import_space_data(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     preview: State<'_, SyncPreview>,
+    app: AppHandle,
 ) -> Result<ImportResult, AppError> {
     let data = session.require_user()?;
     require_member(&space_id, &data.user_id, db.inner()).await?;
@@ -578,7 +579,20 @@ pub async fn import_space_data(
         .map_err(|e| AppError::Db(format!("import_space_data clear categories: {e}")))?;
 
     // Restoring a backup into an existing preview preserves its shared edits.
-    write_space_export(&mut tx, &space_id, &payload, preview.active()).await?;
+    let preserve_edits = if app.config().identifier == crate::sync_preview::IDENTIFIER {
+        true
+    } else {
+        let scope = space_id.clone();
+        preview
+            .with_store(move |store| {
+                Ok(store
+                    .paired_devices()?
+                    .iter()
+                    .any(|peer| peer.space_id == scope))
+            })
+            .await?
+    };
+    write_space_export(&mut tx, &space_id, &payload, preserve_edits).await?;
     tx.commit()
         .await
         .map_err(|e| AppError::Db(format!("import_space_data commit: {e}")))?;
@@ -694,7 +708,11 @@ pub async fn export_sync_seed(
     .map_err(|e| AppError::Internal(format!("export sync seed: {e}")))?
 }
 
-async fn make_sync_seed(db: &DbPool, space_id: &str, user_id: &str) -> Result<SyncSeed, AppError> {
+pub(crate) async fn make_sync_seed(
+    db: &DbPool,
+    space_id: &str,
+    user_id: &str,
+) -> Result<SyncSeed, AppError> {
     let mut tx = db.begin().await?;
     require_owner(space_id, user_id, &mut *tx).await?;
     let snapshot = read_space_export(&mut tx, space_id).await?;
@@ -711,8 +729,9 @@ pub async fn import_sync_seed(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     preview: State<'_, SyncPreview>,
+    app: AppHandle,
 ) -> Result<String, AppError> {
-    if !preview.active() {
+    if !preview.active() || app.config().identifier != crate::sync_preview::IDENTIFIER {
         return Err(AppError::Forbidden);
     }
     let user = session.require_user()?;
@@ -727,7 +746,21 @@ pub async fn import_sync_seed(
     install_sync_seed(db.inner(), &user.user_id, seed).await
 }
 
-async fn install_sync_seed(db: &DbPool, user_id: &str, seed: SyncSeed) -> Result<String, AppError> {
+pub(crate) async fn install_sync_seed(
+    db: &DbPool,
+    user_id: &str,
+    seed: SyncSeed,
+) -> Result<String, AppError> {
+    let space_id = seed.space_id.clone();
+    prepare_sync_seed(db, user_id, seed).await?.commit().await?;
+    Ok(space_id)
+}
+
+pub(crate) async fn prepare_sync_seed(
+    db: &DbPool,
+    user_id: &str,
+    seed: SyncSeed,
+) -> Result<sqlx::Transaction<'static, Sqlite>, AppError> {
     let SyncSeed { space_id, snapshot } = seed;
     if snapshot.version != 1 || space_id.trim().is_empty() {
         return Err(AppError::InvalidInput(
@@ -806,15 +839,14 @@ async fn install_sync_seed(db: &DbPool, user_id: &str, seed: SyncSeed) -> Result
     .execute(&mut *tx)
     .await?;
     write_space_export(&mut tx, &space_id, &snapshot, false).await?;
-    tx.commit().await?;
-    Ok(space_id)
+    Ok(tx)
 }
 
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 
-async fn require_owner<'a>(
+pub(crate) async fn require_owner<'a>(
     space_id: &str,
     user_id: &str,
     db: impl Executor<'a, Database = Sqlite>,
@@ -831,7 +863,11 @@ async fn require_owner<'a>(
     }
 }
 
-async fn require_member(space_id: &str, user_id: &str, db: &DbPool) -> Result<(), AppError> {
+pub(crate) async fn require_member(
+    space_id: &str,
+    user_id: &str,
+    db: &DbPool,
+) -> Result<(), AppError> {
     let row = sqlx::query_file!("queries/spaces/get_member_role.sql", space_id, user_id)
         .fetch_optional(db)
         .await

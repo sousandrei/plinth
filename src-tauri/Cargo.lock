@@ -2910,6 +2910,7 @@ dependencies = [
 name = "desktop"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "boa_engine",
  "burn",
  "burn-store",
@@ -2925,7 +2926,9 @@ dependencies = [
  "rust-argon2",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
+ "subtle",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

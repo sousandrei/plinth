@@ -21,6 +21,18 @@ pub struct DiscoveredPeer {
     pub addresses: Vec<SocketAddr>,
 }
 
+pub struct Advertisement(ServiceDaemon);
+
+impl Drop for Advertisement {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown();
+    }
+}
+
+pub fn advertise_managed(name: &str, addr: SocketAddr) -> Result<Advertisement> {
+    advertise(name, addr).map(Advertisement)
+}
+
 pub fn advertise(name: &str, addr: SocketAddr) -> Result<ServiceDaemon> {
     if name.is_empty()
         || name.len() > 48

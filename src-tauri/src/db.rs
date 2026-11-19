@@ -6,7 +6,7 @@ use sqlx::{
 };
 use tauri::Manager;
 
-use crate::sync_preview::{IDENTIFIER, SyncPreview};
+use crate::{sync_network::SyncNetwork, sync_preview::SyncPreview};
 
 pub type DbPool = SqlitePool;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -14,14 +14,12 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 pub async fn setup(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
-    let preview = if app.config().identifier == IDENTIFIER {
-        SyncPreview::open(data_dir.clone()).await?
-    } else {
-        SyncPreview::default()
-    };
+    let preview = SyncPreview::open(data_dir.clone()).await?;
     let pool = init(&data_dir.join("plinth.db"), &preview).await?;
+    let network = SyncNetwork::start(&data_dir, pool.clone(), preview.clone(), app.clone()).await?;
     app.manage(preview);
     app.manage(pool);
+    app.manage(network);
     Ok(())
 }
 
