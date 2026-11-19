@@ -14,6 +14,63 @@ pub struct User {
     pub updated_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct JoinProfile {
+    name: Option<String>,
+    pin: String,
+}
+
+impl JoinProfile {
+    pub(crate) fn validate(&self, same_user: bool) -> Result<(), AppError> {
+        if !same_user
+            && self
+                .name
+                .as_deref()
+                .is_none_or(|name| name.trim().is_empty())
+        {
+            return Err(AppError::InvalidInput("enter a name".into()));
+        }
+        if self.pin.len() != 4 || !self.pin.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(AppError::InvalidInput("enter a four-digit PIN".into()));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn create_join_user(
+    conn: &mut sqlx::SqliteConnection,
+    profile: JoinProfile,
+    identity: Option<(String, String)>,
+    fresh_device: bool,
+) -> Result<String, AppError> {
+    profile.validate(identity.is_some())?;
+    if fresh_device {
+        let users = sqlx::query_file!("queries/users/count_all_users.sql")
+            .fetch_one(&mut *conn)
+            .await?;
+        if users.count != 0 {
+            return Err(AppError::Unauthorized);
+        }
+    }
+    let (id, name) =
+        identity.unwrap_or_else(|| (Uuid::new_v4().to_string(), profile.name.unwrap_or_default()));
+    if Uuid::parse_str(&id).is_err() || name.trim().is_empty() {
+        return Err(AppError::InvalidInput("invalid shared profile".into()));
+    }
+    let name = name.trim();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let hash = tokio::task::spawn_blocking(move || hash_pin(&profile.pin))
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))??;
+    sqlx::query_file!("queries/users/create_user.sql", id, name, now, now)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query_file!("queries/users/set_pin.sql", hash, now, id)
+        .execute(conn)
+        .await?;
+    Ok(id)
+}
+
 #[tauri::command]
 pub async fn list_users(db: State<'_, DbPool>) -> Result<Vec<User>, AppError> {
     let users = sqlx::query_file_as!(User, "queries/users/list_users.sql")
@@ -64,11 +121,7 @@ pub async fn set_pin(user_id: String, pin: String, db: State<'_, DbPool>) -> Res
         ));
     }
 
-    let mut salt = [0u8; 16];
-    fill(&mut salt).map_err(|e| AppError::Internal(format!("set_pin rng: {e}")))?;
-
-    let hash = argon2::hash_encoded(pin.as_bytes(), &salt, &argon2::Config::default())
-        .map_err(|e| AppError::Internal(format!("set_pin hash: {e}")))?;
+    let hash = hash_pin(&pin)?;
 
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -83,6 +136,13 @@ pub async fn set_pin(user_id: String, pin: String, db: State<'_, DbPool>) -> Res
     }
 
     Ok(())
+}
+
+fn hash_pin(pin: &str) -> Result<String, AppError> {
+    let mut salt = [0u8; 16];
+    fill(&mut salt).map_err(|e| AppError::Internal(format!("set_pin rng: {e}")))?;
+    argon2::hash_encoded(pin.as_bytes(), &salt, &argon2::Config::default())
+        .map_err(|e| AppError::Internal(format!("set_pin hash: {e}")))
 }
 
 #[tauri::command]

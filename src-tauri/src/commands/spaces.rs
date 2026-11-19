@@ -773,6 +773,16 @@ pub(crate) async fn prepare_sync_seed(
     user_id: &str,
     seed: SyncSeed,
 ) -> Result<sqlx::Transaction<'static, Sqlite>, AppError> {
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    write_sync_seed(&mut tx, user_id, seed).await?;
+    Ok(tx)
+}
+
+pub(crate) async fn write_sync_seed(
+    conn: &mut SqliteConnection,
+    user_id: &str,
+    seed: SyncSeed,
+) -> Result<(), AppError> {
     let SyncSeed { space_id, snapshot } = seed;
     if snapshot.version != 1 || space_id.trim().is_empty() {
         return Err(AppError::InvalidInput(
@@ -820,13 +830,12 @@ pub(crate) async fn prepare_sync_seed(
     let records = serde_json::to_string(&snapshot)
         .map_err(|e| AppError::Internal(format!("encode sync seed: {e}")))?;
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
     let conflict = sqlx::query_file!(
         "queries/spaces/has_sync_seed_conflict.sql",
         space_id,
         records
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     if conflict.exists {
         return Err(AppError::InvalidInput(
@@ -839,7 +848,7 @@ pub(crate) async fn prepare_sync_seed(
         snapshot.space.name,
         now
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     sqlx::query_file!(
         "queries/spaces/add_space_member.sql",
@@ -848,10 +857,9 @@ pub(crate) async fn prepare_sync_seed(
         "owner",
         now
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
-    write_space_export(&mut tx, &space_id, &snapshot, false).await?;
-    Ok(tx)
+    write_space_export(conn, &space_id, &snapshot, false).await
 }
 
 // ---------------------------------------------------------------------------

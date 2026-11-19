@@ -22,13 +22,26 @@ export interface SpaceMember {
 
 export interface NearbySyncPeer {
   name: string;
+  display_name: string;
   addresses: string[];
 }
 
 export interface SyncInvitation {
-  code: string;
+  id: string;
   name: string;
   port: number;
+}
+
+export interface SyncPairing {
+  id: string;
+  device: string;
+  code: string;
+  same_user: boolean;
+}
+
+export interface JoinProfile {
+  name?: string;
+  pin: string;
 }
 
 export interface SyncDevice {

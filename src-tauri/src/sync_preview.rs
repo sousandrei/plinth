@@ -40,14 +40,12 @@ pub(crate) enum PeerConnection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NearbySyncPeer {
     pub name: String,
+    pub display_name: String,
     pub addresses: Vec<SocketAddr>,
 }
 
 #[tauri::command]
-pub async fn discover_sync_peers(
-    session: State<'_, Session>,
-) -> Result<Vec<NearbySyncPeer>, AppError> {
-    session.require_user()?;
+pub async fn discover_sync_peers() -> Result<Vec<NearbySyncPeer>, AppError> {
     let peers = tokio::task::spawn_blocking(discovery::discover_peers)
         .await
         .map_err(task_error)?
@@ -56,6 +54,7 @@ pub async fn discover_sync_peers(
         .into_iter()
         .map(|peer| NearbySyncPeer {
             name: peer.name,
+            display_name: peer.display_name,
             addresses: peer.addresses,
         })
         .collect())

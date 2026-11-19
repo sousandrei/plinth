@@ -18,6 +18,7 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(3);
 #[derive(Debug)]
 pub struct DiscoveredPeer {
     pub name: String,
+    pub display_name: String,
     pub addresses: Vec<SocketAddr>,
 }
 
@@ -33,7 +34,19 @@ pub fn advertise_managed(name: &str, addr: SocketAddr) -> Result<Advertisement> 
     advertise(name, addr).map(Advertisement)
 }
 
+pub fn advertise_invitation(name: &str, addr: SocketAddr, label: &str) -> Result<Advertisement> {
+    advertise_with_label(name, addr, Some(label)).map(Advertisement)
+}
+
 pub fn advertise(name: &str, addr: SocketAddr) -> Result<ServiceDaemon> {
+    advertise_with_label(name, addr, None)
+}
+
+fn advertise_with_label(
+    name: &str,
+    addr: SocketAddr,
+    label: Option<&str>,
+) -> Result<ServiceDaemon> {
     if name.is_empty()
         || name.len() > 48
         || !name
@@ -46,10 +59,15 @@ pub fn advertise(name: &str, addr: SocketAddr) -> Result<ServiceDaemon> {
     }
 
     let host = format!("plinth-{name}.local.");
+    let properties = label.map(|label| {
+        [("label".to_owned(), label.to_owned())]
+            .into_iter()
+            .collect()
+    });
     let info = if addr.ip().is_unspecified() {
-        ServiceInfo::new(SERVICE, name, &host, "", addr.port(), None)?.enable_addr_auto()
+        ServiceInfo::new(SERVICE, name, &host, "", addr.port(), properties)?.enable_addr_auto()
     } else {
-        ServiceInfo::new(SERVICE, name, &host, addr.ip(), addr.port(), None)?
+        ServiceInfo::new(SERVICE, name, &host, addr.ip(), addr.port(), properties)?
     };
     let daemon = ServiceDaemon::new()?;
     daemon.register(info)?;
@@ -87,6 +105,13 @@ pub fn discover_peers() -> Result<Vec<DiscoveredPeer>> {
                             key,
                             DiscoveredPeer {
                                 name: name.to_owned(),
+                                display_name: info
+                                    .get_property_val_str("label")
+                                    .unwrap_or(name)
+                                    .chars()
+                                    .filter(|c| !c.is_control())
+                                    .take(48)
+                                    .collect(),
                                 addresses,
                             },
                         );
@@ -180,7 +205,7 @@ mod tests {
             .map(|listener| listener.local_addr().unwrap());
         let names = ['a', 'b'].map(|suffix| format!("plinth-discovery-{}-{suffix}", process::id()));
         let advertisers = [
-            advertise(&names[0], addresses[0]).unwrap(),
+            advertise_with_label(&names[0], addresses[0], Some("Test computer")).unwrap(),
             advertise(&names[1], addresses[1]).unwrap(),
         ];
         let peers = discover_peers();
@@ -200,5 +225,7 @@ mod tests {
             assert!(matches[0].addresses.contains(&address));
         }
         assert!(named.unwrap().contains(&addresses[0]));
+        let invitation = peers.iter().find(|peer| peer.name == names[0]).unwrap();
+        assert_eq!(invitation.display_name, "Test computer");
     }
 }

@@ -21,7 +21,7 @@ pub const TLS_NAME: &str = "plinth-peer.local";
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const ALPN: &[u8] = b"plinth-sync/1";
-const ENROLLMENT_ALPN: &[u8] = b"plinth-enrollment/1";
+const ENROLLMENT_ALPN: &[u8] = b"plinth-enrollment/2";
 pub const MAX_ENROLLMENT_REQUEST: usize = 8 * 1024;
 pub const MAX_SPACE_SNAPSHOT: usize = 128 * 1024 * 1024;
 
@@ -87,7 +87,12 @@ impl Identity {
         Ok(())
     }
 
-    pub fn accept_enrollment(&self, mut socket: TcpStream) -> Result<impl Read + Write + use<>> {
+    pub fn accept_enrollment(
+        &self,
+        mut socket: TcpStream,
+    ) -> Result<(impl Read + Write + use<>, [u8; 32])> {
+        timeouts(&socket)?;
+        write_frame(&mut socket, self.certificate(), MAX_ENROLLMENT_REQUEST)?;
         let mut config =
             ServerConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
                 .with_safe_default_protocol_versions()?
@@ -95,17 +100,22 @@ impl Identity {
                 .with_single_cert(vec![self.cert.clone()], self.key.clone_key().into())?;
         config.alpn_protocols = vec![ENROLLMENT_ALPN.to_vec()];
         let mut conn = ServerConnection::new(Arc::new(config))?;
-        timeouts(&socket)?;
         conn.complete_io(&mut socket)?;
         check_protocol(conn.alpn_protocol(), ENROLLMENT_ALPN)?;
-        Ok(StreamOwned::new(conn, socket))
+        let binding = conn.export_keying_material([0; 32], b"plinth pairing confirmation", None)?;
+        enrollment_timeouts(&socket)?;
+        Ok((StreamOwned::new(conn, socket), binding))
     }
 
+    // The offered certificate is checked against TLS, then verified by comparing
+    // a confirmation code bound to the resulting connection on both devices.
     pub fn connect_enrollment(
         addr: SocketAddr,
-        host_certificate: &[u8],
-    ) -> Result<impl Read + Write + use<>> {
-        let cert = CertificateDer::from(host_certificate);
+    ) -> Result<(impl Read + Write + use<>, Vec<u8>, [u8; 32])> {
+        let mut socket = TcpStream::connect_timeout(&addr, TIMEOUT)?;
+        timeouts(&socket)?;
+        let certificate = read_frame(&mut socket, MAX_ENROLLMENT_REQUEST)?;
+        let cert = CertificateDer::from(certificate.as_slice());
         let mut roots = RootCertStore::empty();
         roots.add(cert.clone())?;
         let mut config =
@@ -115,14 +125,14 @@ impl Identity {
                 .with_no_client_auth();
         config.alpn_protocols = vec![ENROLLMENT_ALPN.to_vec()];
         let mut conn = ClientConnection::new(Arc::new(config), TLS_NAME.try_into()?)?;
-        let mut socket = TcpStream::connect_timeout(&addr, TIMEOUT)?;
-        timeouts(&socket)?;
         conn.complete_io(&mut socket)?;
         if conn.peer_certificates().and_then(|certs| certs.first()) != Some(&cert) {
-            return Err("enrollment host does not match the invitation".into());
+            return Err("pairing host presented a different certificate".into());
         }
         check_protocol(conn.alpn_protocol(), ENROLLMENT_ALPN)?;
-        Ok(StreamOwned::new(conn, socket))
+        let binding = conn.export_keying_material([0; 32], b"plinth pairing confirmation", None)?;
+        enrollment_timeouts(&socket)?;
+        Ok((StreamOwned::new(conn, socket), certificate, binding))
     }
 
     fn roots(&self) -> Result<RootCertStore> {
@@ -242,6 +252,11 @@ fn check_protocol(protocol: Option<&[u8]>, expected: &[u8]) -> Result<()> {
 fn timeouts(stream: &TcpStream) -> io::Result<()> {
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))
+}
+
+fn enrollment_timeouts(socket: &TcpStream) -> io::Result<()> {
+    socket.set_read_timeout(Some(Duration::from_secs(120)))?;
+    socket.set_write_timeout(Some(TIMEOUT))
 }
 
 fn send(stream: &mut impl Write, message: Option<&[u8]>) -> io::Result<()> {
@@ -370,35 +385,31 @@ mod tests {
 
     #[test]
     #[ignore = "requires localhost TCP"]
-    fn enrollment_is_pinned_to_the_invited_host() {
+    fn enrollment_derives_the_same_binding_on_both_peers() {
         let temp = tempfile::tempdir().unwrap();
         let host_dir = temp.path().join("host");
-        let other_dir = temp.path().join("other");
         Identity::init(&host_dir).unwrap();
-        Identity::init(&other_dir).unwrap();
         let host = Identity::with_certificates(&host_dir, vec![]).unwrap();
-        let other = Identity::with_certificates(&other_dir, vec![]).unwrap();
         let certificate = host.certificate().to_vec();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
-            assert!(host.accept_enrollment(socket).is_err());
-            let (socket, _) = listener.accept().unwrap();
-            let mut stream = host.accept_enrollment(socket).unwrap();
+            let (mut stream, binding) = host.accept_enrollment(socket).unwrap();
             assert_eq!(
                 read_frame(&mut stream, MAX_ENROLLMENT_REQUEST).unwrap(),
                 b"request"
             );
             write_frame(&mut stream, b"seed", MAX_SPACE_SNAPSHOT).unwrap();
+            binding
         });
-        assert!(Identity::connect_enrollment(address, other.certificate()).is_err());
-        let mut client = Identity::connect_enrollment(address, &certificate).unwrap();
+        let (mut client, received_cert, binding) = Identity::connect_enrollment(address).unwrap();
+        assert_eq!(received_cert, certificate);
         write_frame(&mut client, b"request", MAX_ENROLLMENT_REQUEST).unwrap();
         assert_eq!(
             read_frame(&mut client, MAX_SPACE_SNAPSHOT).unwrap(),
             b"seed"
         );
-        server.join().unwrap();
+        assert_eq!(server.join().unwrap(), binding);
     }
 }

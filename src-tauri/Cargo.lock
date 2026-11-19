@@ -2910,7 +2910,6 @@ dependencies = [
 name = "desktop"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "boa_engine",
  "burn",
  "burn-store",
@@ -2939,6 +2938,7 @@ dependencies = [
  "tokenizers 0.23.1",
  "tokio",
  "uuid",
+ "whoami",
 ]
 
 [[package]]

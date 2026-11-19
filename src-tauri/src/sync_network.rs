@@ -1,11 +1,11 @@
 use std::{
+    io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use plinth_sync::{
     PairedDevice, Session as PeerSession, discovery,
     transport::{self, Identity},
@@ -13,11 +13,18 @@ use plinth_sync::{
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tauri::{AppHandle, Emitter, State};
-use tokio::{net::TcpListener, sync::Semaphore, task::JoinHandle};
+use tokio::{
+    net::TcpListener,
+    sync::{Semaphore, oneshot},
+    task::JoinHandle,
+};
 
 use crate::{
     Session,
-    commands::spaces::{self, SyncSeed},
+    commands::{
+        spaces::{self, SyncSeed},
+        users::{JoinProfile, User, create_join_user},
+    },
     db::DbPool,
     error::AppError,
     sync_preview::{PeerConnection, SyncPreview, resolve_peer},
@@ -27,21 +34,13 @@ const INVITATION_TTL: Duration = Duration::from_secs(300);
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const SYNC_PORT: u16 = 37419;
 const INVITE_PORT: u16 = 37420;
-const INVITATION_PREFIX: &str = "plinth1.";
-
-#[derive(Serialize, Deserialize)]
-struct Invitation {
-    name: String,
-    port: u16,
-    certificate: Vec<u8>,
-    token: [u8; 24],
-}
+const CONFIRMATION_TTL: Duration = Duration::from_secs(90);
 
 #[derive(Serialize, Deserialize)]
 struct Enrollment {
-    token: [u8; 24],
     certificate: Vec<u8>,
     name: String,
+    label: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,20 +48,71 @@ struct Bootstrap {
     seed: SyncSeed,
     port: u16,
     name: String,
+    profile: Option<SharedProfile>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SharedProfile {
+    id: String,
+    name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PairingHost {
+    label: String,
+    same_user: bool,
+}
+
+struct ActiveInvitation {
+    id: String,
+    owner: String,
+    task: JoinHandle<()>,
 }
 
 struct Offer {
+    invitation_id: String,
     space_id: String,
     user_id: String,
-    token: [u8; 24],
+    same_user: bool,
     deadline: Instant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncInvitation {
-    pub code: String,
+    pub id: String,
     pub name: String,
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncPairing {
+    pub id: String,
+    pub device: String,
+    pub code: String,
+    pub same_user: bool,
+}
+
+struct IncomingPairing {
+    invitation_id: String,
+    owner: String,
+    request: SyncPairing,
+    decision: oneshot::Sender<bool>,
+}
+
+trait EnrollmentIo: Read + Write + Send {}
+impl<T: Read + Write + Send> EnrollmentIo for T {}
+
+struct OutgoingPairing {
+    request: SyncPairing,
+    stream: Box<dyn EnrollmentIo>,
+    certificate: Vec<u8>,
+    ip: IpAddr,
+    deadline: Instant,
+}
+
+enum JoinUser {
+    Existing(String),
+    New(JoinProfile, Option<String>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +139,9 @@ struct Network {
     directory: PathBuf,
     name: String,
     port: u16,
-    invite: Mutex<Option<JoinHandle<()>>>,
+    invite: Mutex<Option<ActiveInvitation>>,
+    incoming: Mutex<Option<IncomingPairing>>,
+    outgoing: Mutex<Option<OutgoingPairing>>,
     status: Mutex<std::collections::HashMap<(String, String), DeviceStatus>>,
     app: Option<AppHandle>,
 }
@@ -112,9 +164,9 @@ impl SyncNetwork {
     pub(crate) fn stop(&self) {
         self.workers.iter().for_each(JoinHandle::abort);
         if let Ok(mut invitation) = self.inner.invite.lock()
-            && let Some(task) = invitation.take()
+            && let Some(invitation) = invitation.take()
         {
-            task.abort();
+            invitation.task.abort();
         }
     }
 }
@@ -143,6 +195,8 @@ impl Network {
             name,
             port,
             invite: Mutex::new(None),
+            incoming: Mutex::new(None),
+            outgoing: Mutex::new(None),
             status: Mutex::default(),
             app,
         });
@@ -157,6 +211,7 @@ mod tests;
 #[tauri::command]
 pub async fn create_sync_invitation(
     space_id: String,
+    same_user: bool,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     store: State<'_, SyncPreview>,
@@ -172,30 +227,108 @@ pub async fn create_sync_invitation(
             store.inner().clone(),
             space_id,
             user.user_id,
+            same_user,
         )
         .await
 }
 
 #[tauri::command]
+pub async fn begin_sync_pairing(
+    address: String,
+    network: State<'_, SyncNetwork>,
+) -> Result<SyncPairing, AppError> {
+    network.inner.begin_join(address.trim()).await
+}
+
+#[tauri::command]
+pub async fn cancel_sync_invitation(
+    invitation_id: String,
+    session: State<'_, Session>,
+    network: State<'_, SyncNetwork>,
+) -> Result<(), AppError> {
+    let user = session.require_user()?;
+    let mut active = network.inner.invite.lock().map_err(|_| state_error())?;
+    if active
+        .as_ref()
+        .is_some_and(|invite| invite.id == invitation_id && invite.owner == user.user_id)
+    {
+        if let Some(invite) = active.take() {
+            invite.task.abort();
+        }
+        let mut incoming = network.inner.incoming.lock().map_err(|_| state_error())?;
+        incoming.take_if(|request| request.invitation_id == invitation_id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sync_invitation_request(
+    invitation_id: String,
+    session: State<'_, Session>,
+    network: State<'_, SyncNetwork>,
+) -> Result<Option<SyncPairing>, AppError> {
+    let user = session.require_user()?;
+    Ok(network
+        .inner
+        .incoming
+        .lock()
+        .map_err(|_| state_error())?
+        .as_ref()
+        .filter(|request| request.invitation_id == invitation_id && request.owner == user.user_id)
+        .map(|request| request.request.clone()))
+}
+
+#[tauri::command]
+pub async fn respond_sync_pairing(
+    request_id: String,
+    approved: bool,
+    session: State<'_, Session>,
+    network: State<'_, SyncNetwork>,
+) -> Result<(), AppError> {
+    let user = session.require_user()?;
+    network
+        .inner
+        .respond_pairing(&user.user_id, &request_id, approved)
+}
+
+#[tauri::command]
+pub async fn cancel_sync_pairing(
+    request_id: String,
+    network: State<'_, SyncNetwork>,
+) -> Result<(), AppError> {
+    let mut pending = network.inner.outgoing.lock().map_err(|_| state_error())?;
+    if pending
+        .as_ref()
+        .is_some_and(|pair| pair.request.id == request_id)
+    {
+        pending.take();
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn join_shared_space(
-    code: String,
-    address: Option<String>,
+    request_id: String,
+    profile: Option<JoinProfile>,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     store: State<'_, SyncPreview>,
     network: State<'_, SyncNetwork>,
 ) -> Result<String, AppError> {
-    let user = session.require_user()?;
-    network
+    let user = match (session.require_user(), profile) {
+        (Ok(user), None) => JoinUser::Existing(user.user_id),
+        (Err(AppError::Unauthorized), Some(profile)) => JoinUser::New(profile, None),
+        (Ok(user), Some(profile)) => JoinUser::New(profile, Some(user.user_id)),
+        _ => return Err(AppError::Unauthorized),
+    };
+    let (id, new_user) = network
         .inner
-        .join(
-            db.inner(),
-            store.inner(),
-            &user.user_id,
-            code.trim(),
-            address,
-        )
-        .await
+        .join(db.inner(), store.inner(), user, &request_id)
+        .await?;
+    if let Some(user_id) = new_user {
+        session.set(user_id, Some(id.clone()))?;
+    }
+    Ok(id)
 }
 
 #[tauri::command]
@@ -256,35 +389,27 @@ impl Network {
         store: SyncPreview,
         space_id: String,
         user_id: String,
+        same_user: bool,
     ) -> Result<SyncInvitation, AppError> {
-        let identity = open_identity(self.directory.clone()).await?;
-        let mut token = [0; 24];
-        getrandom::fill(&mut token).map_err(|error| AppError::Internal(error.to_string()))?;
-        // Replace the previous invitation so this space is the only one offered.
         if let Some(previous) = self.invite.lock().map_err(|_| state_error())?.take() {
-            previous.abort();
+            previous.task.abort();
         }
+        self.incoming.lock().map_err(|_| state_error())?.take();
         let listener = bind(INVITE_PORT).await?;
         let address = listener.local_addr().map_err(io_error)?;
-        let name = format!("join-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
-        let advertisement = discovery::advertise_managed(&name, address).ok();
-        let invitation = Invitation {
-            name: name.clone(),
-            port: address.port(),
-            certificate: identity.certificate().to_vec(),
-            token,
-        };
-        let code = format!(
-            "{INVITATION_PREFIX}{}",
-            URL_SAFE_NO_PAD.encode(encode(&invitation)?)
-        );
+        let id = format!("join-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+        let label = local_device_label(&self.name);
+        let advertisement = discovery::advertise_invitation(&id, address, &label).ok();
+        let invitation_id = id.clone();
+        let owner = user_id.clone();
         let network = self.clone();
         let task = tokio::spawn(async move {
             let _advertisement = advertisement;
             let offer = Offer {
+                invitation_id,
                 space_id,
                 user_id,
-                token: invitation.token,
+                same_user,
                 deadline: Instant::now() + INVITATION_TTL,
             };
             while let Some(remaining) = offer.deadline.checked_duration_since(Instant::now()) {
@@ -292,62 +417,138 @@ impl Network {
                 else {
                     break;
                 };
-                if let Ok(socket) = blocking_socket(socket) {
-                    let operation = network.clone().enroll(&db, &store, &offer, socket);
-                    if let Ok(true) = operation.await {
-                        break;
-                    }
+                if let Ok(socket) = blocking_socket(socket)
+                    && let Ok(true) = network.enroll(&db, &store, &offer, socket).await
+                {
+                    break;
                 }
             }
         });
         let mut guard = self.invite.lock().map_err(|_| state_error())?;
-        if let Some(previous) = guard.replace(task) {
-            previous.abort();
+        if let Some(previous) = guard.replace(ActiveInvitation {
+            id: id.clone(),
+            owner,
+            task,
+        }) {
+            previous.task.abort();
         }
         Ok(SyncInvitation {
-            code,
-            name,
+            id,
+            name: label,
             port: address.port(),
         })
     }
 
+    fn respond_pairing(&self, owner: &str, id: &str, approved: bool) -> Result<(), AppError> {
+        let mut request = self.incoming.lock().map_err(|_| state_error())?;
+        if request
+            .as_ref()
+            .is_none_or(|request| request.owner != owner || request.request.id != id)
+        {
+            return Err(AppError::NotFound("pairing request has ended".into()));
+        }
+        let request = request.take().ok_or_else(state_error)?;
+        request
+            .decision
+            .send(approved)
+            .map_err(|_| AppError::NotFound("pairing request has ended".into()))
+    }
+
     async fn enroll(
-        self: Arc<Self>,
+        &self,
         db: &DbPool,
         store: &SyncPreview,
         offer: &Offer,
         socket: TcpStream,
     ) -> Result<bool, AppError> {
-        let identity_dir = self.directory.clone();
-        let Offer {
-            token, deadline, ..
-        } = *offer;
-        let (mut stream, request) = tokio::task::spawn_blocking(move || {
+        let directory = self.directory.clone();
+        let host = encode(&PairingHost {
+            label: local_device_label(&self.name),
+            same_user: offer.same_user,
+        })?;
+        let (mut stream, request, code) = tokio::task::spawn_blocking(move || {
             let identity =
-                Identity::with_certificates(&identity_dir, vec![]).map_err(network_error)?;
-            let mut stream = identity.accept_enrollment(socket).map_err(network_error)?;
+                Identity::with_certificates(&directory, vec![]).map_err(network_error)?;
+            let (mut stream, binding) =
+                identity.accept_enrollment(socket).map_err(network_error)?;
+            transport::write_frame(&mut stream, &host, transport::MAX_ENROLLMENT_REQUEST)
+                .map_err(io_error)?;
             let request: Enrollment = decode(
                 &transport::read_frame(&mut stream, transport::MAX_ENROLLMENT_REQUEST)
                     .map_err(io_error)?,
             )?;
-            if Instant::now() >= deadline
-                || !bool::from(request.token.ct_eq(&token))
-                || request.certificate == identity.certificate()
-            {
+            if request.certificate == identity.certificate() {
                 return Err(AppError::Forbidden);
             }
             Identity::validate_certificate(&request.certificate).map_err(network_error)?;
-            Ok((stream, request))
+            let code = pairing_code(&mut stream, &binding, true)?;
+            Ok((stream, request, code))
         })
         .await
         .map_err(join_error)??;
-
-        let (snapshot, seed) =
+        let timeout = offer
+            .deadline
+            .saturating_duration_since(Instant::now())
+            .min(CONFIRMATION_TTL);
+        if timeout.is_zero() {
+            return Ok(false);
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let (send, receive) = oneshot::channel();
+        *self.incoming.lock().map_err(|_| state_error())? = Some(IncomingPairing {
+            invitation_id: offer.invitation_id.clone(),
+            owner: offer.user_id.clone(),
+            request: SyncPairing {
+                id: id.clone(),
+                device: request
+                    .label
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(48)
+                    .collect(),
+                code,
+                same_user: offer.same_user,
+            },
+            decision: send,
+        });
+        let approved = matches!(tokio::time::timeout(timeout, receive).await, Ok(Ok(true)));
+        {
+            let mut pending = self.incoming.lock().map_err(|_| state_error())?;
+            if pending
+                .as_ref()
+                .is_some_and(|request| request.request.id == id)
+            {
+                pending.take();
+            }
+        }
+        let (mut stream, ready) = tokio::task::spawn_blocking(move || {
+            transport::write_frame(&mut stream, &[u8::from(approved)], 1).map_err(io_error)?;
+            let ready = approved && transport::read_frame(&mut stream, 1).map_err(io_error)? == [1];
+            Ok::<_, AppError>((stream, ready))
+        })
+        .await
+        .map_err(join_error)??;
+        if !ready {
+            return Ok(false);
+        }
+        let (mut snapshot, seed) =
             spaces::prepare_sync_seed_export(db, &offer.space_id, &offer.user_id).await?;
+        let profile = if offer.same_user {
+            let user = sqlx::query_file_as!(User, "queries/users/get_user.sql", offer.user_id)
+                .fetch_one(&mut *snapshot)
+                .await?;
+            Some(SharedProfile {
+                id: user.id,
+                name: user.name,
+            })
+        } else {
+            None
+        };
         let data = encode(&Bootstrap {
             seed,
             port: self.port,
             name: self.name.clone(),
+            profile,
         })?;
         if data.len() > transport::MAX_SPACE_SNAPSHOT {
             return Err(AppError::InvalidInput(
@@ -374,47 +575,110 @@ impl Network {
         Ok(true)
     }
 
-    async fn join(
-        &self,
-        db: &DbPool,
-        store: &SyncPreview,
-        user_id: &str,
-        code: &str,
-        address: Option<String>,
-    ) -> Result<String, AppError> {
-        let invitation = parse_invitation(code)?;
-        let address = address
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| address_with_port(value.trim(), invitation.port))
-            .unwrap_or_else(|| format!("mdns:{}", invitation.name));
-        let candidates = resolve_peer(address).await?;
+    async fn begin_join(&self, address: &str) -> Result<SyncPairing, AppError> {
+        if address.is_empty() {
+            return Err(AppError::InvalidInput("select an inviting device".into()));
+        }
+        let candidates = resolve_peer(address_with_port(address, INVITE_PORT)).await?;
         let identity = open_identity(self.directory.clone()).await?;
         let request = encode(&Enrollment {
-            token: invitation.token,
             certificate: identity.certificate().to_vec(),
             name: self.name.clone(),
+            label: local_device_label(&self.name),
         })?;
-        let certificate = invitation.certificate;
-        let (ip, bootstrap, certificate) = tokio::task::spawn_blocking(move || {
-            let mut error = AppError::Io("no enrollment address available".into());
+        let pending = tokio::task::spawn_blocking(move || {
+            let mut error = AppError::Io("no pairing address available".into());
             for address in candidates {
-                match Identity::connect_enrollment(address, &certificate) {
-                    Ok(mut stream) => {
+                match Identity::connect_enrollment(address) {
+                    Ok((mut stream, certificate, binding)) => {
+                        if certificate == identity.certificate() {
+                            return Err(AppError::Forbidden);
+                        }
+                        let label =
+                            transport::read_frame(&mut stream, transport::MAX_ENROLLMENT_REQUEST)
+                                .map_err(io_error)?;
+                        let host: PairingHost = decode(&label)?;
                         transport::write_frame(
                             &mut stream,
                             &request,
                             transport::MAX_ENROLLMENT_REQUEST,
                         )
                         .map_err(io_error)?;
-                        let data =
-                            transport::read_frame(&mut stream, transport::MAX_SPACE_SNAPSHOT)
-                                .map_err(io_error)?;
-                        return Ok((address.ip(), decode::<Bootstrap>(&data)?, certificate));
+                        let code = pairing_code(&mut stream, &binding, false)?;
+                        let request = SyncPairing {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            device: host
+                                .label
+                                .chars()
+                                .filter(|c| !c.is_control())
+                                .take(48)
+                                .collect(),
+                            code,
+                            same_user: host.same_user,
+                        };
+                        return Ok(OutgoingPairing {
+                            request,
+                            stream: Box::new(stream),
+                            certificate,
+                            ip: address.ip(),
+                            deadline: Instant::now() + CONFIRMATION_TTL,
+                        });
                     }
                     Err(failure) => error = network_error(failure),
                 }
             }
             Err(error)
+        })
+        .await
+        .map_err(join_error)??;
+        let request = pending.request.clone();
+        *self.outgoing.lock().map_err(|_| state_error())? = Some(pending);
+        Ok(request)
+    }
+
+    async fn join(
+        &self,
+        db: &DbPool,
+        store: &SyncPreview,
+        user: JoinUser,
+        request_id: &str,
+    ) -> Result<(String, Option<String>), AppError> {
+        let pending = {
+            let mut slot = self.outgoing.lock().map_err(|_| state_error())?;
+            if slot
+                .as_ref()
+                .is_none_or(|pending| pending.request.id != request_id)
+            {
+                return Err(AppError::NotFound("pairing request has ended".into()));
+            }
+            let same_user = slot
+                .as_ref()
+                .is_some_and(|pending| pending.request.same_user);
+            if let JoinUser::New(profile, _) = &user {
+                profile.validate(same_user)?;
+            }
+            slot.take().ok_or_else(state_error)?
+        };
+        if Instant::now() >= pending.deadline {
+            return Err(AppError::NotFound("pairing request has ended".into()));
+        }
+        let (ip, bootstrap, certificate) = tokio::task::spawn_blocking(move || {
+            let OutgoingPairing {
+                mut stream,
+                ip,
+                certificate,
+                ..
+            } = pending;
+            // Both sides confirm before the source sends any finance data.
+            transport::write_frame(&mut stream, &[1], 1).map_err(io_error)?;
+            if transport::read_frame(&mut stream, 1).map_err(io_error)? != [1] {
+                return Err(AppError::InvalidInput(
+                    "The invitation was declined or expired.".into(),
+                ));
+            }
+            let data = transport::read_frame(&mut stream, transport::MAX_SPACE_SNAPSHOT)
+                .map_err(io_error)?;
+            Ok((ip, decode::<Bootstrap>(&data)?, certificate))
         })
         .await
         .map_err(join_error)??;
@@ -428,13 +692,36 @@ impl Network {
             name: device_name(&bootstrap.name)?,
             address: Some(SocketAddr::new(ip, bootstrap.port).to_string()),
         };
-        let install = spaces::prepare_sync_seed(db, user_id, bootstrap.seed).await?;
+        let mut install = db.begin_with("BEGIN IMMEDIATE").await?;
+        let (user_id, new) = match (user, bootstrap.profile) {
+            (JoinUser::Existing(id), None) => (id, false),
+            (JoinUser::Existing(id), Some(profile)) if id == profile.id => (id, false),
+            (JoinUser::New(_, Some(current)), Some(profile)) if current == profile.id => {
+                (current, false)
+            }
+            (JoinUser::New(profile, current), Some(identity)) => {
+                let id = create_join_user(
+                    &mut install,
+                    profile,
+                    Some((identity.id, identity.name)),
+                    current.is_none(),
+                )
+                .await?;
+                (id, true)
+            }
+            (JoinUser::New(profile, None), None) => (
+                create_join_user(&mut install, profile, None, true).await?,
+                true,
+            ),
+            _ => return Err(AppError::Unauthorized),
+        };
+        spaces::write_sync_seed(&mut install, &user_id, bootstrap.seed).await?;
         store
             .with_store(move |store| store.pair_device(&peer))
             .await?;
         install.commit().await?;
         self.changed(&space_id);
-        Ok(space_id)
+        Ok((space_id, new.then_some(user_id)))
     }
 
     async fn listen(self: Arc<Self>, listener: TcpListener, db: DbPool, store: SyncPreview) {
@@ -654,26 +941,62 @@ async fn open_identity(directory: PathBuf) -> Result<Identity, AppError> {
     .map_err(join_error)?
 }
 
-fn parse_invitation(code: &str) -> Result<Invitation, AppError> {
-    if code.len() > 8192 {
-        return Err(invalid_invitation());
-    }
-    let encoded = code
-        .strip_prefix(INVITATION_PREFIX)
-        .ok_or_else(invalid_invitation)?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .map_err(|_| invalid_invitation())?;
-    let invitation: Invitation =
-        serde_json::from_slice(&bytes).map_err(|_| invalid_invitation())?;
-    if !invitation.name.starts_with("join-")
-        || device_name(&invitation.name).is_err()
-        || invitation.port == 0
+fn local_device_label(fallback: &str) -> String {
+    whoami::devicename()
+        .into_iter()
+        .map(|name| {
+            name.chars()
+                .filter(|c| !c.is_control())
+                .take(48)
+                .collect::<String>()
+        })
+        .find(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn pairing_code(
+    stream: &mut (impl Read + Write),
+    binding: &[u8; 32],
+    source: bool,
+) -> Result<String, AppError> {
+    use sha2::{Digest, Sha256};
+    let commitment = |nonce: &[u8], from_source: bool| {
+        let mut hash = Sha256::new();
+        hash.update(b"plinth pairing commitment");
+        hash.update(binding);
+        hash.update([u8::from(from_source)]);
+        hash.update(nonce);
+        hash.finalize()
+    };
+    let mut nonce = [0; 32];
+    getrandom::fill(&mut nonce).map_err(|error| AppError::Internal(error.to_string()))?;
+    transport::write_frame(stream, &commitment(&nonce, source), 32).map_err(io_error)?;
+    let remote_commitment = transport::read_frame(stream, 32).map_err(io_error)?;
+    transport::write_frame(stream, &nonce, 32).map_err(io_error)?;
+    let remote_nonce = transport::read_frame(stream, 32).map_err(io_error)?;
+    if remote_nonce.len() != 32
+        || !bool::from(
+            commitment(&remote_nonce, !source)
+                .as_slice()
+                .ct_eq(&remote_commitment),
+        )
     {
-        return Err(invalid_invitation());
+        return Err(AppError::Forbidden);
     }
-    Identity::validate_certificate(&invitation.certificate).map_err(|_| invalid_invitation())?;
-    Ok(invitation)
+    // Both nonces are fixed before either is revealed.
+    let mut hash = Sha256::new();
+    hash.update(b"plinth pairing code");
+    hash.update(binding);
+    if source {
+        hash.update(nonce);
+        hash.update(remote_nonce);
+    } else {
+        hash.update(remote_nonce);
+        hash.update(nonce);
+    }
+    let digest = hash.finalize();
+    let number = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
+    Ok(format!("{:06}", number % 1_000_000))
 }
 
 fn address_with_port(address: &str, port: u16) -> String {
@@ -712,10 +1035,6 @@ fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, AppError> {
 fn decode<T: serde::de::DeserializeOwned>(data: &[u8]) -> Result<T, AppError> {
     serde_json::from_slice(data)
         .map_err(|error| AppError::InvalidInput(format!("invalid sync data: {error}")))
-}
-
-fn invalid_invitation() -> AppError {
-    AppError::InvalidInput("invalid Plinth invitation".into())
 }
 
 fn state_error() -> AppError {

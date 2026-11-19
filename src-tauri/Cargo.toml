@@ -14,7 +14,6 @@ name = "desktop_lib"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-base64 = "0.22"
 sha2 = "0.11"
 subtle = { version = "2.6", default-features = false }
 serde = { version = "1", features = ["derive"] }
@@ -79,6 +78,7 @@ tokenizers = "0.23.1"
 
 tauri-plugin-updater = "2.10.1"
 plinth-sync = { path = "../crates/plinth-sync" }
+whoami = { version = "2", default-features = false }
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }

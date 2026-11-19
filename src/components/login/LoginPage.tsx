@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import { listMySpaces, setActiveSpace } from '@/api/spaces';
 import { listUsers } from '@/api/users';
 import logoClean from '@/assets/logo-clean.svg';
+import { JoinSharedSpaceDialog } from '@/components/spaces/SharedSpaceDialogs';
+import { Button } from '@/components/ui/Button';
 import { useAuth } from '@/context/AuthContext';
 import type { User } from '@/types';
 import { PinStage } from './PinStage';
@@ -19,6 +21,7 @@ export const LoginPage = (): React.JSX.Element => {
   const [direction, setDirection] = useState<Direction>('forward');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [previousStage, setPreviousStage] = useState<Stage | null>(null);
+  const [joinOpen, setJoinOpen] = useState(false);
   const initialized = useRef(false);
 
   const { data: users, isLoading } = useQuery({
@@ -129,6 +132,16 @@ export const LoginPage = (): React.JSX.Element => {
               >
                 Get started
               </button>
+              <Button variant="secondary" onClick={() => setJoinOpen(true)}>
+                Join shared space
+              </Button>
+              {joinOpen && (
+                <JoinSharedSpaceDialog
+                  needsProfile
+                  onClose={() => setJoinOpen(false)}
+                  onJoined={() => setJoinOpen(false)}
+                />
+              )}
             </div>
           </div>
         )}
