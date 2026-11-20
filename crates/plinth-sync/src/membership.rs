@@ -5,35 +5,41 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 /// SHA-256 fingerprint of the device's authenticated certificate.
 pub type DeviceId = [u8; 32];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Enrollment {
     pub device: DeviceId,
     pub generation: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     Owner,
     Member,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
     pub enrollment: Enrollment,
     pub role: Role,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Change {
     Enroll { device: DeviceId, role: Role },
     Remove { enrollment: Enrollment },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outcome {
+    NoChange,
+    Initialized,
+    AlreadyInitialized,
+    Uninitialized,
     Enrolled(Enrollment),
     Removed(Enrollment),
     AuthorNotOwner,
@@ -44,12 +50,38 @@ pub enum Outcome {
 }
 
 /// One owner account can authorize several owner devices in this space.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Membership {
     owner_account: String,
     last_applied: u64,
+    #[serde(with = "entries")]
     devices: BTreeMap<DeviceId, Device>,
+    #[serde(with = "entries")]
     removals: BTreeMap<Enrollment, u64>,
+}
+
+mod entries {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<K: Serialize, V: Serialize, S: Serializer>(
+        map: &BTreeMap<K, V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(map)
+    }
+
+    pub fn deserialize<'de, K, V, D>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        Ok(Vec::<(K, V)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
 }
 
 impl Membership {
