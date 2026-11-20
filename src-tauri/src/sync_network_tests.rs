@@ -107,7 +107,12 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     };
     let nearby_address = format!("mdns:{}", invite.id);
     for (address, approved) in [(&address, false), (&nearby_address, true)] {
-        let pairing = target.begin_join(address).await.unwrap();
+        let candidates = if approved {
+            discovery::discover(&invite.id).unwrap()
+        } else {
+            Vec::new()
+        };
+        let pairing = target.begin_join(address, candidates).await.unwrap();
         let request = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(incoming) = source.incoming.lock().unwrap().as_ref() {
@@ -203,11 +208,19 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .await
         .unwrap();
     assert_eq!(peers.len(), 1);
+    assert_eq!(
+        peers[0].display_name.as_deref(),
+        Some(target.label.as_str())
+    );
     let mut wrong_scope = target_store
         .with_store(|store| store.paired_devices())
         .await
         .unwrap()
         .remove(0);
+    assert_eq!(
+        wrong_scope.display_name.as_deref(),
+        Some(source.label.as_str())
+    );
     wrong_scope.space_id = "another-space".into();
     assert!(
         target

@@ -150,6 +150,7 @@ pub struct SyncNetwork {
 struct Network {
     directory: PathBuf,
     name: String,
+    label: String,
     port: u16,
     invite: Mutex<Option<ActiveInvitation>>,
     incoming: Mutex<Option<IncomingPairing>>,
@@ -198,6 +199,7 @@ impl Network {
         let port = listener.local_addr().map_err(io_error)?.port();
         let inner = Arc::new(Self {
             directory,
+            label: local_device_label(&name),
             name,
             port,
             invite: Mutex::new(None),
@@ -240,9 +242,13 @@ pub async fn create_sync_invitation(
 #[tauri::command]
 pub async fn begin_sync_pairing(
     address: String,
+    candidates: Option<Vec<SocketAddr>>,
     network: State<'_, SyncNetwork>,
 ) -> Result<JoinPairing, AppError> {
-    network.inner.begin_join(address.trim()).await
+    network
+        .inner
+        .begin_join(address.trim(), candidates.unwrap_or_default())
+        .await
 }
 
 #[tauri::command]
@@ -365,7 +371,15 @@ pub async fn list_sync_devices(
             let state = status.get(&(space_id.clone(), id.clone()));
             SyncDevice {
                 id,
-                name: peer.name,
+                name: peer.display_name.unwrap_or_else(|| {
+                    peer.address
+                        .as_deref()
+                        .and_then(|value| value.parse::<SocketAddr>().ok())
+                        .map_or_else(
+                            || device_label_from_id(&peer.name),
+                            |addr| format!("Device at {}", addr.ip()),
+                        )
+                }),
                 address: peer.address,
                 last_success: state.and_then(|state| state.last_success),
                 error: state.and_then(|state| state.error.clone()),
@@ -413,8 +427,8 @@ impl Network {
         let address = listener.local_addr().map_err(io_error)?;
         let addresses = discovery::lan_addresses(address.port()).unwrap_or_default();
         let id = format!("join-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
-        let label = local_device_label(&self.name);
-        let advertisement = discovery::advertise_invitation(&id, address, &label).ok();
+        let label = self.label.clone();
+        let advertisement = discovery::advertise_managed(&id, address, &label).ok();
         let nearby_available = advertisement.is_some();
         let invitation_id = id.clone();
         let owner = user_id.clone();
@@ -480,8 +494,9 @@ impl Network {
         socket: TcpStream,
     ) -> Result<bool, AppError> {
         let directory = self.directory.clone();
+        let remote_addr = socket.peer_addr().map_err(io_error)?;
         let host = encode(&PairingHost {
-            label: local_device_label(&self.name),
+            label: self.label.clone(),
             same_user: offer.same_user,
         })?;
         let (mut stream, request, code) = tokio::task::spawn_blocking(move || {
@@ -512,18 +527,15 @@ impl Network {
             return Ok(false);
         }
         let id = uuid::Uuid::new_v4().to_string();
+        let label = discovery::usable_device_label(&request.label)
+            .unwrap_or_else(|| format!("Device at {}", remote_addr.ip()));
         let (send, receive) = oneshot::channel();
         *self.incoming.lock().map_err(|_| state_error())? = Some(IncomingPairing {
             invitation_id: offer.invitation_id.clone(),
             owner: offer.user_id.clone(),
             request: SyncPairing {
                 id: id.clone(),
-                device: request
-                    .label
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(48)
-                    .collect(),
+                device: label.clone(),
                 code,
                 same_user: offer.same_user,
             },
@@ -578,6 +590,7 @@ impl Network {
             certificate: request.certificate,
             name: device_name(&request.name)?,
             address: None,
+            display_name: Some(label),
         };
         store
             .with_store(move |store| store.pair_device(&peer))
@@ -592,16 +605,25 @@ impl Network {
         Ok(true)
     }
 
-    async fn begin_join(&self, address: &str) -> Result<JoinPairing, AppError> {
+    async fn begin_join(
+        &self,
+        address: &str,
+        mut candidates: Vec<SocketAddr>,
+    ) -> Result<JoinPairing, AppError> {
         if address.is_empty() {
             return Err(AppError::InvalidInput("select an inviting device".into()));
         }
-        let candidates = resolve_peer(address_with_port(address, INVITE_PORT)).await?;
+        if !address.starts_with("mdns:") || candidates.is_empty() {
+            candidates = resolve_peer(address_with_port(address, INVITE_PORT)).await?;
+        } else {
+            candidates.retain(|addr| addr.port() != 0 && !addr.ip().is_unspecified());
+            candidates.truncate(16);
+        }
         let identity = open_identity(self.directory.clone()).await?;
         let request = encode(&Enrollment {
             certificate: identity.certificate().to_vec(),
             name: self.name.clone(),
-            label: local_device_label(&self.name),
+            label: self.label.clone(),
         })?;
         let pending = tokio::task::spawn_blocking(move || {
             let mut error = AppError::Io("no pairing address available".into());
@@ -624,12 +646,8 @@ impl Network {
                         let code = pairing_code(&mut stream, &binding, false)?;
                         let request = JoinPairing {
                             id: uuid::Uuid::new_v4().to_string(),
-                            device: host
-                                .label
-                                .chars()
-                                .filter(|c| !c.is_control())
-                                .take(48)
-                                .collect(),
+                            device: discovery::usable_device_label(&host.label)
+                                .unwrap_or_else(|| format!("Device at {}", address.ip())),
                             same_user: host.same_user,
                         };
                         return Ok(OutgoingPairing {
@@ -707,8 +725,9 @@ impl Network {
         if Instant::now() >= pending.deadline {
             return Err(AppError::NotFound("pairing request has ended".into()));
         }
-        let (ip, bootstrap, certificate) = tokio::task::spawn_blocking(move || {
+        let (ip, bootstrap, certificate, label) = tokio::task::spawn_blocking(move || {
             let OutgoingPairing {
+                request,
                 mut stream,
                 ip,
                 certificate,
@@ -723,7 +742,7 @@ impl Network {
             }
             let data = transport::read_frame(&mut stream, transport::MAX_SPACE_SNAPSHOT)
                 .map_err(io_error)?;
-            Ok((ip, decode::<Bootstrap>(&data)?, certificate))
+            Ok((ip, decode::<Bootstrap>(&data)?, certificate, request.device))
         })
         .await
         .map_err(join_error)??;
@@ -736,6 +755,7 @@ impl Network {
             certificate,
             name: device_name(&bootstrap.name)?,
             address: Some(SocketAddr::new(ip, bootstrap.port).to_string()),
+            display_name: Some(label),
         };
         let mut install = db.begin_with("BEGIN IMMEDIATE").await?;
         let (user_id, new) = match (user, bootstrap.profile) {
@@ -769,10 +789,9 @@ impl Network {
     }
 
     async fn listen(self: Arc<Self>, listener: TcpListener, db: DbPool, store: SyncPreview) {
-        let _advertisement = listener
-            .local_addr()
-            .ok()
-            .and_then(|address| discovery::advertise_managed(&self.name, address).ok());
+        let _advertisement = listener.local_addr().ok().and_then(|address| {
+            discovery::advertise_managed(&self.name, address, &self.label).ok()
+        });
         let slots = Arc::new(Semaphore::new(8));
         while let Ok((socket, _)) = listener.accept().await {
             let Ok(permit) = slots.clone().try_acquire_owned() else {
@@ -971,16 +990,22 @@ async fn open_identity(directory: PathBuf) -> Result<Identity, AppError> {
 }
 
 fn local_device_label(fallback: &str) -> String {
-    whoami::devicename()
+    [whoami::devicename(), whoami::hostname()]
         .into_iter()
-        .map(|name| {
-            name.chars()
-                .filter(|c| !c.is_control())
-                .take(48)
-                .collect::<String>()
+        .filter_map(Result::ok)
+        .find_map(|name| discovery::usable_device_label(&name))
+        .or_else(|| {
+            discovery::lan_addresses(SYNC_PORT)
+                .ok()?
+                .first()
+                .map(|addr| format!("Device at {}", addr.ip()))
         })
-        .find(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| fallback.to_owned())
+        .unwrap_or_else(|| device_label_from_id(fallback))
+}
+
+fn device_label_from_id(name: &str) -> String {
+    name.strip_prefix("plinth-")
+        .map_or_else(|| name.to_owned(), |id| format!("Plinth device {id}"))
 }
 
 fn pairing_code(

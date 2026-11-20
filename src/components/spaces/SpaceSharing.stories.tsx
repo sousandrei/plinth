@@ -155,6 +155,7 @@ export const ShareAndJoin: Story = {
     });
     await expect(beginPairing).toHaveBeenCalledWith({
       address: 'mdns:join-household',
+      candidates: ['192.168.1.20:37420'],
     });
     await userEvent.click(body.getByRole('button', { name: 'Join space' }));
     await waitFor(() =>

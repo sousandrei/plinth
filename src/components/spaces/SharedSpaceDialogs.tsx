@@ -374,7 +374,12 @@ export const JoinSharedSpaceDialog = ({
                     type="button"
                     variant="secondary"
                     disabled={begin.isPending}
-                    onClick={() => begin.mutate(`mdns:${peer.name}`)}
+                    onClick={() =>
+                      begin.mutate({
+                        address: `mdns:${peer.name}`,
+                        candidates: peer.addresses,
+                      })
+                    }
                   >
                     {peer.display_name}
                   </Button>
@@ -398,7 +403,7 @@ export const JoinSharedSpaceDialog = ({
                   onSubmit={(event) => {
                     event.preventDefault();
                     if (address.trim() && !begin.isPending)
-                      begin.mutate(address.trim());
+                      begin.mutate({ address: address.trim() });
                   }}
                 >
                   <label

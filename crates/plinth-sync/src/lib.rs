@@ -38,6 +38,7 @@ pub struct PairedDevice {
     pub name: String,
     pub certificate: Vec<u8>,
     pub address: Option<String>,
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -102,6 +103,17 @@ impl Store {
              );",
         )?;
 
+        let has_display_name: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('paired_devices') WHERE name = 'display_name')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_display_name {
+            db.execute(
+                "ALTER TABLE paired_devices ADD COLUMN display_name TEXT",
+                [],
+            )?;
+        }
         Ok(Self {
             db,
             actor: AutoCommit::new().get_actor().clone(),
@@ -110,11 +122,19 @@ impl Store {
 
     pub fn pair_device(&self, peer: &PairedDevice) -> Result<(), Error> {
         self.db.execute(
-            "INSERT INTO paired_devices (space_id, certificate, name, address)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO paired_devices (space_id, certificate, name, address, display_name)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (space_id, certificate) DO UPDATE
-             SET name = excluded.name, address = COALESCE(excluded.address, paired_devices.address)",
-            params![peer.space_id, peer.certificate, peer.name, peer.address],
+             SET name = excluded.name,
+                 address = COALESCE(excluded.address, paired_devices.address),
+                 display_name = COALESCE(excluded.display_name, paired_devices.display_name)",
+            params![
+                peer.space_id,
+                peer.certificate,
+                peer.name,
+                peer.address,
+                peer.display_name
+            ],
         )?;
         Ok(())
     }
@@ -129,7 +149,7 @@ impl Store {
 
     pub fn paired_devices(&self) -> Result<Vec<PairedDevice>, Error> {
         let mut query = self.db.prepare(
-            "SELECT space_id, certificate, name, address FROM paired_devices ORDER BY space_id, name",
+            "SELECT space_id, certificate, name, address, display_name FROM paired_devices ORDER BY space_id, name",
         )?;
         let rows = query.query_map([], |row| {
             Ok(PairedDevice {
@@ -137,6 +157,7 @@ impl Store {
                 certificate: row.get(1)?,
                 name: row.get(2)?,
                 address: row.get(3)?,
+                display_name: row.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

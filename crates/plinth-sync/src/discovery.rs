@@ -39,6 +39,19 @@ pub struct DiscoveredPeer {
     pub addresses: Vec<SocketAddr>,
 }
 
+pub fn usable_device_label(label: &str) -> Option<String> {
+    let label: String = label.chars().filter(|c| !c.is_control()).take(48).collect();
+    let label = label.trim();
+    if label.is_empty()
+        || ["unknown", "unknown device", "localhost"]
+            .iter()
+            .any(|placeholder| label.eq_ignore_ascii_case(placeholder))
+    {
+        return None;
+    }
+    Some(label.to_owned())
+}
+
 pub struct Advertisement(ServiceDaemon);
 
 impl Drop for Advertisement {
@@ -47,11 +60,7 @@ impl Drop for Advertisement {
     }
 }
 
-pub fn advertise_managed(name: &str, addr: SocketAddr) -> Result<Advertisement> {
-    advertise(name, addr).map(Advertisement)
-}
-
-pub fn advertise_invitation(name: &str, addr: SocketAddr, label: &str) -> Result<Advertisement> {
+pub fn advertise_managed(name: &str, addr: SocketAddr, label: &str) -> Result<Advertisement> {
     advertise_with_label(name, addr, Some(label)).map(Advertisement)
 }
 
@@ -115,24 +124,13 @@ pub fn discover_peers() -> Result<Vec<DiscoveredPeer>> {
                 if let Some(name) = instance_name(info.get_fullname()) {
                     let addresses = resolved_addresses(&info);
                     let key = name.to_ascii_lowercase();
-                    if addresses.is_empty() {
-                        peers.remove(&key);
-                    } else {
-                        peers.insert(
-                            key,
-                            DiscoveredPeer {
-                                name: name.to_owned(),
-                                display_name: info
-                                    .get_property_val_str("label")
-                                    .unwrap_or(name)
-                                    .chars()
-                                    .filter(|c| !c.is_control())
-                                    .take(48)
-                                    .collect(),
-                                addresses,
-                            },
-                        );
-                    }
+                    merge_peer(
+                        &mut peers,
+                        key,
+                        name,
+                        info.get_property_val_str("label"),
+                        addresses,
+                    );
                 }
             }
             ServiceEvent::ServiceRemoved(_, fullname) => {
@@ -145,6 +143,29 @@ pub fn discover_peers() -> Result<Vec<DiscoveredPeer>> {
         None
     })?;
     Ok(peers.into_values().collect())
+}
+
+fn merge_peer(
+    peers: &mut BTreeMap<String, DiscoveredPeer>,
+    key: String,
+    name: &str,
+    label: Option<&str>,
+    addresses: Vec<SocketAddr>,
+) {
+    let Some(first) = addresses.first() else {
+        return;
+    };
+    let peer = peers.entry(key).or_insert_with(|| DiscoveredPeer {
+        name: name.to_owned(),
+        display_name: format!("Device at {}", first.ip()),
+        addresses: Vec::new(),
+    });
+    if let Some(label) = label.and_then(usable_device_label) {
+        peer.display_name = label;
+    }
+    peer.addresses.extend(addresses);
+    peer.addresses.sort_unstable();
+    peer.addresses.dedup();
 }
 
 fn instance_name(fullname: &str) -> Option<&str> {
@@ -210,6 +231,32 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn keeps_addresses_and_prefers_a_real_device_name() {
+        let name = "join-household".to_owned();
+        let ethernet = "192.168.1.10:37420".parse().unwrap();
+        let wifi = "192.168.1.100:37420".parse().unwrap();
+        let mut peers = BTreeMap::new();
+        merge_peer(
+            &mut peers,
+            name.clone(),
+            &name,
+            Some(" Unknown "),
+            vec![ethernet],
+        );
+        assert_eq!(peers[&name].display_name, "Device at 192.168.1.10");
+        merge_peer(
+            &mut peers,
+            name.clone(),
+            &name,
+            Some("Living room PC"),
+            vec![wifi, ethernet],
+        );
+        merge_peer(&mut peers, name.clone(), &name, None, vec![]);
+        assert_eq!(peers[&name].display_name, "Living room PC");
+        assert_eq!(peers[&name].addresses, vec![ethernet, wifi]);
+    }
 
     #[test]
     #[ignore = "requires PLINTH_TEST_LAN_IP and access to LAN multicast"]

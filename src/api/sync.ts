@@ -20,8 +20,17 @@ export const createSyncInvitation = (
 ): Promise<SyncInvitation> =>
   invoke<SyncInvitation>('create_sync_invitation', { spaceId, sameUser });
 
-export const beginSyncPairing = (address: string): Promise<JoinPairing> =>
-  invoke<JoinPairing>('begin_sync_pairing', { address });
+export const beginSyncPairing = ({
+  address,
+  candidates,
+}: {
+  address: string;
+  candidates?: string[];
+}): Promise<JoinPairing> =>
+  invoke<JoinPairing>(
+    'begin_sync_pairing',
+    candidates ? { address, candidates } : { address },
+  );
 
 export const verifySyncPairingCode = (
   requestId: string,
