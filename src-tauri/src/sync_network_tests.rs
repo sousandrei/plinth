@@ -124,8 +124,8 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         )
     };
     let nearby_address = format!("mdns:{}", invite.id);
-    for (address, approved) in [(&address, false), (&nearby_address, true)] {
-        let candidates = if approved {
+    for (address, should_join) in [(&address, false), (&nearby_address, true)] {
+        let candidates = if should_join {
             discovery::discover(&invite.id).unwrap()
         } else {
             Vec::new()
@@ -142,7 +142,8 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .await
         .unwrap();
         assert!(pairing.same_user);
-        assert_eq!(request.code.len(), 6);
+        let code = request.code.as_deref().unwrap();
+        assert_eq!(code.len(), 6);
         assert!(
             serde_json::to_value(&pairing)
                 .unwrap()
@@ -155,13 +156,24 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
                 .await
                 .is_err()
         );
-        let wrong_code = if request.code == "000000" {
-            "000001"
-        } else {
-            "000000"
-        };
-        assert!(target.verify_join_code(&pairing.id, wrong_code).is_err());
-        target.verify_join_code(&pairing.id, &request.code).unwrap();
+        let wrong_code = if code == "000000" { "000001" } else { "000000" };
+        assert!(
+            target
+                .verify_join_code(&pairing.id, wrong_code)
+                .await
+                .is_err()
+        );
+        assert!(
+            source
+                .incoming
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .request
+                .code
+                .is_some()
+        );
         assert!(
             source_store
                 .with_store(|store| store.paired_devices())
@@ -169,13 +181,24 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
                 .unwrap()
                 .is_empty()
         );
-        source
-            .respond_pairing(user_id, &request.id, approved)
-            .unwrap();
-        let joined = target
-            .join(&target_db, &target_store, new_user(), &pairing.id)
-            .await;
-        if approved {
+        if should_join {
+            target.verify_join_code(&pairing.id, code).await.unwrap();
+            assert!(
+                source
+                    .incoming
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .request
+                    .code
+                    .is_none()
+            );
+            // Closing the host dialog must let the other device finish setting up its local PIN.
+            source.cancel_invitation(&invite.id, user_id).unwrap();
+            let joined = target
+                .join(&target_db, &target_store, new_user(), &pairing.id)
+                .await;
             assert_eq!(joined.unwrap(), (space.clone(), Some(user_id.to_owned())));
             assert!(
                 target
@@ -184,7 +207,7 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
                     .is_err()
             );
         } else {
-            assert!(joined.is_err());
+            target.cancel_join(&pairing.id).await;
             assert!(
                 sqlx::query_file_as!(User, "queries/users/get_user.sql", user_id)
                     .fetch_optional(&target_db)
@@ -422,8 +445,10 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     })
     .await
     .unwrap();
-    third.verify_join_code(&pairing.id, &request.code).unwrap();
-    source.respond_pairing(user_id, &request.id, true).unwrap();
+    third
+        .verify_join_code(&pairing.id, request.code.as_deref().unwrap())
+        .await
+        .unwrap();
     third
         .join(&third_db, &third_store, new_user(), &pairing.id)
         .await

@@ -9,7 +9,6 @@ import {
   discoverSyncPeers,
   getPairingRequest,
   joinSharedSpace,
-  respondSyncPairing,
   verifySyncPairingCode,
 } from '@/api/sync';
 import { PinInput } from '@/components/login/PinInput';
@@ -31,63 +30,51 @@ export const ShareSpaceDialog = ({
   const invitation = useMutation({
     mutationFn: (sameUser: boolean) => createSyncInvitation(space.id, sameUser),
   });
-  const respond = useMutation({
-    mutationFn: ({ id, approved }: { id: string; approved: boolean }) =>
-      respondSyncPairing(id, approved),
-    onSuccess: () => void request.refetch(),
-  });
-  const approved = respond.isSuccess && respond.variables.approved;
   const request = useQuery({
     queryKey: ['sync-invitation-request', invitation.data?.id],
     queryFn: () => getPairingRequest(invitation.data?.id ?? ''),
-    enabled: Boolean(invitation.data) && !approved,
-    refetchInterval: 1000,
+    enabled: Boolean(invitation.data),
+    refetchInterval: (query) =>
+      query.state.data?.code === null ? false : 1000,
     retry: false,
   });
+  const pending = request.data;
+  const verified = pending?.code === null;
   const close = () => {
-    if (invitation.isPending || respond.isPending) return;
-    if (invitation.data && !approved) {
+    if (invitation.isPending) return;
+    if (invitation.data && !verified) {
       void cancelSyncInvitation(invitation.data.id).catch(() => undefined);
     }
     onClose();
   };
-  const pending = request.data;
 
   return (
     <Dialog open onOpenChange={(open) => !open && close()}>
       <DialogContent
         title={`Share ${space.name}`}
-        description="Open Join shared space on the other device."
+        description={
+          verified ? undefined : 'Open Join shared space on the other device.'
+        }
       >
         <div className="flex flex-col gap-4">
-          {approved ? (
-            <p role="status">Approved. Finish joining on the other device.</p>
+          {verified ? (
+            <>
+              <p role="status">
+                Code accepted. Finish joining on {pending.device}.
+              </p>
+              <div className="flex justify-end">
+                <Button onClick={close}>Done</Button>
+              </div>
+            </>
           ) : pending ? (
             <>
-              <p>
-                Enter this code on {pending.device}, then approve here once that
-                device accepts it.
-              </p>
+              <p>Enter this code on {pending.device}.</p>
               <p className="font-mono text-2xl tracking-widest">
                 {pending.code}
               </p>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="secondary"
-                  disabled={respond.isPending}
-                  onClick={() =>
-                    respond.mutate({ id: pending.id, approved: false })
-                  }
-                >
-                  Reject
-                </Button>
-                <Button
-                  disabled={respond.isPending}
-                  onClick={() =>
-                    respond.mutate({ id: pending.id, approved: true })
-                  }
-                >
-                  Approve
+              <div className="flex justify-end">
+                <Button variant="secondary" onClick={close}>
+                  Cancel
                 </Button>
               </div>
             </>
@@ -136,9 +123,9 @@ export const ShareSpaceDialog = ({
               </Button>
             </div>
           )}
-          {(invitation.isError || respond.isError || request.isError) && (
+          {(invitation.isError || request.isError) && (
             <p className="text-sm text-expense" role="alert">
-              {String(invitation.error ?? respond.error ?? request.error)}
+              {String(invitation.error ?? request.error)}
             </p>
           )}
         </div>
@@ -268,9 +255,7 @@ export const JoinSharedSpaceDialog = ({
               )}
               {!installedSpace && verify.isSuccess && (
                 <>
-                  <p role="status">
-                    Code accepted. Approve the request on {pairing.device}.
-                  </p>
+                  <p role="status">Code accepted.</p>
                   {needsName && (
                     <label
                       htmlFor="join-profile-name"

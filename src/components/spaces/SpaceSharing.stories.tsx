@@ -37,7 +37,7 @@ const beginPairing = fn(() => ({
 const verifyCode = fn(({ code: entered }: { code: string }) => {
   if (entered !== code) throw new Error('Incorrect joining code.');
 });
-const respond = fn();
+const cancelInvitation = fn();
 const joinSpace = fn().mockName('join_shared_space');
 const activateSpace = fn().mockName('set_active_space');
 
@@ -83,7 +83,8 @@ export const ShareAndJoin: Story = {
     });
     setMock('create_sync_invitation', createInvitation);
     setMock('sync_invitation_request', null);
-    setMock('respond_sync_pairing', respond);
+    cancelInvitation.mockClear();
+    setMock('cancel_sync_invitation', cancelInvitation);
     setMock('begin_sync_pairing', beginPairing);
     setMock('join_shared_space', joinSpace);
     setMock('set_active_space', activateSpace);
@@ -121,15 +122,19 @@ export const ShareAndJoin: Story = {
       spaceId: household.id,
       sameUser: true,
     });
-    await userEvent.click(body.getByRole('button', { name: 'Approve' }));
-    await expect(
-      await body.findByText('Approved. Finish joining on the other device.'),
-    ).toBeVisible();
-    await expect(respond).toHaveBeenCalledWith({
-      requestId: 'incoming',
-      approved: true,
+    await expect(body.queryByRole('button', { name: 'Approve' })).toBeNull();
+    setMock('sync_invitation_request', {
+      id: 'incoming',
+      device: 'MacBook',
+      code: null,
+      same_user: true,
     });
-    await userEvent.keyboard('{Escape}');
+    await expect(
+      await body.findByText('Code accepted. Finish joining on MacBook.'),
+    ).toBeVisible();
+    await userEvent.click(body.getByRole('button', { name: 'Done' }));
+    await expect(body.queryByRole('dialog')).not.toBeInTheDocument();
+    await expect(cancelInvitation).not.toHaveBeenCalled();
     await userEvent.click(
       canvas.getByRole('button', { name: 'Join shared space' }),
     );

@@ -14,8 +14,9 @@ name = "desktop_lib"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ring = "0.17"
+spake2 = "0.4"
 sha2 = "0.11"
-subtle = { version = "2.6", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

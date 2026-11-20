@@ -23,7 +23,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 const ALPN: &[u8] = b"plinth-sync/1";
 const PERMISSION_ALPN: &[u8] = b"plinth-permissions/1";
 const ROSTER_ALPN: &[u8] = b"plinth-roster/1";
-const ENROLLMENT_ALPN: &[u8] = b"plinth-enrollment/3";
+const ENROLLMENT_ALPN: &[u8] = b"plinth-enrollment/4";
 pub const MAX_ENROLLMENT_REQUEST: usize = 8 * 1024;
 pub const MAX_SPACE_SNAPSHOT: usize = 128 * 1024 * 1024;
 

@@ -3,7 +3,10 @@ use std::{
     net::{IpAddr, SocketAddr, TcpStream},
     num::NonZeroU16,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -15,13 +18,8 @@ use plinth_sync::{
     transport::{self, Identity, PeerProtocol},
 };
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
 use tauri::State;
-use tokio::{
-    net::TcpListener,
-    sync::{Semaphore, oneshot},
-    task::JoinHandle,
-};
+use tokio::{net::TcpListener, sync::Semaphore, task::JoinHandle};
 
 use crate::{
     Session,
@@ -33,6 +31,9 @@ use crate::{
     error::AppError,
     sync_preview::{PeerConnection, SyncPreview, resolve_peer},
 };
+
+#[path = "sync_pairing_code.rs"]
+mod pairing_code;
 
 const INVITATION_TTL: Duration = Duration::from_secs(300);
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -84,6 +85,7 @@ struct Offer {
     user_id: String,
     same_user: bool,
     deadline: Instant,
+    remaining_attempts: Arc<AtomicU8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,7 +101,7 @@ pub struct SyncInvitation {
 pub struct SyncPairing {
     pub id: String,
     pub device: String,
-    pub code: String,
+    pub code: Option<String>,
     pub same_user: bool,
 }
 
@@ -114,7 +116,6 @@ struct IncomingPairing {
     invitation_id: String,
     owner: String,
     request: SyncPairing,
-    decision: oneshot::Sender<bool>,
 }
 
 trait EnrollmentIo: Read + Write + Send {}
@@ -122,8 +123,8 @@ impl<T: Read + Write + Send> EnrollmentIo for T {}
 
 struct OutgoingPairing {
     request: JoinPairing,
-    code: Option<String>,
-    failed_codes: u8,
+    verified: bool,
+    binding: [u8; 32],
     stream: Box<dyn EnrollmentIo>,
     certificate: Vec<u8>,
     ip: IpAddr,
@@ -164,7 +165,7 @@ struct Network {
     port: u16,
     invite: Mutex<Option<ActiveInvitation>>,
     incoming: Mutex<Option<IncomingPairing>>,
-    outgoing: Mutex<Option<OutgoingPairing>>,
+    outgoing: tokio::sync::Mutex<Option<OutgoingPairing>>,
     status: Mutex<std::collections::HashMap<(String, String), DeviceStatus>>,
 }
 
@@ -216,7 +217,7 @@ impl Network {
             port,
             invite: Mutex::new(None),
             incoming: Mutex::new(None),
-            outgoing: Mutex::new(None),
+            outgoing: tokio::sync::Mutex::new(None),
             status: Mutex::default(),
         });
         Ok((inner, listener))
@@ -269,7 +270,7 @@ pub async fn verify_sync_pairing_code(
     code: String,
     network: State<'_, SyncNetwork>,
 ) -> Result<(), AppError> {
-    network.inner.verify_join_code(&request_id, &code)
+    network.inner.verify_join_code(&request_id, &code).await
 }
 
 #[tauri::command]
@@ -279,18 +280,9 @@ pub async fn cancel_sync_invitation(
     network: State<'_, SyncNetwork>,
 ) -> Result<(), AppError> {
     let user = session.require_user()?;
-    let mut active = network.inner.invite.lock().map_err(|_| state_error())?;
-    if active
-        .as_ref()
-        .is_some_and(|invite| invite.id == invitation_id && invite.owner == user.user_id)
-    {
-        if let Some(invite) = active.take() {
-            invite.task.abort();
-        }
-        let mut incoming = network.inner.incoming.lock().map_err(|_| state_error())?;
-        incoming.take_if(|request| request.invitation_id == invitation_id);
-    }
-    Ok(())
+    network
+        .inner
+        .cancel_invitation(&invitation_id, &user.user_id)
 }
 
 #[tauri::command]
@@ -311,30 +303,11 @@ pub async fn sync_invitation_request(
 }
 
 #[tauri::command]
-pub async fn respond_sync_pairing(
-    request_id: String,
-    approved: bool,
-    session: State<'_, Session>,
-    network: State<'_, SyncNetwork>,
-) -> Result<(), AppError> {
-    let user = session.require_user()?;
-    network
-        .inner
-        .respond_pairing(&user.user_id, &request_id, approved)
-}
-
-#[tauri::command]
 pub async fn cancel_sync_pairing(
     request_id: String,
     network: State<'_, SyncNetwork>,
 ) -> Result<(), AppError> {
-    let mut pending = network.inner.outgoing.lock().map_err(|_| state_error())?;
-    if pending
-        .as_ref()
-        .is_some_and(|pair| pair.request.id == request_id)
-    {
-        pending.take();
-    }
+    network.inner.cancel_join(&request_id).await;
     Ok(())
 }
 
@@ -423,6 +396,33 @@ pub async fn remove_sync_device(
 }
 
 impl Network {
+    fn cancel_invitation(&self, invitation_id: &str, user_id: &str) -> Result<(), AppError> {
+        let mut active = self.invite.lock().map_err(|_| state_error())?;
+        if active
+            .as_ref()
+            .is_some_and(|invite| invite.id == invitation_id && invite.owner == user_id)
+        {
+            let mut incoming = self.incoming.lock().map_err(|_| state_error())?;
+            if incoming.as_ref().is_some_and(|request| {
+                request.invitation_id == invitation_id && request.request.code.is_none()
+            }) {
+                return Ok(());
+            }
+            if let Some(invite) = active.take() {
+                invite.task.abort();
+            }
+            incoming.take_if(|request| request.invitation_id == invitation_id);
+        }
+        Ok(())
+    }
+
+    async fn cancel_join(&self, request_id: &str) {
+        self.outgoing
+            .lock()
+            .await
+            .take_if(|pair| pair.request.id == request_id);
+    }
+
     async fn invite(
         self: Arc<Self>,
         db: DbPool,
@@ -459,16 +459,28 @@ impl Network {
                 user_id,
                 same_user,
                 deadline: Instant::now() + INVITATION_TTL,
+                remaining_attempts: Arc::new(AtomicU8::new(MAX_CODE_ATTEMPTS)),
             };
             while let Some(remaining) = offer.deadline.checked_duration_since(Instant::now()) {
+                if offer.remaining_attempts.load(Ordering::Relaxed) == 0 {
+                    break;
+                }
                 let Ok(Ok((socket, _))) = tokio::time::timeout(remaining, listener.accept()).await
                 else {
                     break;
                 };
-                if let Ok(socket) = blocking_socket(socket)
-                    && let Ok(true) = network.enroll(&db, &store, &offer, socket).await
-                {
-                    break;
+                if let Ok(socket) = blocking_socket(socket) {
+                    let joined =
+                        matches!(network.enroll(&db, &store, &offer, socket).await, Ok(true));
+                    let verified = network.incoming.lock().is_ok_and(|incoming| {
+                        incoming.as_ref().is_some_and(|request| {
+                            request.invitation_id == offer.invitation_id
+                                && request.request.code.is_none()
+                        })
+                    });
+                    if joined || verified {
+                        break;
+                    }
                 }
             }
         });
@@ -489,21 +501,6 @@ impl Network {
         })
     }
 
-    fn respond_pairing(&self, owner: &str, id: &str, approved: bool) -> Result<(), AppError> {
-        let mut request = self.incoming.lock().map_err(|_| state_error())?;
-        if request
-            .as_ref()
-            .is_none_or(|request| request.owner != owner || request.request.id != id)
-        {
-            return Err(AppError::NotFound("pairing request has ended".into()));
-        }
-        let request = request.take().ok_or_else(state_error)?;
-        request
-            .decision
-            .send(approved)
-            .map_err(|_| AppError::NotFound("pairing request has ended".into()))
-    }
-
     async fn enroll(
         &self,
         db: &DbPool,
@@ -522,7 +519,7 @@ impl Network {
             label: self.label.clone(),
             same_user: offer.same_user,
         })?;
-        let (mut stream, certificate, request, code) = tokio::task::spawn_blocking(move || {
+        let (mut stream, certificate, request, binding) = tokio::task::spawn_blocking(move || {
             let identity =
                 Identity::with_certificates(&directory, vec![]).map_err(network_error)?;
             let (mut stream, certificate, binding) =
@@ -533,8 +530,7 @@ impl Network {
                 &transport::read_frame(&mut stream, transport::MAX_ENROLLMENT_REQUEST)
                     .map_err(io_error)?,
             )?;
-            let code = pairing_code(&mut stream, &binding, true)?;
-            Ok::<_, AppError>((stream, certificate, request, code))
+            Ok::<_, AppError>((stream, certificate, request, binding))
         })
         .await
         .map_err(join_error)??;
@@ -553,31 +549,55 @@ impl Network {
         let id = uuid::Uuid::new_v4().to_string();
         let label = discovery::usable_device_label(&request.label)
             .unwrap_or_else(|| format!("Device at {}", remote_addr.ip()));
-        let (send, receive) = oneshot::channel();
+        let code =
+            pairing_code::generate().map_err(|error| AppError::Internal(error.to_string()))?;
+        let deadline = Instant::now() + timeout;
         *self.incoming.lock().map_err(|_| state_error())? = Some(IncomingPairing {
             invitation_id: offer.invitation_id.clone(),
             owner: offer.user_id.clone(),
             request: SyncPairing {
                 id: id.clone(),
                 device: label.clone(),
-                code,
+                code: Some(code.clone()),
                 same_user: offer.same_user,
             },
-            decision: send,
         });
-        let approved = matches!(tokio::time::timeout(timeout, receive).await, Ok(Ok(true)));
+        let remaining_attempts = offer.remaining_attempts.clone();
+        let verified = tokio::task::spawn_blocking(move || {
+            while remaining_attempts.load(Ordering::Relaxed) != 0 {
+                let proof =
+                    pairing_code::host_proof(&mut stream, &code, &binding).map_err(io_error)?;
+                if Instant::now() >= deadline {
+                    break;
+                }
+                if let Some(proof) = proof {
+                    return Ok::<_, AppError>(Some((stream, proof)));
+                }
+                let remaining = remaining_attempts.fetch_sub(1, Ordering::Relaxed) - 1;
+                let reply: &[u8] = if remaining == 0 { &[0] } else { &[] };
+                transport::write_frame(&mut stream, reply, 32).map_err(io_error)?;
+            }
+            Ok(None)
+        })
+        .await
+        .map_err(join_error)?;
         {
             let mut pending = self.incoming.lock().map_err(|_| state_error())?;
-            if pending
-                .as_ref()
-                .is_some_and(|request| request.request.id == id)
-            {
-                pending.take();
+            let Some(request) = pending.as_mut().filter(|request| request.request.id == id) else {
+                return Ok(false);
+            };
+            if matches!(verified, Ok(Some(_))) {
+                request.request.code = None;
+            } else {
+                *pending = None;
             }
         }
+        let Some((mut stream, proof)) = verified? else {
+            return Ok(false);
+        };
         let (mut stream, ready) = tokio::task::spawn_blocking(move || {
-            transport::write_frame(&mut stream, &[u8::from(approved)], 1).map_err(io_error)?;
-            let ready = approved && transport::read_frame(&mut stream, 1).map_err(io_error)? == [1];
+            transport::write_frame(&mut stream, proof.as_ref(), 32).map_err(io_error)?;
+            let ready = transport::read_frame(&mut stream, 1).map_err(io_error)? == [1];
             Ok::<_, AppError>((stream, ready))
         })
         .await
@@ -688,7 +708,6 @@ impl Network {
                             transport::MAX_ENROLLMENT_REQUEST,
                         )
                         .map_err(io_error)?;
-                        let code = pairing_code(&mut stream, &binding, false)?;
                         let request = JoinPairing {
                             id: uuid::Uuid::new_v4().to_string(),
                             device: discovery::usable_device_label(&host.label)
@@ -697,8 +716,8 @@ impl Network {
                         };
                         return Ok(OutgoingPairing {
                             request,
-                            code: Some(code),
-                            failed_codes: 0,
+                            verified: false,
+                            binding,
                             stream: Box::new(stream),
                             certificate,
                             ip: address.ip(),
@@ -713,32 +732,48 @@ impl Network {
         .await
         .map_err(join_error)??;
         let request = pending.request.clone();
-        *self.outgoing.lock().map_err(|_| state_error())? = Some(pending);
+        *self.outgoing.lock().await = Some(pending);
         Ok(request)
     }
 
-    fn verify_join_code(&self, request_id: &str, code: &str) -> Result<(), AppError> {
-        let mut slot = self.outgoing.lock().map_err(|_| state_error())?;
-        let pending = slot
-            .as_mut()
-            .filter(|pending| pending.request.id == request_id && Instant::now() < pending.deadline)
-            .ok_or_else(|| AppError::NotFound("pairing request has ended".into()))?;
-        let Some(expected) = pending.code.as_ref() else {
-            return Ok(());
-        };
-        if bool::from(expected.as_bytes().ct_eq(code.as_bytes())) {
-            pending.code = None;
-            return Ok(());
-        }
-        pending.failed_codes += 1;
-        if pending.failed_codes >= MAX_CODE_ATTEMPTS {
-            slot.take();
+    async fn verify_join_code(&self, request_id: &str, code: &str) -> Result<(), AppError> {
+        if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(AppError::InvalidInput(
-                "Too many incorrect codes. Ask the host to reject this request, then try again."
-                    .into(),
+                "Enter the six-digit joining code.".into(),
             ));
         }
-        Err(AppError::InvalidInput("Incorrect joining code.".into()))
+        let mut slot = self.outgoing.lock().await;
+        let pending = slot
+            .as_ref()
+            .filter(|pending| pending.request.id == request_id && Instant::now() < pending.deadline)
+            .ok_or_else(|| AppError::NotFound("pairing request has ended".into()))?;
+        if pending.verified {
+            return Ok(());
+        }
+        let mut pending = slot.take().ok_or_else(state_error)?;
+        let code = code.to_owned();
+        let (mut pending, verified) = tokio::task::spawn_blocking(move || {
+            let verified = pairing_code::verify(&mut pending.stream, &code, &pending.binding)
+                .map_err(io_error)?;
+            Ok::<_, AppError>((pending, verified))
+        })
+        .await
+        .map_err(join_error)??;
+        match verified {
+            pairing_code::Verification::Accepted => {
+                pending.verified = true;
+                pending.deadline = Instant::now() + CONFIRMATION_TTL;
+                *slot = Some(pending);
+                Ok(())
+            }
+            pairing_code::Verification::Incorrect => {
+                *slot = Some(pending);
+                Err(AppError::InvalidInput("Incorrect joining code.".into()))
+            }
+            pairing_code::Verification::Exhausted => Err(AppError::InvalidInput(
+                "Too many incorrect codes. Ask the host for a new invitation.".into(),
+            )),
+        }
     }
 
     async fn join(
@@ -749,7 +784,7 @@ impl Network {
         request_id: &str,
     ) -> Result<(String, Option<String>), AppError> {
         let pending = {
-            let mut slot = self.outgoing.lock().map_err(|_| state_error())?;
+            let mut slot = self.outgoing.lock().await;
             if slot
                 .as_ref()
                 .is_none_or(|pending| pending.request.id != request_id)
@@ -757,7 +792,7 @@ impl Network {
                 return Err(AppError::NotFound("pairing request has ended".into()));
             }
             let pending = slot.as_ref().ok_or_else(state_error)?;
-            if pending.code.is_some() {
+            if !pending.verified {
                 return Err(AppError::InvalidInput(
                     "Enter the joining code first.".into(),
                 ));
@@ -780,11 +815,6 @@ impl Network {
             } = pending;
             // Both sides confirm before the source sends any finance data.
             transport::write_frame(&mut stream, &[1], 1).map_err(io_error)?;
-            if transport::read_frame(&mut stream, 1).map_err(io_error)? != [1] {
-                return Err(AppError::InvalidInput(
-                    "The invitation was declined or expired.".into(),
-                ));
-            }
             let data = transport::read_frame(&mut stream, transport::MAX_SPACE_SNAPSHOT)
                 .map_err(io_error)?;
             let bootstrap: Bootstrap = decode(&data)?;
@@ -1194,51 +1224,6 @@ fn local_device_label(fallback: &str) -> String {
 fn device_label_from_id(name: &str) -> String {
     name.strip_prefix("plinth-")
         .map_or_else(|| name.to_owned(), |id| format!("Plinth device {id}"))
-}
-
-fn pairing_code(
-    stream: &mut (impl Read + Write),
-    binding: &[u8; 32],
-    source: bool,
-) -> Result<String, AppError> {
-    use sha2::{Digest, Sha256};
-    let commitment = |nonce: &[u8], from_source: bool| {
-        let mut hash = Sha256::new();
-        hash.update(b"plinth pairing commitment");
-        hash.update(binding);
-        hash.update([u8::from(from_source)]);
-        hash.update(nonce);
-        hash.finalize()
-    };
-    let mut nonce = [0; 32];
-    getrandom::fill(&mut nonce).map_err(|error| AppError::Internal(error.to_string()))?;
-    transport::write_frame(stream, &commitment(&nonce, source), 32).map_err(io_error)?;
-    let remote_commitment = transport::read_frame(stream, 32).map_err(io_error)?;
-    transport::write_frame(stream, &nonce, 32).map_err(io_error)?;
-    let remote_nonce = transport::read_frame(stream, 32).map_err(io_error)?;
-    if remote_nonce.len() != 32
-        || !bool::from(
-            commitment(&remote_nonce, !source)
-                .as_slice()
-                .ct_eq(&remote_commitment),
-        )
-    {
-        return Err(AppError::Forbidden);
-    }
-    // Both nonces are fixed before either is revealed.
-    let mut hash = Sha256::new();
-    hash.update(b"plinth pairing code");
-    hash.update(binding);
-    if source {
-        hash.update(nonce);
-        hash.update(remote_nonce);
-    } else {
-        hash.update(remote_nonce);
-        hash.update(nonce);
-    }
-    let digest = hash.finalize();
-    let number = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
-    Ok(format!("{:06}", number % 1_000_000))
 }
 
 fn address_with_port(address: &str, port: u16) -> String {

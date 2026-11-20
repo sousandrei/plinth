@@ -41,7 +41,7 @@ export interface JoinPairing {
 }
 
 export interface SyncPairing extends JoinPairing {
-  code: string;
+  code: string | null;
 }
 
 export interface JoinProfile {

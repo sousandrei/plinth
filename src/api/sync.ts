@@ -46,12 +46,6 @@ export const getPairingRequest = (
 ): Promise<SyncPairing | null> =>
   invoke<SyncPairing | null>('sync_invitation_request', { invitationId });
 
-export const respondSyncPairing = (
-  requestId: string,
-  approved: boolean,
-): Promise<void> =>
-  invoke<void>('respond_sync_pairing', { requestId, approved });
-
 export const cancelSyncPairing = (requestId: string): Promise<void> =>
   invoke<void>('cancel_sync_pairing', { requestId });
 
