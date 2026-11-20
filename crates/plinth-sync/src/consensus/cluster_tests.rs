@@ -134,6 +134,7 @@ async fn surviving_majority_can_remove_the_creator() {
         .client_write(MembershipRequest::Initialize {
             owner_account: "account".into(),
             first_device,
+            first_contact: None,
         })
         .await
         .unwrap();

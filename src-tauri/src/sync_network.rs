@@ -1,6 +1,7 @@
 use std::{
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream},
+    num::NonZeroU16,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -10,7 +11,7 @@ use plinth_sync::{
     PairedDevice, Session as PeerSession,
     consensus::PairingHistory,
     discovery,
-    membership::{DeviceId, Role},
+    membership::{DeviceId, PeerContact, Role, certificate_fingerprint},
     transport::{self, Identity},
 };
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,8 @@ struct JoiningDevice {
     label: String,
     #[serde(default)]
     supports_permissions: bool,
+    #[serde(default)]
+    sync_port: Option<NonZeroU16>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -206,7 +209,7 @@ impl Network {
         let inner = Arc::new(Self {
             directory,
             label: local_device_label(&name),
-            device_id: device_fingerprint(identity.certificate()),
+            device_id: certificate_fingerprint(identity.certificate()),
             permission_writes: Arc::default(),
             name,
             port,
@@ -597,7 +600,12 @@ impl Network {
         let directory = self.directory.clone();
         let owner = offer.user_id.clone();
         let device_id = self.device_id;
-        let joining_device = device_fingerprint(&certificate);
+        let joining_contact = PeerContact {
+            certificate: certificate.clone(),
+            address_hint: request
+                .sync_port
+                .map(|port| SocketAddr::new(remote_addr.ip(), port.get())),
+        };
         let role = if offer.same_user {
             Role::Owner
         } else {
@@ -607,7 +615,7 @@ impl Network {
         // Complete the committed write even if the invitation closes mid-approval.
         let permissions = tokio::spawn(async move {
             let _guard = permission_writes.lock().await;
-            log.approve_pairing(directory, &owner, device_id, joining_device, role)
+            log.approve_pairing(directory, &owner, device_id, joining_contact, role)
                 .await
         })
         .await
@@ -662,6 +670,7 @@ impl Network {
         let request = encode(&JoiningDevice {
             label: self.label.clone(),
             supports_permissions: true,
+            sync_port: NonZeroU16::new(self.port),
         })?;
         let pending = tokio::task::spawn_blocking(move || {
             let mut error = AppError::Io("no pairing address available".into());
@@ -791,7 +800,7 @@ impl Network {
             return Err(AppError::InvalidInput("missing peer sync port".into()));
         }
         let space_id = bootstrap.seed.space_id.clone();
-        let host = device_fingerprint(&certificate);
+        let host = certificate_fingerprint(&certificate);
         let peer = PairedDevice {
             space_id: space_id.clone(),
             name: device_name(&certificate),
@@ -1122,15 +1131,10 @@ fn device_name(certificate: &[u8]) -> String {
 }
 
 fn certificate_id(certificate: &[u8]) -> String {
-    device_fingerprint(certificate)
+    certificate_fingerprint(certificate)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-fn device_fingerprint(certificate: &[u8]) -> DeviceId {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(certificate).into()
 }
 
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, AppError> {

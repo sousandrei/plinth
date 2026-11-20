@@ -3,12 +3,29 @@
 //! The caller must authenticate the author and supply the committed log index.
 //! This module does not run elections or authenticate network messages.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// SHA-256 fingerprint of the device's authenticated certificate.
 pub type DeviceId = [u8; 32];
+
+pub fn certificate_fingerprint(certificate: &[u8]) -> DeviceId {
+    Sha256::digest(certificate).into()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerContact {
+    pub certificate: Vec<u8>,
+    pub address_hint: Option<SocketAddr>,
+}
+
+impl PeerContact {
+    pub fn device_id(&self) -> DeviceId {
+        certificate_fingerprint(&self.certificate)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Enrollment {
@@ -28,9 +45,10 @@ pub struct Device {
     pub role: Role,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Change {
     Enroll { device: DeviceId, role: Role },
+    EnrollPeer { contact: PeerContact, role: Role },
     Remove { enrollment: Enrollment },
 }
 
@@ -41,6 +59,7 @@ pub enum Outcome {
     AlreadyInitialized,
     Uninitialized,
     Enrolled(Enrollment),
+    ContactUpdated(Enrollment),
     Removed(Enrollment),
     AuthorNotOwner,
     AlreadyEnrolled,
@@ -58,6 +77,8 @@ pub struct Membership {
     devices: BTreeMap<DeviceId, Device>,
     #[serde(with = "entries")]
     removals: BTreeMap<Enrollment, u64>,
+    #[serde(default, with = "entries")]
+    contacts: BTreeMap<DeviceId, PeerContact>,
 }
 
 mod entries {
@@ -98,6 +119,7 @@ impl Membership {
             last_applied: committed_index,
             devices: BTreeMap::from([(first_device, owner)]),
             removals: BTreeMap::new(),
+            contacts: BTreeMap::new(),
         }
     }
 
@@ -116,6 +138,27 @@ impl Membership {
 
     pub fn device(&self, id: DeviceId) -> Option<Device> {
         self.devices.get(&id).copied()
+    }
+
+    pub fn peer_contacts(&self) -> impl Iterator<Item = (Device, &PeerContact)> {
+        self.contacts.iter().filter_map(|(id, contact)| {
+            self.device(*id)
+                .filter(|_| contact.device_id() == *id)
+                .map(|device| (device, contact))
+        })
+    }
+
+    pub fn peer_contact(&self, id: DeviceId) -> Option<&PeerContact> {
+        self.device(id)?;
+        self.contacts
+            .get(&id)
+            .filter(|contact| contact.device_id() == id)
+    }
+
+    pub(crate) fn record_contact(&mut self, id: DeviceId, contact: PeerContact) {
+        if self.devices.contains_key(&id) && contact.device_id() == id {
+            self.contacts.insert(id, contact);
+        }
     }
 
     pub fn removal_index(&self, enrollment: Enrollment) -> Option<u64> {
@@ -137,16 +180,9 @@ impl Membership {
         }
 
         match change {
-            Change::Enroll { device, role } => {
-                if self.devices.contains_key(&device) {
-                    return Outcome::AlreadyEnrolled;
-                }
-                let enrollment = Enrollment {
-                    device,
-                    generation: index,
-                };
-                self.devices.insert(device, Device { enrollment, role });
-                Outcome::Enrolled(enrollment)
+            Change::Enroll { device, role } => self.enroll(index, device, role, None),
+            Change::EnrollPeer { contact, role } => {
+                self.enroll(index, contact.device_id(), role, Some(contact))
             }
             Change::Remove { enrollment } => {
                 let Some(target) = self.device(enrollment.device) else {
@@ -165,10 +201,39 @@ impl Membership {
                 }
 
                 self.devices.remove(&enrollment.device);
+                self.contacts.remove(&enrollment.device);
                 self.removals.insert(enrollment, index);
                 Outcome::Removed(enrollment)
             }
         }
+    }
+
+    fn enroll(
+        &mut self,
+        index: u64,
+        device: DeviceId,
+        role: Role,
+        contact: Option<PeerContact>,
+    ) -> Outcome {
+        if let Some(existing) = self.device(device) {
+            if let Some(contact) = contact
+                && existing.role == role
+                && self.contacts.get(&device) != Some(&contact)
+            {
+                self.record_contact(device, contact);
+                return Outcome::ContactUpdated(existing.enrollment);
+            }
+            return Outcome::AlreadyEnrolled;
+        }
+        let enrollment = Enrollment {
+            device,
+            generation: index,
+        };
+        self.devices.insert(device, Device { enrollment, role });
+        if let Some(contact) = contact {
+            self.record_contact(device, contact);
+        }
+        Outcome::Enrolled(enrollment)
     }
 }
 
@@ -204,8 +269,14 @@ mod tests {
         let remove_a = Change::Remove { enrollment: a };
         let remove_b = Change::Remove { enrollment: b };
 
-        assert_eq!(membership.apply(4, c, remove_a), Outcome::Removed(a));
-        assert_eq!(membership.apply(5, a, remove_b), Outcome::AuthorNotOwner);
+        assert_eq!(
+            membership.apply(4, c, remove_a.clone()),
+            Outcome::Removed(a)
+        );
+        assert_eq!(
+            membership.apply(5, a, remove_b.clone()),
+            Outcome::AuthorNotOwner
+        );
         assert_eq!(membership.removal_index(a), Some(4));
         assert_eq!(membership.removal_index(b), None);
         assert!(membership.device(B).is_some());
@@ -223,12 +294,18 @@ mod tests {
         let a = membership.device(A).unwrap().enrollment;
         let b = enroll(&mut membership, 2, a, B, Role::Owner);
         let remove_b = Change::Remove { enrollment: b };
-        assert_eq!(membership.apply(3, a, remove_b), Outcome::Removed(b));
+        assert_eq!(
+            membership.apply(3, a, remove_b.clone()),
+            Outcome::Removed(b)
+        );
         let new_b = enroll(&mut membership, 4, a, B, Role::Owner);
 
-        assert_eq!(membership.apply(3, a, remove_b), Outcome::AlreadyApplied);
         assert_eq!(
-            membership.apply(5, a, remove_b),
+            membership.apply(3, a, remove_b.clone()),
+            Outcome::AlreadyApplied
+        );
+        assert_eq!(
+            membership.apply(5, a, remove_b.clone()),
             Outcome::EnrollmentInactive
         );
         assert_eq!(membership.apply(6, b, remove_b), Outcome::AuthorNotOwner);
@@ -244,7 +321,10 @@ mod tests {
         let b = enroll(&mut membership, 2, a, B, Role::Member);
         let remove_a = Change::Remove { enrollment: a };
 
-        assert_eq!(membership.apply(3, b, remove_a), Outcome::AuthorNotOwner);
+        assert_eq!(
+            membership.apply(3, b, remove_a.clone()),
+            Outcome::AuthorNotOwner
+        );
         assert_eq!(membership.apply(4, a, remove_a), Outcome::LastOwner);
         assert_eq!(membership.device(A).unwrap().enrollment, a);
     }

@@ -173,8 +173,6 @@ impl SyncPreview {
         space_id: &str,
         owner_account: &str,
     ) -> Result<(), AppError> {
-        use sha2::{Digest, Sha256};
-
         let Some(inner) = &self.0 else {
             return Ok(());
         };
@@ -189,7 +187,10 @@ impl SyncPreview {
             identity_dir,
             space_id.to_owned(),
             owner_account.to_owned(),
-            Sha256::digest(&certificate).into(),
+            plinth_sync::membership::PeerContact {
+                certificate,
+                address_hint: None,
+            },
         )
         .await
         .map_err(|error| AppError::Internal(format!("initialize space permissions: {error}")))

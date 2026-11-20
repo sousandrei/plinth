@@ -36,12 +36,13 @@ impl MembershipLog {
         identity_dir: PathBuf,
         owner_account: &str,
         local_device: DeviceId,
-        joining_device: DeviceId,
+        joining_contact: PeerContact,
         role: Role,
     ) -> transport::Result<Option<PairingHistory>> {
         if !self.owner_can_pair(owner_account, local_device).await? {
             return Ok(None);
         }
+        let joining_device = joining_contact.device_id();
         if local_device == joining_device {
             return Err("cannot pair a device with itself".into());
         }
@@ -53,11 +54,13 @@ impl MembershipLog {
             .device(local_device)
             .ok_or("missing owner device")?
             .enrollment;
-        if let Some(device) = membership.device(joining_device) {
-            if device.role != role {
-                return Err("this device already has a different role in this space".into());
-            }
-        } else {
+        if membership
+            .device(joining_device)
+            .is_some_and(|device| device.role != role)
+        {
+            return Err("this device already has a different role in this space".into());
+        }
+        if membership.peer_contact(joining_device) != Some(&joining_contact) {
             let network =
                 rpc::PermissionNetwork::new(identity_dir, self.space_id.clone(), |_| None);
             let node = Raft::new(
@@ -75,13 +78,16 @@ impl MembershipLog {
                 let response = node
                     .client_write(MembershipRequest::Change {
                         author,
-                        change: Change::Enroll {
-                            device: joining_device,
+                        change: Change::EnrollPeer {
+                            contact: joining_contact,
                             role,
                         },
                     })
                     .await?;
-                if !matches!(response.data, Outcome::Enrolled(_)) {
+                if !matches!(
+                    response.data,
+                    Outcome::Enrolled(_) | Outcome::ContactUpdated(_)
+                ) {
                     return Err(format!("could not enroll device: {:?}", response.data).into());
                 }
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
@@ -171,26 +177,46 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source.sqlite");
         let identity_dir = temp.path().join("identity");
-        let owner = [1; 32];
-        let joiner = [2; 32];
+        let owner_contact = PeerContact {
+            certificate: vec![1],
+            address_hint: None,
+        };
+        let joiner_contact = PeerContact {
+            certificate: vec![2],
+            address_hint: Some("127.0.0.1:37419".parse().unwrap()),
+        };
+        let owner = owner_contact.device_id();
+        let joiner = joiner_contact.device_id();
         let different_device = [3; 32];
         initialize_local_space(
             source.clone(),
             identity_dir.clone(),
             "space".into(),
             "account".into(),
-            owner,
+            owner_contact.clone(),
         )
         .await
         .unwrap();
         let mut source = MembershipLog::open(source, "space").unwrap();
         let first = source
-            .approve_pairing(identity_dir.clone(), "account", owner, joiner, Role::Member)
+            .approve_pairing(
+                identity_dir.clone(),
+                "account",
+                owner,
+                joiner_contact.clone(),
+                Role::Member,
+            )
             .await
             .unwrap()
             .unwrap();
         let retry = source
-            .approve_pairing(identity_dir, "account", owner, joiner, Role::Member)
+            .approve_pairing(
+                identity_dir.clone(),
+                "account",
+                owner,
+                joiner_contact.clone(),
+                Role::Member,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -224,11 +250,57 @@ mod tests {
         let local = source.membership().await.unwrap().unwrap();
         assert_eq!(remote.device(joiner), local.device(joiner));
         assert_eq!(remote.device(joiner).unwrap().role, Role::Member);
+        assert_eq!(remote.peer_contact(owner), Some(&owner_contact));
+        assert_eq!(remote.peer_contact(joiner), Some(&joiner_contact));
+        assert_eq!(remote.peer_contacts().count(), 2);
+
+        let changed_address = PeerContact {
+            address_hint: Some("127.0.0.1:37420".parse().unwrap()),
+            ..joiner_contact
+        };
+        let updated = source
+            .approve_pairing(
+                identity_dir.clone(),
+                "account",
+                owner,
+                changed_address.clone(),
+                Role::Member,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        replica
+            .receive_pairing_history(Some(updated), owner, joiner, None)
+            .await
+            .unwrap();
+        let remote = replica.membership().await.unwrap().unwrap();
+        assert_eq!(remote.device(joiner), local.device(joiner));
+        assert_eq!(remote.peer_contact(joiner), Some(&changed_address));
         assert!(
             replica
                 .receive_pairing_history(None, owner, joiner, None)
                 .await
                 .is_err()
         );
+
+        let third_contact = PeerContact {
+            certificate: vec![3],
+            address_hint: None,
+        };
+        let third = third_contact.device_id();
+        let history = source
+            .approve_pairing(identity_dir, "account", owner, third_contact, Role::Owner)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut third_replica =
+            MembershipLog::open(temp.path().join("third.sqlite"), "space").unwrap();
+        third_replica
+            .receive_pairing_history(Some(history), owner, third, Some("account"))
+            .await
+            .unwrap();
+        let roster = third_replica.membership().await.unwrap().unwrap();
+        assert_eq!(roster.peer_contact(joiner), Some(&changed_address));
+        assert_eq!(roster.peer_contacts().count(), 3);
     }
 }

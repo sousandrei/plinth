@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 use crate::{
-    membership::{Change, DeviceId, Enrollment, Membership, Outcome},
+    membership::{Change, DeviceId, Enrollment, Membership, Outcome, PeerContact},
     transport,
 };
 
@@ -48,6 +48,8 @@ pub enum MembershipRequest {
     Initialize {
         owner_account: String,
         first_device: DeviceId,
+        #[serde(default)]
+        first_contact: Option<PeerContact>,
     },
     Change {
         author: Enrollment,
@@ -62,7 +64,7 @@ pub async fn initialize_local_space(
     identity_dir: PathBuf,
     space_id: String,
     owner_account: String,
-    owner_device: DeviceId,
+    owner_contact: PeerContact,
 ) -> transport::Result<()> {
     let network = rpc::PermissionNetwork::new(identity_dir, space_id.clone(), |_| None);
     let store =
@@ -87,7 +89,8 @@ pub async fn initialize_local_space(
             let response = node
                 .client_write(MembershipRequest::Initialize {
                     owner_account,
-                    first_device: owner_device,
+                    first_device: owner_contact.device_id(),
+                    first_contact: Some(owner_contact),
                 })
                 .await?;
             if response.data != Outcome::Initialized {
@@ -414,12 +417,17 @@ impl RaftStateMachine<MembershipRaft> for MembershipLog {
                         EntryPayload::Normal(MembershipRequest::Initialize {
                             owner_account,
                             first_device,
+                            first_contact,
                         }) => {
                             if state.membership.is_some() {
                                 Outcome::AlreadyInitialized
                             } else {
-                                state.membership =
-                                    Some(Membership::new(owner_account, first_device, index));
+                                let mut membership =
+                                    Membership::new(owner_account, first_device, index);
+                                if let Some(contact) = first_contact {
+                                    membership.record_contact(first_device, contact);
+                                }
+                                state.membership = Some(membership);
                                 Outcome::Initialized
                             }
                         }
@@ -616,6 +624,7 @@ mod tests {
                     MembershipRequest::Initialize {
                         owner_account: "shared account".into(),
                         first_device,
+                        first_contact: None,
                     },
                 ),
                 request(

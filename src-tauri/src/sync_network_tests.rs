@@ -246,6 +246,17 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     let joined = target_history.device(target.device_id).unwrap();
     assert_eq!(source_history.device(target.device_id), Some(joined));
     assert_eq!(joined.role, Role::Owner);
+    let joined_contact = target_history.peer_contact(target.device_id).unwrap();
+    assert_eq!(joined_contact.address_hint.unwrap().port(), target.port);
+    assert_eq!(
+        source_history.peer_contact(target.device_id),
+        Some(joined_contact)
+    );
+    assert_eq!(
+        target_history.peer_contact(source.device_id),
+        source_history.peer_contact(source.device_id)
+    );
+    assert_eq!(target_history.peer_contacts().count(), 2);
     assert!(
         target
             .clone()
