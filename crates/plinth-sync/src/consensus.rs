@@ -2,14 +2,16 @@
 //! Raft group, with log entries and election votes in the sync database.
 
 use std::{
+    collections::BTreeSet,
     io::Cursor,
     ops::{Bound, RangeBounds},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use openraft::{
-    BasicNode, Entry, EntryPayload, ErrorSubject, ErrorVerb, LogId, RaftLogReader,
+    BasicNode, Config, Entry, EntryPayload, ErrorSubject, ErrorVerb, LogId, Raft, RaftLogReader,
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
     Vote,
     storage::{LogFlushed, LogState, RaftLogStorage, RaftStateMachine},
@@ -18,7 +20,10 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-use crate::membership::{Change, DeviceId, Enrollment, Membership, Outcome};
+use crate::{
+    membership::{Change, DeviceId, Enrollment, Membership, Outcome},
+    transport,
+};
 
 pub mod rpc;
 
@@ -42,6 +47,59 @@ pub enum MembershipRequest {
         author: Enrollment,
         change: Change,
     },
+}
+
+/// Start a permission history for a freshly created local space. Imported and
+/// joined spaces must obtain their existing history from their peers.
+pub async fn initialize_local_space(
+    sync_db: PathBuf,
+    identity_dir: PathBuf,
+    space_id: String,
+    owner_account: String,
+    owner_device: DeviceId,
+) -> transport::Result<()> {
+    const FIRST_VOTER: u64 = 1;
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    let network = rpc::PermissionNetwork::new(identity_dir, space_id.clone(), |_| None);
+    let store =
+        tokio::task::spawn_blocking(move || MembershipLog::open(sync_db, space_id)).await??;
+    let node = Raft::new(
+        FIRST_VOTER,
+        Arc::new(Config::default()),
+        network,
+        store.clone(),
+        store,
+    )
+    .await?;
+    let initialized: transport::Result<()> = async {
+        if node.is_initialized().await? {
+            return Err("space already has a permission history".into());
+        }
+        tokio::time::timeout(TIMEOUT, async {
+            node.initialize(BTreeSet::from([FIRST_VOTER])).await?;
+            node.wait(Some(TIMEOUT))
+                .current_leader(FIRST_VOTER, "new space owner")
+                .await?;
+            let response = node
+                .client_write(MembershipRequest::Initialize {
+                    owner_account,
+                    first_device: owner_device,
+                })
+                .await?;
+            if response.data != Outcome::Initialized {
+                return Err("space permission history already has an owner".into());
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .await??;
+        Ok(())
+    }
+    .await;
+    let stopped = node.shutdown().await;
+    initialized?;
+    stopped?;
+    Ok(())
 }
 
 type LogEntry = Entry<MembershipRaft>;

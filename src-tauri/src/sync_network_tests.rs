@@ -3,6 +3,7 @@ use crate::{
     commands::{accounts::Account, spaces::ExportTransaction, transactions},
     db, sync_import,
 };
+use sha2::Digest;
 
 async fn profile(
     directory: &Path,
@@ -46,9 +47,27 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         profile(source_dir.path(), Some(user_id)).await;
     let (target_db, target_store, target, _unused_listener) =
         profile(target_dir.path(), None).await;
-    let space = spaces::create_space_for_user(user_id, "Household", &source_db)
+    let mut create = source_db.begin().await.unwrap();
+    let space = spaces::create_space_for_user(user_id, "Household", &mut create, &source_store)
         .await
         .unwrap();
+    create.commit().await.unwrap();
+    let history = plinth_sync::consensus::MembershipLog::open(
+        source_dir.path().join("sync.sqlite"),
+        space.as_str(),
+    )
+    .unwrap()
+    .membership()
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(history.owner_account(), user_id);
+    let identity = open_identity(source.directory.clone()).await.unwrap();
+    let fingerprint = sha2::Sha256::digest(identity.certificate()).into();
+    assert_eq!(
+        history.device(fingerprint).unwrap().role,
+        plinth_sync::membership::Role::Owner
+    );
     sqlx::query_file!(
         "queries/spaces/import_account.sql",
         "checking",
@@ -203,6 +222,17 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .unwrap();
     assert!(!source_user.has_pin);
     assert_eq!(note(&target_db, &space).await, "original");
+    assert!(
+        plinth_sync::consensus::MembershipLog::open(
+            target_dir.path().join("sync.sqlite"),
+            space.as_str(),
+        )
+        .unwrap()
+        .membership()
+        .await
+        .unwrap()
+        .is_none()
+    );
     let peers = source_store
         .with_store(|store| store.paired_devices())
         .await

@@ -123,24 +123,17 @@ pub(crate) struct SyncSeed {
 // Helpers
 // ---------------------------------------------------------------------------
 
-pub async fn seed_default_categories(space_id: &str, db: &DbPool) -> Result<(), AppError> {
-    sqlx::query_file!("queries/spaces/seed_default_categories.sql", space_id)
-        .execute(db)
-        .await
-        .map_err(|e| AppError::Db(format!("seed_default_categories: {e}")))?;
-    Ok(())
-}
-
 pub async fn create_space_for_user(
     user_id: &str,
     space_name: &str,
-    db: &DbPool,
+    conn: &mut SqliteConnection,
+    preview: &SyncPreview,
 ) -> Result<String, AppError> {
     let space_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     sqlx::query_file!("queries/spaces/create_space.sql", space_id, space_name, now)
-        .execute(db)
+        .execute(&mut *conn)
         .await
         .map_err(|e| AppError::Db(format!("create_space: {e}")))?;
 
@@ -151,11 +144,15 @@ pub async fn create_space_for_user(
         "owner",
         now
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await
     .map_err(|e| AppError::Db(format!("add_space_member (owner): {e}")))?;
 
-    seed_default_categories(&space_id, db).await?;
+    sqlx::query_file!("queries/spaces/seed_default_categories.sql", space_id)
+        .execute(conn)
+        .await
+        .map_err(|e| AppError::Db(format!("seed_default_categories: {e}")))?;
+    preview.initialize_local_space(&space_id, user_id).await?;
 
     Ok(space_id)
 }
@@ -193,13 +190,17 @@ pub async fn create_space(
     name: String,
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    preview: State<'_, SyncPreview>,
 ) -> Result<Space, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("space name cannot be empty".into()));
     }
 
     let data = session.require()?;
-    let space_id = create_space_for_user(&data.user_id, name.trim(), db.inner()).await?;
+    let mut tx = db.begin().await?;
+    let space_id =
+        create_space_for_user(&data.user_id, name.trim(), &mut tx, preview.inner()).await?;
+    tx.commit().await?;
 
     let rows = sqlx::query_file!("queries/spaces/list_spaces_for_user.sql", data.user_id)
         .fetch_all(db.inner())
@@ -930,9 +931,16 @@ mod sync_seed_tests {
         .await
         .unwrap();
         create_user(&source, "source-owner").await;
-        let space_id = create_space_for_user("source-owner", "Household", &source)
-            .await
-            .unwrap();
+        let mut create = source.begin().await.unwrap();
+        let space_id = create_space_for_user(
+            "source-owner",
+            "Household",
+            &mut create,
+            &SyncPreview::default(),
+        )
+        .await
+        .unwrap();
+        create.commit().await.unwrap();
         let account_id = "household-account";
         sqlx::query_file!(
             "queries/spaces/import_account.sql",

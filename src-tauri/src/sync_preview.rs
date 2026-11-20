@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use plinth_sync::{Fields, Session as PeerSession, Store, discovery, transport};
+use plinth_sync::{Fields, Session as PeerSession, Store, consensus, discovery, transport};
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 use tauri::State;
@@ -166,6 +166,33 @@ impl SyncPreview {
 
     pub(crate) fn active(&self) -> bool {
         self.0.is_some()
+    }
+
+    pub(crate) async fn initialize_local_space(
+        &self,
+        space_id: &str,
+        owner_account: &str,
+    ) -> Result<(), AppError> {
+        use sha2::{Digest, Sha256};
+
+        let Some(inner) = &self.0 else {
+            return Ok(());
+        };
+        let identity_dir = inner.directory.join("sync-device");
+        let certificate_path = identity_dir.join("peer.der");
+        let certificate = tokio::task::spawn_blocking(move || fs::read(certificate_path))
+            .await
+            .map_err(task_error)?
+            .map_err(|error| AppError::Io(format!("read local sync certificate: {error}")))?;
+        consensus::initialize_local_space(
+            inner.directory.join("sync.sqlite"),
+            identity_dir,
+            space_id.to_owned(),
+            owner_account.to_owned(),
+            Sha256::digest(&certificate).into(),
+        )
+        .await
+        .map_err(|error| AppError::Internal(format!("initialize space permissions: {error}")))
     }
 
     pub(crate) fn revision(&self, space_id: &str) -> Result<u64, AppError> {

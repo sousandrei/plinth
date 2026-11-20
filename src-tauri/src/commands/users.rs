@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
-use crate::{Session, commands::spaces::create_space_for_user, db::DbPool, error::AppError};
+use crate::{
+    Session, commands::spaces::create_space_for_user, db::DbPool, error::AppError,
+    sync_preview::SyncPreview,
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct User {
@@ -86,6 +89,7 @@ pub async fn create_user(
     name: String,
     db: State<'_, DbPool>,
     session: State<'_, Session>,
+    preview: State<'_, SyncPreview>,
 ) -> Result<User, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("name cannot be empty".into()));
@@ -95,13 +99,15 @@ pub async fn create_user(
     let name = name.trim().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
+    let mut tx = db.begin().await?;
     sqlx::query_file!("queries/users/create_user.sql", id, name, now, now)
-        .execute(db.inner())
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Db(format!("create_user: {e}")))?;
 
     let space_name = format!("{name}'s Space");
-    let space_id = create_space_for_user(&id, &space_name, db.inner()).await?;
+    let space_id = create_space_for_user(&id, &space_name, &mut tx, preview.inner()).await?;
+    tx.commit().await?;
 
     session.set(id.clone(), Some(space_id))?;
 
