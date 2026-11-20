@@ -1010,21 +1010,27 @@ impl Network {
             })
             .await
             .map_err(join_error)??;
-        let (peer, enrollment) = self
-            .current_peer(db, store, &space_id, &certificate)
-            .await?;
-        if protocol == PeerProtocol::Roster {
-            return self.serve_roster(store, &peer, stream).await;
-        }
         if protocol == PeerProtocol::Permissions {
             let _call = self.permission_calls.read().await;
-            let Some(enrollment) = enrollment else {
+            let device = certificate_fingerprint(&certificate);
+            let scope = space_id.clone();
+            let peer_certificate = certificate.clone();
+            // Permission replication must remain independent of finance transactions.
+            if !store
+                .with_store(move |store| {
+                    Ok(store
+                        .paired_devices()?
+                        .iter()
+                        .any(|peer| peer.space_id == scope && peer.certificate == peer_certificate))
+                })
+                .await?
+            {
                 return Err(AppError::Forbidden);
-            };
+            }
             if !store
                 .membership_log(space_id.clone())
                 .await?
-                .is_committed_voter(enrollment.device)
+                .is_committed_voter(device)
                 .await
                 .map_err(network_error)?
             {
@@ -1035,6 +1041,12 @@ impl Network {
                 .respond(stream, &certificate)
                 .await
                 .map_err(network_error);
+        }
+        let (peer, enrollment) = self
+            .current_peer(db, store, &space_id, &certificate)
+            .await?;
+        if protocol == PeerProtocol::Roster {
+            return self.serve_roster(store, &peer, stream).await;
         }
         let db = db.clone();
         let store = store.clone();
@@ -1109,6 +1121,19 @@ impl Network {
                 for space in spaces {
                     if let Err(error) = self.resume_permission_replica(&db, &store, space).await {
                         eprintln!("resume permission replica for {space}: {error}");
+                    }
+                    let replica = self
+                        .permission_replicas
+                        .lock()
+                        .await
+                        .as_ref()
+                        .and_then(|replicas| replicas.get(space))
+                        .cloned();
+                    if let Some(replica) = replica
+                        && let Ok(Some(roster)) = replica.shared_roster().await
+                        && let Err(error) = self.cache_roster(&store, space, &roster).await
+                    {
+                        eprintln!("cache permission roster for {space}: {error}");
                     }
                 }
                 let mut tasks = tokio::task::JoinSet::new();

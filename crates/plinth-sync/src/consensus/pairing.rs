@@ -1,8 +1,8 @@
+use super::replica::{owner, voter_id};
 use super::*;
 use crate::membership::Role;
 
-/// A permission snapshot sent over a confirmed pairing connection while the
-/// originating device is the sole voter.
+/// A committed permission snapshot sent over a confirmed pairing connection.
 #[derive(Serialize, Deserialize)]
 pub struct PairingHistory(StoredSnapshot);
 
@@ -23,11 +23,10 @@ impl MembershipLog {
         if membership.deletion_index().is_some() {
             return Err("this space was deleted".into());
         }
-        if !state.voters.voter_ids().eq([FIRST_VOTER])
-            || membership.owner_account() != owner_account
-            || !is_founder(&membership, local_device)
+        if membership.owner_account() != owner_account
+            || !is_pairing_owner(&membership, &state.voters, local_device)
         {
-            return Err("pair devices from the computer that created this space".into());
+            return Err("pair devices from a voting owner device in this space".into());
         }
         Ok(true)
     }
@@ -196,15 +195,14 @@ impl MembershipLog {
             Role::Member
         };
         if host == local_device
-            || !snapshot.meta.last_membership.voter_ids().eq([FIRST_VOTER])
-            || !is_founder(incoming, host)
+            || !is_pairing_owner(incoming, &snapshot.meta.last_membership, host)
             || incoming.deletion_index().is_some()
             || !incoming
                 .device(local_device)
                 .is_some_and(|device| device.role == expected_role)
             || current.as_ref().is_some_and(|existing| {
                 existing.owner_account() != incoming.owner_account()
-                    || existing.founding_device() != Some(host)
+                    || existing.founding_enrollment() != incoming.founding_enrollment()
             })
         {
             return Err("permission history does not match the approved pairing".into());
@@ -229,6 +227,19 @@ fn is_founder(membership: &Membership, device: DeviceId) -> bool {
         && membership
             .device(device)
             .is_some_and(|entry| entry.role == Role::Owner)
+}
+
+fn is_pairing_owner(
+    membership: &Membership,
+    configuration: &Configuration,
+    device: DeviceId,
+) -> bool {
+    let Some(id) =
+        owner(membership, device).and_then(|enrollment| voter_id(membership, enrollment))
+    else {
+        return false;
+    };
+    matches!(configuration.membership().get_joint_config().as_slice(), [voters] if voters.contains(&id))
 }
 
 #[cfg(test)]

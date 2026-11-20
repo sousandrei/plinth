@@ -21,9 +21,12 @@ use openraft::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::transport::{self, Identity, PeerProtocol};
+use crate::{
+    membership::{Change, Enrollment, Outcome, PeerContact, Role},
+    transport::{self, Identity, PeerProtocol},
+};
 
-use super::MembershipRaft;
+use super::{LOCAL_WRITE_TIMEOUT, MembershipRaft, MembershipRequest};
 
 // A default OpenRaft snapshot chunk is 3 MiB before JSON framing.
 const MAX_RPC_BYTES: usize = 16 * 1024 * 1024;
@@ -37,14 +40,20 @@ enum Request {
     Append(AppendEntriesRequest<MembershipRaft>),
     Snapshot(InstallSnapshotRequest<MembershipRaft>),
     Vote(VoteRequest<u64>),
+    Enroll {
+        generation: u64,
+        contact: PeerContact,
+        role: Role,
+    },
 }
 
 impl Request {
-    fn vote(&self) -> &Vote<u64> {
+    fn vote(&self) -> Option<&Vote<u64>> {
         match self {
-            Self::Append(request) => &request.vote,
-            Self::Snapshot(request) => &request.vote,
-            Self::Vote(request) => &request.vote,
+            Self::Append(request) => Some(&request.vote),
+            Self::Snapshot(request) => Some(&request.vote),
+            Self::Vote(request) => Some(&request.vote),
+            Self::Enroll { .. } => None,
         }
     }
 }
@@ -54,6 +63,7 @@ enum Response {
     Append(Result<AppendEntriesResponse<u64>, RaftError<u64>>),
     Snapshot(Result<InstallSnapshotResponse<u64>, RaftError<u64, InstallSnapshotError>>),
     Vote(Result<VoteResponse<u64>, RaftError<u64>>),
+    Enrollment(Option<(u64, Outcome)>),
 }
 
 pub struct VoterEndpoint {
@@ -73,6 +83,34 @@ pub struct PermissionNetwork {
 }
 
 impl PermissionNetwork {
+    pub(super) async fn forward_enrollment(
+        &self,
+        target: u64,
+        author: Enrollment,
+        contact: PeerContact,
+        role: Role,
+        timeout: Duration,
+    ) -> transport::Result<Option<(u64, Outcome)>> {
+        let connection = PermissionConnection {
+            network: self.clone(),
+            target,
+        };
+        match connection
+            .exchange(
+                Request::Enroll {
+                    generation: author.generation,
+                    contact,
+                    role,
+                },
+                timeout,
+            )
+            .await?
+        {
+            Response::Enrollment(outcome) => Ok(outcome),
+            _ => Err("unexpected permission RPC response".into()),
+        }
+    }
+
     pub fn new(
         identity_dir: PathBuf,
         space_id: impl Into<Arc<str>>,
@@ -202,20 +240,53 @@ impl RaftNetwork<MembershipRaft> for PermissionConnection {
 pub fn respond(
     stream: &mut (impl Read + Write),
     authenticated_voter: u64,
+    authenticated_enrollment: Option<Enrollment>,
     raft: &Raft<MembershipRaft>,
     runtime: &tokio::runtime::Handle,
 ) -> transport::Result<()> {
     let request: Request = serde_json::from_slice(&transport::read_frame(stream, MAX_RPC_BYTES)?)?;
-    if request.vote().leader_id().node_id != authenticated_voter {
+    if request
+        .vote()
+        .is_some_and(|vote| vote.leader_id().node_id != authenticated_voter)
+    {
         return Err("permission RPC voter does not match the authenticated device".into());
     }
     let response = runtime.block_on(async {
-        match request {
+        let response = match request {
             Request::Append(request) => Response::Append(raft.append_entries(request).await),
             Request::Snapshot(request) => Response::Snapshot(raft.install_snapshot(request).await),
             Request::Vote(request) => Response::Vote(raft.vote(request).await),
-        }
-    });
+            Request::Enroll {
+                generation,
+                contact,
+                role,
+            } => {
+                let author = authenticated_enrollment
+                    .filter(|author| {
+                        author.generation == generation && author.device != contact.device_id()
+                    })
+                    .ok_or("pairing request does not match the authenticated enrollment")?;
+                if contact.certificate.is_empty()
+                    || contact.certificate.len() > transport::MAX_ENROLLMENT_REQUEST
+                {
+                    return Err("invalid pairing certificate".into());
+                }
+                let committed = tokio::time::timeout(
+                    LOCAL_WRITE_TIMEOUT,
+                    raft.client_write(MembershipRequest::Change {
+                        author,
+                        change: Change::EnrollPeer { contact, role },
+                    }),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .map(|response| (response.log_id.index, response.data));
+                Response::Enrollment(committed)
+            }
+        };
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(response)
+    })?;
     transport::write_frame(stream, &serde_json::to_vec(&response)?, MAX_RPC_BYTES)?;
     Ok(())
 }
@@ -265,7 +336,10 @@ mod tests {
                     assert_eq!(origin, client_cert);
                     assert_eq!(protocol, PeerProtocol::Permissions);
                     assert_eq!(transport::read_space(&mut stream).unwrap(), "space");
-                    assert_eq!(respond(&mut stream, 1, &raft, &runtime).is_ok(), id == 1);
+                    assert_eq!(
+                        respond(&mut stream, 1, None, &raft, &runtime).is_ok(),
+                        id == 1
+                    );
                 }
                 let (socket, _) = listener.accept().unwrap();
                 let (_, origin) = accept.accept_identified(socket).unwrap();

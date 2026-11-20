@@ -16,6 +16,7 @@ use super::*;
 pub struct PermissionReplica {
     log: MembershipLog,
     node: Raft<MembershipRaft>,
+    network: rpc::PermissionNetwork,
     local: Enrollment,
     id: u64,
 }
@@ -23,10 +24,7 @@ pub struct PermissionReplica {
 impl MembershipLog {
     pub async fn has_committed_shared_voters(&self) -> transport::Result<bool> {
         let state = self.pairing_state().await?;
-        Ok(matches!(
-            state.voters.membership().get_joint_config().as_slice(),
-            [voters] if voters.len() > 1
-        ))
+        Ok(is_shared_configuration(&state.voters))
     }
 
     pub async fn should_resume_replica(&self, device: DeviceId) -> transport::Result<bool> {
@@ -57,6 +55,13 @@ impl MembershipLog {
 }
 
 impl PermissionReplica {
+    pub async fn shared_roster(&self) -> transport::Result<Option<Membership>> {
+        let state = self.log.pairing_state().await?;
+        Ok(state.membership.filter(|membership| {
+            is_shared_configuration(&state.voters) && membership.permits_sync(self.local.device)
+        }))
+    }
+
     pub async fn open(
         log: MembershipLog,
         identity_dir: PathBuf,
@@ -106,7 +111,7 @@ impl PermissionReplica {
         let node = Raft::new(
             id,
             Arc::new(Config::default()),
-            network,
+            network.clone(),
             log.clone(),
             log.clone(),
         )
@@ -114,6 +119,7 @@ impl PermissionReplica {
         Ok(Self {
             log,
             node,
+            network,
             local,
             id,
         })
@@ -193,20 +199,61 @@ impl PermissionReplica {
         {
             return Err("this device already has a different role in this space".into());
         }
-        if membership.peer_contact(joining_device) != Some(&joining_contact) {
-            self.node
-                .wait(Some(LOCAL_WRITE_TIMEOUT))
-                .current_leader(self.id, "pairing owner")
-                .await?;
-            let outcome = self
-                .propose(Change::EnrollPeer {
-                    contact: joining_contact,
-                    role,
-                })
-                .await?;
-            if !matches!(outcome, Outcome::Enrolled(_) | Outcome::ContactUpdated(_)) {
+        tokio::time::timeout(LOCAL_WRITE_TIMEOUT, async {
+            let (index, outcome) = loop {
+                if let Some(leader) = self.node.current_leader().await {
+                    let committed = if leader == self.id {
+                        self.node
+                            .client_write(MembershipRequest::Change {
+                                author: self.local,
+                                change: Change::EnrollPeer {
+                                    contact: joining_contact.clone(),
+                                    role,
+                                },
+                            })
+                            .await
+                            .ok()
+                            .map(|response| (response.log_id.index, response.data))
+                    } else {
+                        self.network
+                            .forward_enrollment(
+                                leader,
+                                self.local,
+                                joining_contact.clone(),
+                                role,
+                                LOCAL_WRITE_TIMEOUT,
+                            )
+                            .await
+                            .ok()
+                            .flatten()
+                    };
+                    if let Some(committed) = committed {
+                        break committed;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            };
+            if !matches!(
+                outcome,
+                Outcome::Enrolled(_) | Outcome::ContactUpdated(_) | Outcome::AlreadyEnrolled
+            ) {
                 return Err(format!("could not enroll device: {outcome:?}").into());
             }
+            self.node
+                .wait(Some(LOCAL_WRITE_TIMEOUT))
+                .applied_index_at_least(Some(index), "committed pairing")
+                .await?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .await
+        .map_err(|_| "could not reach the space's permission leader")??;
+        let updated = self.active_membership().await?;
+        if !updated
+            .device(joining_device)
+            .is_some_and(|device| device.role == role)
+            || updated.peer_contact(joining_device) != Some(&joining_contact)
+        {
+            return Err("the approved device enrollment changed".into());
         }
         self.log.clone().pairing_history().await
     }
@@ -217,7 +264,8 @@ impl PermissionReplica {
         certificate: &[u8],
     ) -> transport::Result<()> {
         let membership = self.active_membership().await?;
-        let sender = owner(&membership, certificate_fingerprint(certificate))
+        let enrollment = owner(&membership, certificate_fingerprint(certificate));
+        let sender = enrollment
             .and_then(|enrollment| voter_id(&membership, enrollment))
             .filter(|id| {
                 self.node
@@ -230,8 +278,10 @@ impl PermissionReplica {
             .ok_or("permission RPC sender is not an active voter")?;
         let node = self.node.clone();
         let runtime = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || rpc::respond(&mut stream, sender, &node, &runtime))
-            .await?
+        tokio::task::spawn_blocking(move || {
+            rpc::respond(&mut stream, sender, enrollment, &node, &runtime)
+        })
+        .await?
     }
 
     pub async fn shutdown(&self) -> transport::Result<()> {
@@ -252,14 +302,18 @@ impl PermissionReplica {
     }
 }
 
-fn owner(membership: &Membership, device: DeviceId) -> Option<Enrollment> {
+fn is_shared_configuration(configuration: &Configuration) -> bool {
+    matches!(configuration.membership().get_joint_config().as_slice(), [voters] if voters.len() > 1)
+}
+
+pub(super) fn owner(membership: &Membership, device: DeviceId) -> Option<Enrollment> {
     membership
         .device(device)
         .filter(|device| device.role == Role::Owner)
         .map(|device| device.enrollment)
 }
 
-fn voter_id(membership: &Membership, enrollment: Enrollment) -> Option<u64> {
+pub(super) fn voter_id(membership: &Membership, enrollment: Enrollment) -> Option<u64> {
     if membership.founding_enrollment() == Some(enrollment) {
         Some(FIRST_VOTER)
     } else {

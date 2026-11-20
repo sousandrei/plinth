@@ -593,15 +593,15 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     let removal = plinth_sync::membership::Change::Remove {
         enrollment: source_enrollment,
     };
-    tokio::time::timeout(Duration::from_secs(12), async {
+    let target_is_leader = tokio::time::timeout(Duration::from_secs(12), async {
         loop {
-            for replica in [&target_replica, &third_replica] {
+            for (is_target, replica) in [(true, &target_replica), (false, &third_replica)] {
                 if matches!(
                     replica.propose(removal.clone()).await,
                     Ok(plinth_sync::membership::Outcome::Removed(_)
                         | plinth_sync::membership::Outcome::EnrollmentInactive)
                 ) {
-                    return;
+                    return is_target;
                 }
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -609,6 +609,98 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     })
     .await
     .unwrap();
+    let (invite_host, invite_db, invite_store) = if target_is_leader {
+        (&third, &third_db, &third_store)
+    } else {
+        (&target, &target_db, &target_store)
+    };
+    let fourth_dir = tempfile::tempdir().unwrap();
+    let (fourth_db, fourth_store, fourth, _fourth_listener) =
+        profile(fourth_dir.path(), None).await;
+    let forwarded_invite = invite_host
+        .clone()
+        .invite(
+            invite_db.clone(),
+            invite_store.clone(),
+            space.clone(),
+            user_id.into(),
+            true,
+        )
+        .await
+        .unwrap();
+    let forwarded = fourth
+        .begin_join(&format!("127.0.0.1:{}", forwarded_invite.port), Vec::new())
+        .await
+        .unwrap();
+    let forwarded_code = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(code) = invite_host
+                .incoming
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|pending| pending.request.code.clone())
+            {
+                break code;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fourth
+        .verify_join_code(&forwarded.id, &forwarded_code)
+        .await
+        .unwrap();
+    fourth
+        .join(&fourth_db, &fourth_store, new_user(), &forwarded.id)
+        .await
+        .unwrap();
+    let forwarded_history = fourth_store
+        .membership_log(space.clone())
+        .await
+        .unwrap()
+        .membership()
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(forwarded_history.permits_sync(fourth.device_id));
+    assert!(!forwarded_history.permits_sync(source.device_id));
+    assert_eq!(
+        invite_store
+            .membership_log(space.clone())
+            .await
+            .unwrap()
+            .membership()
+            .await
+            .unwrap()
+            .unwrap()
+            .device(fourth.device_id),
+        forwarded_history.device(fourth.device_id)
+    );
+    let leader_store = if target_is_leader {
+        &target_store
+    } else {
+        &third_store
+    };
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let devices = leader_store
+                .with_store(|store| store.paired_devices())
+                .await
+                .unwrap();
+            if devices
+                .iter()
+                .any(|peer| certificate_fingerprint(&peer.certificate) == fourth.device_id)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the permission leader learns the new device through the shared roster");
+    fourth_db.close().await;
     drop(target_replica);
     drop(third_replica);
     target_worker.abort();
