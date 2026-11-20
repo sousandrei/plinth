@@ -22,6 +22,7 @@ const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const ALPN: &[u8] = b"plinth-sync/1";
 const PERMISSION_ALPN: &[u8] = b"plinth-permissions/1";
+const ROSTER_ALPN: &[u8] = b"plinth-roster/1";
 const ENROLLMENT_ALPN: &[u8] = b"plinth-enrollment/3";
 pub const MAX_ENROLLMENT_REQUEST: usize = 8 * 1024;
 pub const MAX_SPACE_SNAPSHOT: usize = 128 * 1024 * 1024;
@@ -44,6 +45,7 @@ pub struct PeerListener<'a> {
 pub enum PeerProtocol {
     Data,
     Permissions,
+    Roster,
 }
 
 impl PeerProtocol {
@@ -51,6 +53,7 @@ impl PeerProtocol {
         match self {
             Self::Data => ALPN,
             Self::Permissions => PERMISSION_ALPN,
+            Self::Roster => ROSTER_ALPN,
         }
     }
 }
@@ -228,6 +231,14 @@ impl Identity {
 
     pub fn listener_with_permissions(&self) -> Result<PeerListener<'_>> {
         self.listen_for(&[PeerProtocol::Data, PeerProtocol::Permissions])
+    }
+
+    pub fn listener_with_roster(&self) -> Result<PeerListener<'_>> {
+        self.listen_for(&[PeerProtocol::Data, PeerProtocol::Roster])
+    }
+
+    pub fn connect_roster(&self, addr: SocketAddr) -> Result<impl Read + Write + use<>> {
+        self.connect_protocol(addr, PeerProtocol::Roster, TIMEOUT)
     }
 
     fn listen_for(&self, protocols: &'static [PeerProtocol]) -> Result<PeerListener<'_>> {

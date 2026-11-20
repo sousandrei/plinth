@@ -104,6 +104,107 @@ impl MembershipLog {
         })))
     }
 
+    pub async fn roster_revision(
+        &self,
+        host: DeviceId,
+        local_device: DeviceId,
+    ) -> transport::Result<Option<u64>> {
+        let state = self.pairing_state().await?;
+        Ok(state
+            .membership
+            .as_ref()
+            .filter(|membership| {
+                host != local_device
+                    && state.voters.voter_ids().eq([FIRST_VOTER])
+                    && is_founder(membership, host)
+                    && membership.device(local_device).is_some()
+            })
+            .and(state.last_applied)
+            .map(|log| log.index))
+    }
+
+    pub async fn roster_update(
+        &self,
+        local_device: DeviceId,
+        requester: DeviceId,
+        known_revision: u64,
+    ) -> transport::Result<Option<PairingHistory>> {
+        let state = self.pairing_state().await?;
+        let membership = state
+            .membership
+            .as_ref()
+            .ok_or("missing permission history")?;
+        if !state.voters.voter_ids().eq([FIRST_VOTER])
+            || !is_founder(membership, local_device)
+            || membership.device(requester).is_none()
+        {
+            return Err("device is not authorized for this roster".into());
+        }
+        if state
+            .last_applied
+            .is_none_or(|log| log.index <= known_revision)
+        {
+            return Ok(None);
+        }
+        // Pairing saves the committed snapshot for the latest roster. A request
+        // during an approval can pick it up on the next exchange.
+        Ok(self
+            .load_snapshot()
+            .await?
+            .filter(|snapshot| {
+                snapshot
+                    .meta
+                    .last_log_id
+                    .is_some_and(|log| log.index > known_revision)
+            })
+            .map(PairingHistory))
+    }
+
+    pub async fn receive_roster_update(
+        &mut self,
+        history: PairingHistory,
+        host: DeviceId,
+        local_device: DeviceId,
+    ) -> transport::Result<()> {
+        let current = self.pairing_state().await?;
+        let membership = current
+            .membership
+            .as_ref()
+            .ok_or("missing permission history")?;
+        let device = membership
+            .device(local_device)
+            .ok_or("device is not enrolled")?;
+        let incoming = history
+            .0
+            .contents
+            .state
+            .membership
+            .as_ref()
+            .ok_or("missing permission history")?;
+        if host == local_device
+            || !current.voters.voter_ids().eq([FIRST_VOTER])
+            || !is_founder(membership, host)
+            || incoming.device(local_device) != Some(device)
+            || history.0.meta.last_log_id.map(|log| log.index)
+                <= current.last_applied.map(|log| log.index)
+        {
+            return Err("roster update does not match the current enrollment".into());
+        }
+        let account = (device.role == Role::Owner).then_some(membership.owner_account());
+        self.receive_pairing_history(Some(history), host, local_device, account)
+            .await
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn load_snapshot(&self) -> RaftResult<Option<StoredSnapshot>> {
+        self.access(
+            ErrorSubject::Snapshot(None),
+            ErrorVerb::Read,
+            |db, space| read_meta(db, space, "snapshot"),
+        )
+        .await
+    }
+
     pub async fn receive_pairing_history(
         &mut self,
         history: Option<PairingHistory>,

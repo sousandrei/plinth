@@ -116,6 +116,17 @@ impl Store {
                 [],
             )?;
         }
+        let has_disconnected: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('paired_devices') WHERE name = 'disconnected')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_disconnected {
+            db.execute(
+                "ALTER TABLE paired_devices ADD COLUMN disconnected INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         Ok(Self {
             db,
             actor: AutoCommit::new().get_actor().clone(),
@@ -129,7 +140,8 @@ impl Store {
              ON CONFLICT (space_id, certificate) DO UPDATE
              SET name = excluded.name,
                  address = COALESCE(excluded.address, paired_devices.address),
-                 display_name = COALESCE(excluded.display_name, paired_devices.display_name)",
+                 display_name = COALESCE(excluded.display_name, paired_devices.display_name),
+                 disconnected = 0",
             params![
                 peer.space_id,
                 peer.certificate,
@@ -143,15 +155,39 @@ impl Store {
 
     pub fn unpair_device(&self, space_id: &str, certificate: &[u8]) -> Result<(), Error> {
         self.db.execute(
-            "DELETE FROM paired_devices WHERE space_id = ?1 AND certificate = ?2",
+            "UPDATE paired_devices SET disconnected = 1, address = NULL, display_name = NULL
+             WHERE space_id = ?1 AND certificate = ?2",
             params![space_id, certificate],
         )?;
         Ok(())
     }
 
+    pub fn cache_roster_peers(&mut self, peers: &[PairedDevice]) -> Result<(), Error> {
+        let txn = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        {
+            let mut insert = txn.prepare_cached(
+                "INSERT INTO paired_devices (space_id, certificate, name, address)
+                 VALUES (?1, ?2, ?3, ?4) ON CONFLICT (space_id, certificate) DO NOTHING",
+            )?;
+            for peer in peers {
+                insert.execute(params![
+                    peer.space_id,
+                    peer.certificate,
+                    peer.name,
+                    peer.address
+                ])?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     pub fn paired_devices(&self) -> Result<Vec<PairedDevice>, Error> {
         let mut query = self.db.prepare(
-            "SELECT space_id, certificate, name, address, display_name FROM paired_devices ORDER BY space_id, name",
+            "SELECT space_id, certificate, name, address, display_name FROM paired_devices
+             WHERE disconnected = 0 ORDER BY space_id, name",
         )?;
         let rows = query.query_map([], |row| {
             Ok(PairedDevice {

@@ -45,8 +45,7 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     let user_id = "d20be3bc-ecad-4742-a399-35a9850a8afa";
     let (source_db, source_store, source, listener) =
         profile(source_dir.path(), Some(user_id)).await;
-    let (target_db, target_store, target, _unused_listener) =
-        profile(target_dir.path(), None).await;
+    let (target_db, target_store, target, target_listener) = profile(target_dir.path(), None).await;
     let mut create = source_db.begin().await.unwrap();
     let space = spaces::create_space_for_user(user_id, "Household", &mut create, &source_store)
         .await
@@ -396,8 +395,118 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     })
     .await
     .unwrap();
+    let third_dir = tempfile::tempdir().unwrap();
+    let (third_db, third_store, third, _third_listener) = profile(third_dir.path(), None).await;
+    let invite = source
+        .clone()
+        .invite(
+            source_db.clone(),
+            source_store.clone(),
+            space.clone(),
+            user_id.into(),
+            true,
+        )
+        .await
+        .unwrap();
+    let pairing = third
+        .begin_join(&format!("127.0.0.1:{}", invite.port), Vec::new())
+        .await
+        .unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(incoming) = source.incoming.lock().unwrap().as_ref() {
+                break incoming.request.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    third.verify_join_code(&pairing.id, &request.code).unwrap();
+    source.respond_pairing(user_id, &request.id, true).unwrap();
+    third
+        .join(&third_db, &third_store, new_user(), &pairing.id)
+        .await
+        .unwrap();
+
+    let third_id = third.device_id;
+    let peer_on_target = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let peers = target_store
+                .with_store(|store| store.paired_devices())
+                .await
+                .unwrap();
+            if let Some(peer) = peers
+                .into_iter()
+                .find(|peer| certificate_fingerprint(&peer.certificate) == third_id)
+            {
+                break peer;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+
     automatic.abort();
+    let _ = automatic.await;
     server.abort();
+    let _ = server.await;
+    let target_server = tokio::spawn(target.clone().listen(
+        target_listener,
+        target_db.clone(),
+        target_store.clone(),
+    ));
+    let patch =
+        serde_json::from_value(serde_json::json!({"note": "edited with the creator offline"}))
+            .unwrap();
+    transactions::update_in_preview(&target_db, &target_store, &space, "purchase", patch)
+        .await
+        .unwrap();
+    let target_peer = third_store
+        .with_store(|store| store.paired_devices())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|peer| certificate_fingerprint(&peer.certificate) == target.device_id)
+        .unwrap();
+    let address = target_peer.address.clone().unwrap();
+    third
+        .dial(&third_db, &third_store, &target_peer, address)
+        .await
+        .unwrap();
+    assert_eq!(
+        note(&third_db, &space).await,
+        "edited with the creator offline"
+    );
+
+    let local_space = space.clone();
+    target_store
+        .with_store(move |store| store.unpair_device(&local_space, &peer_on_target.certificate))
+        .await
+        .unwrap();
+    let roster = target_store
+        .membership_log(space.clone())
+        .await
+        .unwrap()
+        .membership()
+        .await
+        .unwrap()
+        .unwrap();
+    target
+        .cache_roster(&target_store, &space, &roster)
+        .await
+        .unwrap();
+    assert!(
+        target_store
+            .with_store(|store| store.paired_devices())
+            .await
+            .unwrap()
+            .iter()
+            .all(|peer| certificate_fingerprint(&peer.certificate) != third_id)
+    );
+    target_server.abort();
+    third_db.close().await;
     source_db.close().await;
     target_db.close().await;
 }

@@ -11,8 +11,8 @@ use plinth_sync::{
     PairedDevice, Session as PeerSession,
     consensus::PairingHistory,
     discovery,
-    membership::{DeviceId, PeerContact, Role, certificate_fingerprint},
-    transport::{self, Identity},
+    membership::{DeviceId, Membership, PeerContact, Role, certificate_fingerprint},
+    transport::{self, Identity, PeerProtocol},
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -40,6 +40,7 @@ const SYNC_PORT: u16 = 37419;
 const INVITE_PORT: u16 = 37420;
 const CONFIRMATION_TTL: Duration = Duration::from_secs(90);
 const MAX_CODE_ATTEMPTS: u8 = 5;
+const MAX_ROSTER_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 struct JoiningDevice {
@@ -833,9 +834,8 @@ impl Network {
             _ => return Err(AppError::Unauthorized),
         };
         spaces::write_sync_seed(&mut install, &user_id, bootstrap.seed).await?;
-        store
-            .membership_log(space_id.clone())
-            .await?
+        let mut membership_log = store.membership_log(space_id.clone()).await?;
+        membership_log
             .receive_pairing_history(
                 bootstrap.permissions,
                 host,
@@ -847,6 +847,13 @@ impl Network {
         store
             .with_store(move |store| store.pair_device(&peer))
             .await?;
+        if let Some(membership) = membership_log
+            .membership()
+            .await
+            .map_err(network_error_box)?
+        {
+            self.cache_roster(store, &space_id, &membership).await?;
+        }
         install.commit().await?;
         Ok((space_id, new.then_some(user_id)))
     }
@@ -887,25 +894,29 @@ impl Network {
             return Err(AppError::Forbidden);
         }
         let directory = self.directory.clone();
-        let (mut stream, certificate, space_id) = tokio::task::spawn_blocking(move || {
-            let identity = Identity::with_certificates(
-                &directory,
-                certificates.into_iter().map(Into::into).collect(),
-            )
-            .map_err(network_error)?;
-            let (mut stream, certificate) = identity
-                .listener()
-                .map_err(network_error)?
-                .accept_identified(socket)
+        let (mut stream, certificate, space_id, protocol) =
+            tokio::task::spawn_blocking(move || {
+                let identity = Identity::with_certificates(
+                    &directory,
+                    certificates.into_iter().map(Into::into).collect(),
+                )
                 .map_err(network_error)?;
-            let space = transport::read_space(&mut stream).map_err(network_error)?;
-            Ok::<_, AppError>((stream, certificate, space))
-        })
-        .await
-        .map_err(join_error)??;
+                let (mut stream, certificate, protocol) = identity
+                    .listener_with_roster()
+                    .map_err(network_error)?
+                    .accept_protocol(socket)
+                    .map_err(network_error)?;
+                let space = transport::read_space(&mut stream).map_err(network_error)?;
+                Ok::<_, AppError>((stream, certificate, space, protocol))
+            })
+            .await
+            .map_err(join_error)??;
         let peer = self
             .current_peer(db, store, &space_id, &certificate)
             .await?;
+        if protocol == PeerProtocol::Roster {
+            return self.serve_roster(store, &peer, stream).await;
+        }
         let db = db.clone();
         let store = store.clone();
         let runtime = tokio::runtime::Handle::current();
@@ -977,14 +988,128 @@ impl Network {
         else {
             return;
         };
-        let Some(address) = &peer.address else { return };
+        let Some(mut address) = peer.address.clone() else {
+            return;
+        };
         let mut result = self.dial(db, store, &peer, address.clone()).await;
-        if result.is_err() {
-            result = self
-                .dial(db, store, &peer, format!("mdns:{}", peer.name))
-                .await;
+        let nearby = format!("mdns:{}", peer.name);
+        if result.is_err() && address != nearby {
+            address = nearby;
+            result = self.dial(db, store, &peer, address.clone()).await;
+        }
+        if result.is_ok() {
+            let _ = self.refresh_roster(store, &peer, address).await;
         }
         self.record_status(&peer, &result);
+    }
+
+    async fn serve_roster(
+        &self,
+        store: &SyncPreview,
+        peer: &PairedDevice,
+        mut stream: impl Read + Write + Send + 'static,
+    ) -> Result<(), AppError> {
+        let (mut stream, revision) = tokio::task::spawn_blocking(move || {
+            let revision: [u8; 8] = transport::read_frame(&mut stream, 8)
+                .map_err(io_error)?
+                .try_into()
+                .map_err(|_| AppError::InvalidInput("invalid roster revision".into()))?;
+            Ok::<_, AppError>((stream, u64::from_be_bytes(revision)))
+        })
+        .await
+        .map_err(join_error)??;
+        let update = store
+            .membership_log(peer.space_id.clone())
+            .await?
+            .roster_update(
+                self.device_id,
+                certificate_fingerprint(&peer.certificate),
+                revision,
+            )
+            .await
+            .map_err(network_error)?;
+        let bytes = update.as_ref().map(encode).transpose()?.unwrap_or_default();
+        tokio::task::spawn_blocking(move || {
+            transport::write_frame(&mut stream, &bytes, MAX_ROSTER_BYTES).map_err(io_error)
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn refresh_roster(
+        &self,
+        store: &SyncPreview,
+        peer: &PairedDevice,
+        address: String,
+    ) -> Result<(), AppError> {
+        let mut log = store.membership_log(peer.space_id.clone()).await?;
+        let host = certificate_fingerprint(&peer.certificate);
+        let Some(revision) = log
+            .roster_revision(host, self.device_id)
+            .await
+            .map_err(network_error)?
+        else {
+            return Ok(());
+        };
+        let directory = self.directory.clone();
+        let certificate = peer.certificate.clone();
+        let space = peer.space_id.clone();
+        let addresses = resolve_peer(address).await?;
+        let update = tokio::task::spawn_blocking(move || {
+            let identity = Identity::with_certificates(&directory, vec![certificate.into()])
+                .map_err(network_error)?;
+            let mut stream = addresses
+                .into_iter()
+                .find_map(|address| identity.connect_roster(address).ok())
+                .ok_or_else(|| AppError::Io("could not connect to the space roster".into()))?;
+            transport::write_frame(&mut stream, space.as_bytes(), 256).map_err(io_error)?;
+            transport::write_frame(&mut stream, &revision.to_be_bytes(), 8).map_err(io_error)?;
+            let bytes = transport::read_frame(&mut stream, MAX_ROSTER_BYTES).map_err(io_error)?;
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            decode::<PairingHistory>(&bytes).map(Some)
+        })
+        .await
+        .map_err(join_error)??;
+        if let Some(update) = update {
+            log.receive_roster_update(update, host, self.device_id)
+                .await
+                .map_err(network_error)?;
+        }
+        if let Some(membership) = log.membership().await.map_err(network_error_box)? {
+            self.cache_roster(store, &peer.space_id, &membership)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn cache_roster(
+        &self,
+        store: &SyncPreview,
+        space_id: &str,
+        membership: &Membership,
+    ) -> Result<(), AppError> {
+        let peers: Vec<_> = membership
+            .peer_contacts()
+            .filter(|(device, _)| device.enrollment.device != self.device_id)
+            .map(|(_, contact)| {
+                let name = device_name(&contact.certificate);
+                let address = contact
+                    .address_hint
+                    .map_or_else(|| format!("mdns:{name}"), |addr| addr.to_string());
+                PairedDevice {
+                    space_id: space_id.into(),
+                    certificate: contact.certificate.clone(),
+                    name,
+                    address: Some(address),
+                    display_name: None,
+                }
+            })
+            .collect();
+        store
+            .with_store(move |store| store.cache_roster_peers(&peers))
+            .await
     }
 
     async fn dial(
@@ -1156,6 +1281,10 @@ fn io_error(error: std::io::Error) -> AppError {
 }
 fn network_error(error: Box<dyn std::error::Error + Send + Sync>) -> AppError {
     AppError::Io(format!("sync connection: {error}"))
+}
+
+fn network_error_box(error: impl std::error::Error + Send + Sync + 'static) -> AppError {
+    network_error(Box::new(error))
 }
 fn join_error(error: tokio::task::JoinError) -> AppError {
     AppError::Internal(format!("sync task: {error}"))
