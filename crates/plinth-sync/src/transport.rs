@@ -21,6 +21,7 @@ pub const TLS_NAME: &str = "plinth-peer.local";
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const ALPN: &[u8] = b"plinth-sync/1";
+const PERMISSION_ALPN: &[u8] = b"plinth-permissions/1";
 const ENROLLMENT_ALPN: &[u8] = b"plinth-enrollment/2";
 pub const MAX_ENROLLMENT_REQUEST: usize = 8 * 1024;
 pub const MAX_SPACE_SNAPSHOT: usize = 128 * 1024 * 1024;
@@ -36,6 +37,22 @@ pub struct Identity {
 pub struct PeerListener<'a> {
     identity: &'a Identity,
     config: Arc<ServerConfig>,
+    protocols: &'static [PeerProtocol],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerProtocol {
+    Data,
+    Permissions,
+}
+
+impl PeerProtocol {
+    fn alpn(self) -> &'static [u8] {
+        match self {
+            Self::Data => ALPN,
+            Self::Permissions => PERMISSION_ALPN,
+        }
+    }
 }
 
 impl Identity {
@@ -167,22 +184,40 @@ impl Identity {
     }
 
     pub fn connect(&self, addr: SocketAddr) -> Result<impl Read + Write + use<>> {
+        self.connect_protocol(addr, PeerProtocol::Data, TIMEOUT)
+    }
+
+    pub(crate) fn connect_protocol(
+        &self,
+        addr: SocketAddr,
+        protocol: PeerProtocol,
+        timeout: Duration,
+    ) -> Result<impl Read + Write + use<>> {
         let mut config =
             ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
                 .with_safe_default_protocol_versions()?
                 .with_root_certificates(self.roots()?)
                 .with_client_auth_cert(vec![self.cert.clone()], self.key.clone_key().into())?;
-        config.alpn_protocols = vec![ALPN.to_vec()];
+        config.alpn_protocols = vec![protocol.alpn().to_vec()];
         let mut conn = ClientConnection::new(Arc::new(config), TLS_NAME.try_into()?)?;
-        let mut socket = TcpStream::connect_timeout(&addr, TIMEOUT)?;
-        timeouts(&socket)?;
+        let mut socket = TcpStream::connect_timeout(&addr, timeout)?;
+        socket.set_read_timeout(Some(timeout))?;
+        socket.set_write_timeout(Some(timeout))?;
         conn.complete_io(&mut socket)?;
         self.check_peer(conn.peer_certificates())?;
-        check_protocol(conn.alpn_protocol(), ALPN)?;
+        check_protocol(conn.alpn_protocol(), protocol.alpn())?;
         Ok(StreamOwned::new(conn, socket))
     }
 
     pub fn listener(&self) -> Result<PeerListener<'_>> {
+        self.listen_for(&[PeerProtocol::Data])
+    }
+
+    pub fn listener_with_permissions(&self) -> Result<PeerListener<'_>> {
+        self.listen_for(&[PeerProtocol::Data, PeerProtocol::Permissions])
+    }
+
+    fn listen_for(&self, protocols: &'static [PeerProtocol]) -> Result<PeerListener<'_>> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let verifier =
             WebPkiClientVerifier::builder_with_provider(Arc::new(self.roots()?), provider.clone())
@@ -191,10 +226,14 @@ impl Identity {
             .with_safe_default_protocol_versions()?
             .with_client_cert_verifier(verifier)
             .with_single_cert(vec![self.cert.clone()], self.key.clone_key().into())?;
-        config.alpn_protocols = vec![ALPN.to_vec()];
+        config.alpn_protocols = protocols
+            .iter()
+            .map(|protocol| protocol.alpn().to_vec())
+            .collect();
         Ok(PeerListener {
             identity: self,
             config: Arc::new(config),
+            protocols,
         })
     }
 
@@ -211,19 +250,35 @@ impl PeerListener<'_> {
 
     pub fn accept_identified(
         &self,
-        mut socket: TcpStream,
+        socket: TcpStream,
     ) -> Result<(impl Read + Write + use<>, Vec<u8>)> {
+        let (stream, certificate, protocol) = self.accept_protocol(socket)?;
+        if protocol != PeerProtocol::Data {
+            return Err("unexpected peer protocol".into());
+        }
+        Ok((stream, certificate))
+    }
+
+    pub fn accept_protocol(
+        &self,
+        mut socket: TcpStream,
+    ) -> Result<(impl Read + Write + use<>, Vec<u8>, PeerProtocol)> {
         let mut conn = ServerConnection::new(self.config.clone())?;
         timeouts(&socket)?;
         conn.complete_io(&mut socket)?;
         self.identity.check_peer(conn.peer_certificates())?;
-        check_protocol(conn.alpn_protocol(), ALPN)?;
+        let protocol = self
+            .protocols
+            .iter()
+            .copied()
+            .find(|protocol| Some(protocol.alpn()) == conn.alpn_protocol())
+            .ok_or("unsupported sync protocol")?;
         let certificate = conn
             .peer_certificates()
             .and_then(|certs| certs.first())
             .ok_or("missing peer certificate")?
             .to_vec();
-        Ok((StreamOwned::new(conn, socket), certificate))
+        Ok((StreamOwned::new(conn, socket), certificate, protocol))
     }
 }
 

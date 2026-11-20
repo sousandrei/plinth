@@ -20,6 +20,8 @@ use thiserror::Error;
 
 use crate::membership::{Change, DeviceId, Enrollment, Membership, Outcome};
 
+pub mod rpc;
+
 #[cfg(test)]
 mod cluster_tests;
 
