@@ -68,6 +68,7 @@ pub enum Outcome {
     AlreadyEnrolled,
     EnrollmentInactive,
     LastOwner,
+    WouldLoseQuorum,
     AlreadyApplied,
 }
 

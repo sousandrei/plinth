@@ -200,12 +200,7 @@ async fn enrolled_owners_form_a_permission_quorum_over_authenticated_tcp() {
     .await
     .unwrap();
     assert_eq!(
-        promoted
-            .propose(Change::Remove {
-                enrollment: a.local
-            })
-            .await
-            .unwrap(),
+        promoted.revoke_device("account", a.local).await.unwrap(),
         Outcome::Removed(a.local)
     );
     let membership = promoted.log.membership().await.unwrap().unwrap();

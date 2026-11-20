@@ -15,7 +15,9 @@ use plinth_sync::{
     PairedDevice, Session as PeerSession,
     consensus::{PairingHistory, PermissionReplica},
     discovery,
-    membership::{DeviceId, Enrollment, Membership, PeerContact, Role, certificate_fingerprint},
+    membership::{
+        DeviceId, Enrollment, Membership, Outcome, PeerContact, Role, certificate_fingerprint,
+    },
     transport::{self, Identity, PeerProtocol},
 };
 use serde::{Deserialize, Serialize};
@@ -352,11 +354,10 @@ pub async fn list_sync_devices(
 ) -> Result<Vec<SyncDevice>, AppError> {
     let user = session.require_user()?;
     spaces::require_member(&space_id, &user.user_id, db.inner()).await?;
-    let peers = store.with_store(|store| store.paired_devices()).await?;
+    let peers = space_devices(store.inner(), &space_id).await?;
     let status = network.inner.status.lock().map_err(|_| state_error())?;
     Ok(peers
         .into_iter()
-        .filter(|peer| peer.space_id == space_id)
         .map(|peer| {
             let id = certificate_id(&peer.certificate);
             let state = status.get(&(space_id.clone(), id.clone()));
@@ -386,22 +387,100 @@ pub async fn remove_sync_device(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
     store: State<'_, SyncPreview>,
+    network: State<'_, SyncNetwork>,
 ) -> Result<(), AppError> {
     let user = session.require_user()?;
     spaces::require_owner(&space_id, &user.user_id, db.inner()).await?;
-    store
-        .with_store(move |store| {
-            if let Some(peer) = store.paired_devices()?.into_iter().find(|peer| {
-                peer.space_id == space_id && certificate_id(&peer.certificate) == device_id
-            }) {
-                store.unpair_device(&space_id, &peer.certificate)?;
-            }
-            Ok(())
-        })
+    network
+        .inner
+        .remove_device(store.inner(), &space_id, &user.user_id, &device_id)
         .await
 }
 
+async fn space_devices(store: &SyncPreview, space: &str) -> Result<Vec<PairedDevice>, AppError> {
+    let membership = store
+        .membership_log(space.to_owned())
+        .await?
+        .membership()
+        .await
+        .map_err(network_error_box)?;
+    let mut peers = store.with_store(|store| store.paired_devices()).await?;
+    peers.retain(|peer| {
+        peer.space_id == space
+            && membership.as_ref().is_none_or(|membership| {
+                membership.permits_sync(certificate_fingerprint(&peer.certificate))
+            })
+    });
+    Ok(peers)
+}
+
 impl Network {
+    async fn remove_device(
+        &self,
+        store: &SyncPreview,
+        space: &str,
+        owner: &str,
+        device_id: &str,
+    ) -> Result<(), AppError> {
+        let _write = self.permission_writes.lock().await;
+        let Some(peer) = store
+            .with_store(|store| store.paired_devices())
+            .await?
+            .into_iter()
+            .find(|peer| peer.space_id == space && certificate_id(&peer.certificate) == device_id)
+        else {
+            return Ok(());
+        };
+        let log = store.membership_log(space.to_owned()).await?;
+        if let Some(membership) = log.membership().await.map_err(network_error_box)? {
+            let Some(target) = membership.device(certificate_fingerprint(&peer.certificate)) else {
+                return Ok(());
+            };
+            if membership.owner_account() != owner
+                || !log
+                    .is_committed_voter(self.device_id)
+                    .await
+                    .map_err(network_error)?
+            {
+                return Err(AppError::InvalidInput(
+                    "remove devices from a voting owner device in this space".into(),
+                ));
+            }
+            let replica = self.permission_replica(store, space).await?;
+            match replica
+                .revoke_device(owner, target.enrollment)
+                .await
+                .map_err(network_error)?
+            {
+                Outcome::Removed(_) | Outcome::EnrollmentInactive => {}
+                Outcome::WouldLoseQuorum => return Err(AppError::InvalidInput(
+                    "removing this device would leave too few voting devices to manage the space"
+                        .into(),
+                )),
+                Outcome::LastOwner => {
+                    return Err(AppError::InvalidInput(
+                        "a shared space needs at least one owner device".into(),
+                    ));
+                }
+                Outcome::AuthorNotOwner => return Err(AppError::Forbidden),
+                outcome => {
+                    return Err(AppError::InvalidInput(format!(
+                        "could not remove device: {outcome:?}"
+                    )));
+                }
+            }
+        } else {
+            let space = space.to_owned();
+            store
+                .with_store(move |store| store.unpair_device(&space, &peer.certificate))
+                .await?;
+        }
+        if let Ok(mut status) = self.status.lock() {
+            status.remove(&(space.to_owned(), device_id.to_owned()));
+        }
+        Ok(())
+    }
+
     fn cancel_invitation(&self, invitation_id: &str, user_id: &str) -> Result<(), AppError> {
         let mut active = self.invite.lock().map_err(|_| state_error())?;
         if active

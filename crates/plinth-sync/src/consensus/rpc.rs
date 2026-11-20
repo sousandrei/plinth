@@ -45,6 +45,10 @@ enum Request {
         contact: PeerContact,
         role: Role,
     },
+    Remove {
+        generation: u64,
+        enrollment: Enrollment,
+    },
 }
 
 impl Request {
@@ -53,7 +57,7 @@ impl Request {
             Self::Append(request) => Some(&request.vote),
             Self::Snapshot(request) => Some(&request.vote),
             Self::Vote(request) => Some(&request.vote),
-            Self::Enroll { .. } => None,
+            Self::Enroll { .. } | Self::Remove { .. } => None,
         }
     }
 }
@@ -63,7 +67,8 @@ enum Response {
     Append(Result<AppendEntriesResponse<u64>, RaftError<u64>>),
     Snapshot(Result<InstallSnapshotResponse<u64>, RaftError<u64, InstallSnapshotError>>),
     Vote(Result<VoteResponse<u64>, RaftError<u64>>),
-    Enrollment(Option<(u64, Outcome)>),
+    #[serde(rename = "Enrollment")]
+    Applied(Option<(u64, Outcome)>),
 }
 
 pub struct VoterEndpoint {
@@ -83,30 +88,32 @@ pub struct PermissionNetwork {
 }
 
 impl PermissionNetwork {
-    pub(super) async fn forward_enrollment(
+    pub(super) async fn forward_change(
         &self,
         target: u64,
-        author: Enrollment,
-        contact: PeerContact,
-        role: Role,
-        timeout: Duration,
+        change: MembershipRequest,
     ) -> transport::Result<Option<(u64, Outcome)>> {
+        let request = match change {
+            MembershipRequest::Change {
+                author,
+                change: Change::EnrollPeer { contact, role },
+            } => Request::Enroll {
+                generation: author.generation,
+                contact,
+                role,
+            },
+            MembershipRequest::RevokeDevice { author, enrollment } => Request::Remove {
+                generation: author.generation,
+                enrollment,
+            },
+            _ => return Err("unsupported forwarded permission change".into()),
+        };
         let connection = PermissionConnection {
             network: self.clone(),
             target,
         };
-        match connection
-            .exchange(
-                Request::Enroll {
-                    generation: author.generation,
-                    contact,
-                    role,
-                },
-                timeout,
-            )
-            .await?
-        {
-            Response::Enrollment(outcome) => Ok(outcome),
+        match connection.exchange(request, LOCAL_WRITE_TIMEOUT).await? {
+            Response::Applied(outcome) => Ok(outcome),
             _ => Err("unexpected permission RPC response".into()),
         }
     }
@@ -271,24 +278,47 @@ pub fn respond(
                 {
                     return Err("invalid pairing certificate".into());
                 }
-                let committed = tokio::time::timeout(
-                    LOCAL_WRITE_TIMEOUT,
-                    raft.client_write(MembershipRequest::Change {
-                        author,
-                        change: Change::EnrollPeer { contact, role },
-                    }),
+                Response::Applied(
+                    commit_forwarded(
+                        raft,
+                        MembershipRequest::Change {
+                            author,
+                            change: Change::EnrollPeer { contact, role },
+                        },
+                    )
+                    .await,
                 )
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .map(|response| (response.log_id.index, response.data));
-                Response::Enrollment(committed)
+            }
+            Request::Remove {
+                generation,
+                enrollment,
+            } => {
+                let author = authenticated_enrollment
+                    .filter(|author| {
+                        author.generation == generation && author.device != enrollment.device
+                    })
+                    .ok_or("removal request does not match the authenticated enrollment")?;
+                Response::Applied(
+                    commit_forwarded(raft, MembershipRequest::RevokeDevice { author, enrollment })
+                        .await,
+                )
             }
         };
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(response)
     })?;
     transport::write_frame(stream, &serde_json::to_vec(&response)?, MAX_RPC_BYTES)?;
     Ok(())
+}
+
+async fn commit_forwarded(
+    raft: &Raft<MembershipRaft>,
+    request: MembershipRequest,
+) -> Option<(u64, Outcome)> {
+    tokio::time::timeout(LOCAL_WRITE_TIMEOUT, raft.client_write(request))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .map(|response| (response.log_id.index, response.data))
 }
 
 #[cfg(test)]

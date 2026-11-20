@@ -717,6 +717,62 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     })
     .await
     .expect("the permission leader learns the new device through the shared roster");
+    let leader = if target_is_leader { &target } else { &third };
+    let leader_id = space_devices(invite_store, &space)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|peer| certificate_fingerprint(&peer.certificate) == leader.device_id)
+        .map(|peer| certificate_id(&peer.certificate))
+        .unwrap();
+    assert!(matches!(
+        invite_host.remove_device(invite_store, &space, user_id, &leader_id).await,
+        Err(AppError::InvalidInput(message)) if message.contains("too few voting devices")
+    ));
+    let fourth_peer = space_devices(invite_store, &space)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|peer| certificate_fingerprint(&peer.certificate) == fourth.device_id)
+        .unwrap();
+    let fourth_id = certificate_id(&fourth_peer.certificate);
+    invite_host
+        .remove_device(invite_store, &space, user_id, &fourth_id)
+        .await
+        .unwrap();
+    invite_host
+        .remove_device(invite_store, &space, user_id, &fourth_id)
+        .await
+        .unwrap();
+    let enrollment = forwarded_history
+        .device(fourth.device_id)
+        .unwrap()
+        .enrollment;
+    for store in [invite_store, leader_store] {
+        let roster = store
+            .membership_log(space.clone())
+            .await
+            .unwrap()
+            .membership()
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(roster.removal_index(enrollment).is_some());
+        assert!(roster.permits_sync(leader.device_id));
+        assert!(
+            space_devices(store, &space)
+                .await
+                .unwrap()
+                .iter()
+                .all(|peer| peer.certificate != fourth_peer.certificate)
+        );
+    }
+    assert!(matches!(
+        invite_host
+            .current_peer(invite_db, invite_store, &space, &fourth_peer.certificate)
+            .await,
+        Err(AppError::Forbidden)
+    ));
     fourth_db.close().await;
     drop(target_replica);
     drop(third_replica);

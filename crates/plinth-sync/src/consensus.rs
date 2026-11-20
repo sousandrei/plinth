@@ -57,6 +57,10 @@ pub enum MembershipRequest {
         author: Enrollment,
         change: Change,
     },
+    RevokeDevice {
+        author: Enrollment,
+        enrollment: Enrollment,
+    },
 }
 
 /// Start a permission history for a freshly created local space. Imported and
@@ -439,6 +443,33 @@ impl RaftStateMachine<MembershipRaft> for MembershipLog {
                             .map_or(Outcome::Uninitialized, |membership| {
                                 membership.apply(index, author, change)
                             }),
+                        EntryPayload::Normal(MembershipRequest::RevokeDevice {
+                            author,
+                            enrollment,
+                        }) => {
+                            state
+                                .membership
+                                .as_mut()
+                                .map_or(Outcome::Uninitialized, |membership| {
+                                    if replica::owner(membership, author.device) != Some(author) {
+                                        Outcome::AuthorNotOwner
+                                    } else if membership.deletion_index().is_some() {
+                                        Outcome::SpaceAlreadyDeleted
+                                    } else if would_lose_quorum(
+                                        membership,
+                                        &state.voters,
+                                        enrollment,
+                                    ) {
+                                        Outcome::WouldLoseQuorum
+                                    } else {
+                                        membership.apply(
+                                            index,
+                                            author,
+                                            Change::Remove { enrollment },
+                                        )
+                                    }
+                                })
+                        }
                     });
                 }
                 write_meta(&txn, space, "state", &state)?;
@@ -569,6 +600,30 @@ fn read_meta<T: DeserializeOwned>(
     Ok(value
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?)
+}
+
+fn would_lose_quorum(
+    membership: &Membership,
+    configuration: &Configuration,
+    target: Enrollment,
+) -> bool {
+    if replica::owner(membership, target.device) != Some(target)
+        || !replica::voter_id(membership, target)
+            .is_some_and(|id| configuration.voter_ids().any(|voter| voter == id))
+    {
+        return false;
+    }
+    // A revoked voter can no longer authenticate, so count only remaining active enrollments.
+    let remaining: BTreeSet<_> = membership
+        .enrolled_owners()
+        .filter(|owner| *owner != target)
+        .filter_map(|owner| replica::voter_id(membership, owner))
+        .collect();
+    configuration
+        .membership()
+        .get_joint_config()
+        .iter()
+        .any(|voters| voters.intersection(&remaining).count() <= voters.len() / 2)
 }
 
 #[cfg(test)]

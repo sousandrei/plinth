@@ -229,30 +229,66 @@ impl PermissionReplica {
         {
             return Err("this device already has a different role in this space".into());
         }
+        let outcome = self
+            .commit_device_change(MembershipRequest::Change {
+                author: self.local,
+                change: Change::EnrollPeer {
+                    contact: joining_contact.clone(),
+                    role,
+                },
+            })
+            .await?;
+        if !matches!(
+            outcome,
+            Outcome::Enrolled(_) | Outcome::ContactUpdated(_) | Outcome::AlreadyEnrolled
+        ) {
+            return Err(format!("could not enroll device: {outcome:?}").into());
+        }
+        let updated = self.active_membership().await?;
+        if !updated
+            .device(joining_device)
+            .is_some_and(|device| device.role == role)
+            || updated.peer_contact(joining_device) != Some(&joining_contact)
+        {
+            return Err("the approved device enrollment changed".into());
+        }
+        self.log.clone().pairing_history().await
+    }
+
+    pub async fn revoke_device(
+        &self,
+        owner_account: &str,
+        enrollment: Enrollment,
+    ) -> transport::Result<Outcome> {
+        let membership = self.active_membership().await?;
+        if membership.owner_account() != owner_account
+            || !self.log.is_committed_voter(self.local.device).await?
+        {
+            return Err("remove devices from a voting owner device in this space".into());
+        }
+        if self.local.device == enrollment.device {
+            return Err("cannot remove this device from itself".into());
+        }
+        self.commit_device_change(MembershipRequest::RevokeDevice {
+            author: self.local,
+            enrollment,
+        })
+        .await
+    }
+
+    async fn commit_device_change(&self, request: MembershipRequest) -> transport::Result<Outcome> {
         tokio::time::timeout(LOCAL_WRITE_TIMEOUT, async {
             let (index, outcome) = loop {
                 if let Some(leader) = self.node.current_leader().await {
                     let committed = if leader == self.id {
                         self.node
-                            .client_write(MembershipRequest::Change {
-                                author: self.local,
-                                change: Change::EnrollPeer {
-                                    contact: joining_contact.clone(),
-                                    role,
-                                },
-                            })
+                            .client_write(request.clone())
                             .await
                             .ok()
                             .map(|response| (response.log_id.index, response.data))
                     } else {
                         self.network
-                            .forward_enrollment(
-                                leader,
-                                self.local,
-                                joining_contact.clone(),
-                                role,
-                                LOCAL_WRITE_TIMEOUT,
-                            )
+                            .forward_change(leader, request.clone())
                             .await
                             .ok()
                             .flatten()
@@ -263,29 +299,14 @@ impl PermissionReplica {
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             };
-            if !matches!(
-                outcome,
-                Outcome::Enrolled(_) | Outcome::ContactUpdated(_) | Outcome::AlreadyEnrolled
-            ) {
-                return Err(format!("could not enroll device: {outcome:?}").into());
-            }
             self.node
                 .wait(Some(LOCAL_WRITE_TIMEOUT))
-                .applied_index_at_least(Some(index), "committed pairing")
+                .applied_index_at_least(Some(index), "committed device change")
                 .await?;
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            Ok(outcome)
         })
         .await
-        .map_err(|_| "could not reach the space's permission leader")??;
-        let updated = self.active_membership().await?;
-        if !updated
-            .device(joining_device)
-            .is_some_and(|device| device.role == role)
-            || updated.peer_contact(joining_device) != Some(&joining_contact)
-        {
-            return Err("the approved device enrollment changed".into());
-        }
-        self.log.clone().pairing_history().await
+        .map_err(|_| "could not confirm the change with the space's voting devices")?
     }
 
     pub async fn respond(
