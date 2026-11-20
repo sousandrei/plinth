@@ -4,12 +4,17 @@ import {
   RouterProvider,
 } from '@tanstack/react-router';
 import { useState } from 'react';
-import { expect, waitFor } from 'storybook/test';
+import { expect, fn, waitFor } from 'storybook/test';
 import type { Meta, StoryObj } from 'storybook-react-rsbuild';
 import { AuthProvider } from '@/context/AuthContext';
 import { setMock } from '@/lib/tauri-mock';
 import { routeTree } from '@/routeTree.gen';
-import type { Account, TrainingSample, Transaction } from '@/types';
+import type {
+  Account,
+  TrainingSample,
+  Transaction,
+  TransactionPage,
+} from '@/types';
 
 const spaceId = 'household';
 const transaction: Transaction = {
@@ -78,11 +83,30 @@ export const TransactionsRefresh: Story = {
     await waitFor(() =>
       expect(canvas.getByText('Original note')).toBeVisible(),
     );
-    setMock('list_transactions', {
+    const updated: TransactionPage = {
       transactions: [{ ...transaction, note: 'Edited on another device' }],
       page_count: 1,
+    };
+    let finishRefresh = () => {};
+    const result = new Promise<TransactionPage>((resolve) => {
+      finishRefresh = () => resolve(updated);
     });
+    const refetch = fn(() => result);
+    setMock('list_transactions', refetch);
     setMock('sync_space_revision', 1);
+    try {
+      await waitFor(() => expect(refetch).toHaveBeenCalled(), {
+        timeout: 7000,
+      });
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      const note = canvas.getByText('Original note');
+      await expect(note).toBeVisible();
+      await expect(note.closest('.opacity-60')).toBeNull();
+    } finally {
+      finishRefresh();
+    }
     await waitFor(
       () => expect(canvas.getByText('Edited on another device')).toBeVisible(),
       { timeout: 7000 },

@@ -39,7 +39,7 @@ function AccountSummaries(): React.JSX.Element {
     window.scrollTo({ top: 0, behavior: 'instant' });
   }, [page]);
 
-  const { data, isLoading, isError, isFetching } = useQuery({
+  const { data, isLoading, isError, isPlaceholderData } = useQuery({
     queryKey: ['account-summaries', isDemoMode ? 'demo' : 'live', page],
     queryFn: isDemoMode
       ? () =>
@@ -204,7 +204,7 @@ function AccountSummaries(): React.JSX.Element {
       <div
         className={cn(
           'animate-fade-in transition-opacity duration-150',
-          isFetching && 'opacity-60',
+          isPlaceholderData && 'opacity-60',
         )}
       >
         <Card>

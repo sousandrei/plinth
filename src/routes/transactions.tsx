@@ -66,7 +66,7 @@ function Transactions(): React.JSX.Element {
     filters.dateTo,
   ]);
 
-  const { data, isLoading, isError, isFetching } = useQuery({
+  const { data, isLoading, isError, isPlaceholderData } = useQuery({
     queryKey: [
       'transactions',
       isDemoMode ? 'demo' : 'live',
@@ -147,7 +147,7 @@ function Transactions(): React.JSX.Element {
       <div
         className={cn(
           'animate-fade-in transition-opacity duration-150',
-          isFetching && 'opacity-60',
+          isPlaceholderData && 'opacity-60',
         )}
       >
         <Card>
