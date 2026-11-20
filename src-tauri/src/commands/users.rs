@@ -348,7 +348,7 @@ pub async fn factory_reset(
     preview: State<'_, crate::sync_preview::SyncPreview>,
     network: State<'_, crate::sync_network::SyncNetwork>,
 ) -> Result<(), AppError> {
-    network.stop();
+    network.stop().await?;
     // 1. Close the database pool so connections are terminated
     db.close().await;
 

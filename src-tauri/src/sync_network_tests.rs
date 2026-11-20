@@ -427,8 +427,12 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .unwrap()
         .unwrap();
     assert!(!progress.heads.is_empty());
+    let original_replica = source
+        .permission_replica(&source_store, &space)
+        .await
+        .unwrap();
     let third_dir = tempfile::tempdir().unwrap();
-    let (third_db, third_store, third, _third_listener) = profile(third_dir.path(), None).await;
+    let (third_db, third_store, third, third_listener) = profile(third_dir.path(), None).await;
     let invite = source
         .clone()
         .invite(
@@ -462,6 +466,12 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .join(&third_db, &third_store, new_user(), &pairing.id)
         .await
         .unwrap();
+    let reused_replica = source
+        .permission_replica(&source_store, &space)
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&original_replica, &reused_replica));
+    drop(original_replica);
 
     let third_id = third.device_id;
     let peer_on_target = tokio::time::timeout(Duration::from_secs(20), async {
@@ -482,15 +492,44 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     .await
     .unwrap();
 
-    automatic.abort();
-    let _ = automatic.await;
-    server.abort();
-    let _ = server.await;
     let target_server = tokio::spawn(target.clone().listen(
         target_listener,
         target_db.clone(),
         target_store.clone(),
     ));
+    let third_server = tokio::spawn(third.clone().listen(
+        third_listener,
+        third_db.clone(),
+        third_store.clone(),
+    ));
+    // Exercise the desktop permission listener with real Raft traffic. Automatic voter
+    // promotion is a separate operation from installing the desktop runtime.
+    reused_replica.promote_owners().await.unwrap();
+    drop(reused_replica);
+    for (store, other) in [
+        (&target_store, third.device_id),
+        (&third_store, target.device_id),
+    ] {
+        let log = store.membership_log(space.clone()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !log.is_committed_voter(other).await.unwrap() {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    automatic.abort();
+    let _ = automatic.await;
+    server.abort();
+    let _ = server.await;
+    source.shutdown_permissions().await.unwrap();
+    assert!(
+        source
+            .permission_replica(&source_store, &space)
+            .await
+            .is_err()
+    );
     let patch =
         serde_json::from_value(serde_json::json!({"note": "edited with the creator offline"}))
             .unwrap();
@@ -540,6 +579,9 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
             .all(|peer| certificate_fingerprint(&peer.certificate) != third_id)
     );
     target_server.abort();
+    third_server.abort();
+    target.shutdown_permissions().await.unwrap();
+    third.shutdown_permissions().await.unwrap();
     third_db.close().await;
     source_db.close().await;
     target_db.close().await;

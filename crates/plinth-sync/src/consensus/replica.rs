@@ -20,6 +20,21 @@ pub struct PermissionReplica {
     id: u64,
 }
 
+impl MembershipLog {
+    pub async fn is_committed_voter(&self, device: DeviceId) -> transport::Result<bool> {
+        let state = self.pairing_state().await?;
+        let Some(membership) = state.membership else {
+            return Ok(false);
+        };
+        let Some(id) =
+            owner(&membership, device).and_then(|enrollment| voter_id(&membership, enrollment))
+        else {
+            return Ok(false);
+        };
+        Ok(state.voters.voter_ids().any(|voter| voter == id))
+    }
+}
+
 impl PermissionReplica {
     pub async fn open(
         log: MembershipLog,
@@ -32,6 +47,15 @@ impl PermissionReplica {
                 .map(|identity| certificate_fingerprint(identity.certificate()))
         })
         .await??;
+        Self::open_for_device(log, identity_dir, device, resolve).await
+    }
+
+    pub(super) async fn open_for_device(
+        log: MembershipLog,
+        identity_dir: PathBuf,
+        device: DeviceId,
+        resolve: impl Fn(&PeerContact) -> Option<SocketAddr> + Send + Sync + 'static,
+    ) -> transport::Result<Self> {
         let membership = log
             .membership()
             .await?
@@ -122,6 +146,48 @@ impl PermissionReplica {
         )
         .await??;
         Ok(response.data)
+    }
+
+    pub async fn approve_pairing(
+        &self,
+        owner_account: &str,
+        joining_contact: PeerContact,
+        role: Role,
+    ) -> transport::Result<PairingHistory> {
+        if !self
+            .log
+            .owner_can_pair(owner_account, self.local.device)
+            .await?
+        {
+            return Err("missing permission history".into());
+        }
+        let membership = self.active_membership().await?;
+        let joining_device = joining_contact.device_id();
+        if joining_device == self.local.device {
+            return Err("cannot pair a device with itself".into());
+        }
+        if membership
+            .device(joining_device)
+            .is_some_and(|device| device.role != role)
+        {
+            return Err("this device already has a different role in this space".into());
+        }
+        if membership.peer_contact(joining_device) != Some(&joining_contact) {
+            self.node
+                .wait(Some(LOCAL_WRITE_TIMEOUT))
+                .current_leader(self.id, "pairing owner")
+                .await?;
+            let outcome = self
+                .propose(Change::EnrollPeer {
+                    contact: joining_contact,
+                    role,
+                })
+                .await?;
+            if !matches!(outcome, Outcome::Enrolled(_) | Outcome::ContactUpdated(_)) {
+                return Err(format!("could not enroll device: {outcome:?}").into());
+            }
+        }
+        self.log.clone().pairing_history().await
     }
 
     pub async fn respond(

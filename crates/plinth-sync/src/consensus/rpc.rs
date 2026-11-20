@@ -258,7 +258,7 @@ mod tests {
                 let identity =
                     Identity::with_certificates(&server_dir, vec![client_cert.clone().into()])
                         .unwrap();
-                let accept = identity.listener_with_permissions().unwrap();
+                let accept = identity.desktop_listener().unwrap();
                 for id in [1, 9] {
                     let (socket, _) = listener.accept().unwrap();
                     let (mut stream, origin, protocol) = accept.accept_protocol(socket).unwrap();

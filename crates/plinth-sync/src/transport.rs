@@ -233,8 +233,12 @@ impl Identity {
         self.listen_for(&[PeerProtocol::Data, PeerProtocol::Permissions])
     }
 
-    pub fn listener_with_roster(&self) -> Result<PeerListener<'_>> {
-        self.listen_for(&[PeerProtocol::Data, PeerProtocol::Roster])
+    pub fn desktop_listener(&self) -> Result<PeerListener<'_>> {
+        self.listen_for(&[
+            PeerProtocol::Data,
+            PeerProtocol::Roster,
+            PeerProtocol::Permissions,
+        ])
     }
 
     pub fn connect_roster(&self, addr: SocketAddr) -> Result<impl Read + Write + use<>> {

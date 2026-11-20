@@ -45,66 +45,24 @@ impl MembershipLog {
         if !self.owner_can_pair(owner_account, local_device).await? {
             return Ok(None);
         }
-        let joining_device = joining_contact.device_id();
-        if local_device == joining_device {
-            return Err("cannot pair a device with itself".into());
-        }
-        let membership = self
-            .membership()
-            .await?
-            .ok_or("missing permission history")?;
-        let author = membership
-            .device(local_device)
-            .ok_or("missing owner device")?
-            .enrollment;
-        if membership
-            .device(joining_device)
-            .is_some_and(|device| device.role != role)
-        {
-            return Err("this device already has a different role in this space".into());
-        }
-        if membership.peer_contact(joining_device) != Some(&joining_contact) {
-            let network =
-                rpc::PermissionNetwork::new(identity_dir, self.space_id.clone(), |_| None);
-            let node = Raft::new(
-                FIRST_VOTER,
-                Arc::new(Config::default()),
-                network,
-                self.clone(),
-                self.clone(),
-            )
-            .await?;
-            let approved = tokio::time::timeout(LOCAL_WRITE_TIMEOUT, async {
-                node.wait(Some(LOCAL_WRITE_TIMEOUT))
-                    .current_leader(FIRST_VOTER, "pairing owner")
-                    .await?;
-                let response = node
-                    .client_write(MembershipRequest::Change {
-                        author,
-                        change: Change::EnrollPeer {
-                            contact: joining_contact,
-                            role,
-                        },
-                    })
-                    .await?;
-                if !matches!(
-                    response.data,
-                    Outcome::Enrolled(_) | Outcome::ContactUpdated(_)
-                ) {
-                    return Err(format!("could not enroll device: {:?}", response.data).into());
-                }
-                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-            })
+        let replica =
+            PermissionReplica::open_for_device(self.clone(), identity_dir, local_device, |_| None)
+                .await?;
+        let approved = replica
+            .approve_pairing(owner_account, joining_contact, role)
             .await;
-            let stopped = node.shutdown().await;
-            approved??;
-            stopped?;
-        }
+        let stopped = replica.shutdown().await;
+        let history = approved?;
+        stopped?;
+        Ok(Some(history))
+    }
+
+    pub(super) async fn pairing_history(&mut self) -> transport::Result<PairingHistory> {
         let snapshot = self.build_snapshot().await?;
-        Ok(Some(PairingHistory(StoredSnapshot {
+        Ok(PairingHistory(StoredSnapshot {
             meta: snapshot.meta,
             contents: serde_json::from_slice(snapshot.snapshot.get_ref())?,
-        })))
+        }))
     }
 
     pub async fn roster_revision(
@@ -258,7 +216,7 @@ impl MembershipLog {
     }
 
     #[allow(clippy::result_large_err)]
-    async fn pairing_state(&self) -> RaftResult<AppliedState> {
+    pub(super) async fn pairing_state(&self) -> RaftResult<AppliedState> {
         self.access(ErrorSubject::StateMachine, ErrorVerb::Read, |db, space| {
             read_state(db, space)
         })
@@ -326,7 +284,18 @@ mod tests {
             .unwrap()
             .unwrap();
         let incoming = serde_json::to_vec(&retry).unwrap();
-        assert_eq!(serde_json::to_vec(&first).unwrap(), incoming);
+        let enrolled = |history: &PairingHistory| {
+            history
+                .0
+                .contents
+                .state
+                .membership
+                .as_ref()
+                .unwrap()
+                .device(joiner)
+                .unwrap()
+        };
+        assert_eq!(enrolled(&first), enrolled(&retry));
 
         let mut replica = MembershipLog::open(temp.path().join("replica.sqlite"), "space").unwrap();
         assert!(

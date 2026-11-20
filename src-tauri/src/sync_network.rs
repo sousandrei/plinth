@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream},
     num::NonZeroU16,
@@ -12,7 +13,7 @@ use std::{
 
 use plinth_sync::{
     PairedDevice, Session as PeerSession,
-    consensus::PairingHistory,
+    consensus::{PairingHistory, PermissionReplica},
     discovery,
     membership::{DeviceId, Enrollment, Membership, PeerContact, Role, certificate_fingerprint},
     transport::{self, Identity, PeerProtocol},
@@ -161,7 +162,9 @@ struct Network {
     name: String,
     label: String,
     device_id: DeviceId,
-    permission_writes: Arc<tokio::sync::Mutex<()>>,
+    permission_writes: tokio::sync::Mutex<()>,
+    permission_calls: tokio::sync::RwLock<()>,
+    permission_replicas: tokio::sync::Mutex<Option<HashMap<String, Arc<PermissionReplica>>>>,
     port: u16,
     invite: Mutex<Option<ActiveInvitation>>,
     incoming: Mutex<Option<IncomingPairing>>,
@@ -183,13 +186,14 @@ impl SyncNetwork {
         Ok(Self { inner, workers })
     }
 
-    pub(crate) fn stop(&self) {
+    pub(crate) async fn stop(&self) -> Result<(), AppError> {
         self.workers.iter().for_each(JoinHandle::abort);
         if let Ok(mut invitation) = self.inner.invite.lock()
             && let Some(invitation) = invitation.take()
         {
             invitation.task.abort();
         }
+        self.inner.shutdown_permissions().await
     }
 }
 
@@ -212,7 +216,9 @@ impl Network {
             directory,
             label: local_device_label(&name),
             device_id: certificate_fingerprint(identity.certificate()),
-            permission_writes: Arc::default(),
+            permission_writes: tokio::sync::Mutex::default(),
+            permission_calls: tokio::sync::RwLock::default(),
+            permission_replicas: tokio::sync::Mutex::new(Some(HashMap::new())),
             name,
             port,
             invite: Mutex::new(None),
@@ -502,7 +508,7 @@ impl Network {
     }
 
     async fn enroll(
-        &self,
+        self: &Arc<Self>,
         db: &DbPool,
         store: &SyncPreview,
         offer: &Offer,
@@ -510,8 +516,9 @@ impl Network {
     ) -> Result<bool, AppError> {
         let directory = self.directory.clone();
         let remote_addr = socket.peer_addr().map_err(io_error)?;
-        let mut log = store.membership_log(offer.space_id.clone()).await?;
-        let managed = log
+        let managed = store
+            .membership_log(offer.space_id.clone())
+            .await?
             .owner_can_pair(&offer.user_id, self.device_id)
             .await
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -618,9 +625,7 @@ impl Network {
         } else {
             None
         };
-        let directory = self.directory.clone();
         let owner = offer.user_id.clone();
-        let device_id = self.device_id;
         let joining_contact = PeerContact {
             certificate: certificate.clone(),
             address_hint: request
@@ -632,16 +637,24 @@ impl Network {
         } else {
             Role::Member
         };
-        let permission_writes = self.permission_writes.clone();
+        let network = self.clone();
+        let preview = store.clone();
+        let space = offer.space_id.clone();
         // Complete the committed write even if the invitation closes mid-approval.
         let permissions = tokio::spawn(async move {
-            let _guard = permission_writes.lock().await;
-            log.approve_pairing(directory, &owner, device_id, joining_contact, role)
+            if !managed {
+                return Ok(None);
+            }
+            let _guard = network.permission_writes.lock().await;
+            let replica = network.permission_replica(&preview, &space).await?;
+            replica
+                .approve_pairing(&owner, joining_contact, role)
                 .await
+                .map(Some)
+                .map_err(network_error)
         })
         .await
-        .map_err(join_error)?
-        .map_err(network_error)?;
+        .map_err(join_error)??;
         let data = encode(&Bootstrap {
             seed,
             port: self.port,
@@ -910,6 +923,62 @@ impl Network {
         }
     }
 
+    async fn permission_replica(
+        &self,
+        store: &SyncPreview,
+        space: &str,
+    ) -> Result<Arc<PermissionReplica>, AppError> {
+        let mut state = self.permission_replicas.lock().await;
+        let replicas = state.as_mut().ok_or_else(state_error)?;
+        if let Some(replica) = replicas.get(space) {
+            return Ok(replica.clone());
+        }
+        let scope = space.to_owned();
+        let addresses: HashMap<_, SocketAddr> = store
+            .with_store(move |store| {
+                Ok(store
+                    .paired_devices()?
+                    .into_iter()
+                    .filter(|peer| peer.space_id == scope)
+                    .filter_map(|peer| {
+                        Some((
+                            certificate_fingerprint(&peer.certificate),
+                            peer.address?.parse().ok()?,
+                        ))
+                    })
+                    .collect())
+            })
+            .await?;
+        let log = store.membership_log(space.to_owned()).await?;
+        let replica = Arc::new(
+            PermissionReplica::open(log, self.directory.clone(), move |contact| {
+                addresses.get(&contact.device_id()).copied()
+            })
+            .await
+            .map_err(network_error)?,
+        );
+        replicas.insert(space.to_owned(), replica.clone());
+        Ok(replica)
+    }
+
+    async fn shutdown_permissions(&self) -> Result<(), AppError> {
+        let _calls = self.permission_calls.write().await;
+        let _writes = self.permission_writes.lock().await;
+        let replicas = self
+            .permission_replicas
+            .lock()
+            .await
+            .take()
+            .unwrap_or_default();
+        let mut result = Ok(());
+        for replica in replicas.into_values() {
+            if let Err(error) = replica.shutdown().await {
+                result = Err(network_error(error));
+            }
+        }
+        result
+    }
+
     async fn accept(
         &self,
         db: &DbPool,
@@ -932,7 +1001,7 @@ impl Network {
                 )
                 .map_err(network_error)?;
                 let (mut stream, certificate, protocol) = identity
-                    .listener_with_roster()
+                    .desktop_listener()
                     .map_err(network_error)?
                     .accept_protocol(socket)
                     .map_err(network_error)?;
@@ -946,6 +1015,26 @@ impl Network {
             .await?;
         if protocol == PeerProtocol::Roster {
             return self.serve_roster(store, &peer, stream).await;
+        }
+        if protocol == PeerProtocol::Permissions {
+            let _call = self.permission_calls.read().await;
+            let Some(enrollment) = enrollment else {
+                return Err(AppError::Forbidden);
+            };
+            if !store
+                .membership_log(space_id.clone())
+                .await?
+                .is_committed_voter(enrollment.device)
+                .await
+                .map_err(network_error)?
+            {
+                return Err(AppError::Forbidden);
+            }
+            let replica = self.permission_replica(store, &space_id).await?;
+            return replica
+                .respond(stream, &certificate)
+                .await
+                .map_err(network_error);
         }
         let db = db.clone();
         let store = store.clone();
@@ -1128,9 +1217,16 @@ impl Network {
         .await
         .map_err(join_error)??;
         if let Some(update) = update {
-            log.receive_roster_update(update, host, self.device_id)
-                .await
-                .map_err(network_error)?;
+            let replicas = self.permission_replicas.lock().await;
+            let Some(replicas) = replicas.as_ref() else {
+                return Ok(());
+            };
+            // A running Raft replica receives snapshots through its own protocol.
+            if !replicas.contains_key(&peer.space_id) {
+                log.receive_roster_update(update, host, self.device_id)
+                    .await
+                    .map_err(network_error)?;
+            }
         }
         if let Some(membership) = log.membership().await.map_err(network_error_box)? {
             self.cache_roster(store, &peer.space_id, &membership)
