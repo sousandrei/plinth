@@ -21,6 +21,27 @@ pub struct PermissionReplica {
 }
 
 impl MembershipLog {
+    pub async fn has_committed_shared_voters(&self) -> transport::Result<bool> {
+        let state = self.pairing_state().await?;
+        Ok(matches!(
+            state.voters.membership().get_joint_config().as_slice(),
+            [voters] if voters.len() > 1
+        ))
+    }
+
+    pub async fn should_resume_replica(&self, device: DeviceId) -> transport::Result<bool> {
+        let state = self.pairing_state().await?;
+        let Some(membership) = state.membership else {
+            return Ok(false);
+        };
+        let Some(id) =
+            owner(&membership, device).and_then(|enrollment| voter_id(&membership, enrollment))
+        else {
+            return Ok(false);
+        };
+        Ok(state.voters.nodes().count() > 1 && state.voters.nodes().any(|(node, _)| *node == id))
+    }
+
     pub async fn is_committed_voter(&self, device: DeviceId) -> transport::Result<bool> {
         let state = self.pairing_state().await?;
         let Some(membership) = state.membership else {

@@ -512,7 +512,9 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     ] {
         let log = store.membership_log(space.clone()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(10), async {
-            while !log.is_committed_voter(other).await.unwrap() {
+            while !log.has_committed_shared_voters().await.unwrap()
+                || !log.is_committed_voter(other).await.unwrap()
+            {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         })
@@ -530,6 +532,90 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
             .await
             .is_err()
     );
+
+    target_server.abort();
+    third_server.abort();
+    let _ = target_server.await;
+    let _ = third_server.await;
+    target.shutdown_permissions().await.unwrap();
+    third.shutdown_permissions().await.unwrap();
+    let target_port = target.port;
+    let third_port = third.port;
+    let (target, target_listener) = Network::open(target_dir.path(), target_port).await.unwrap();
+    let (third, third_listener) = Network::open(third_dir.path(), third_port).await.unwrap();
+    assert_eq!(target.port, target_port);
+    assert_eq!(third.port, third_port);
+
+    let target_server = tokio::spawn(target.clone().listen(
+        target_listener,
+        target_db.clone(),
+        target_store.clone(),
+    ));
+    let third_server = tokio::spawn(third.clone().listen(
+        third_listener,
+        third_db.clone(),
+        third_store.clone(),
+    ));
+    let target_worker = tokio::spawn(
+        target
+            .clone()
+            .sync_loop(target_db.clone(), target_store.clone()),
+    );
+    let third_worker = tokio::spawn(
+        third
+            .clone()
+            .sync_loop(third_db.clone(), third_store.clone()),
+    );
+    let (target_replica, third_replica) = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let target_replica = target
+                .permission_replicas
+                .lock()
+                .await
+                .as_ref()
+                .and_then(|replicas| replicas.get(&space))
+                .cloned();
+            let third_replica = third
+                .permission_replicas
+                .lock()
+                .await
+                .as_ref()
+                .and_then(|replicas| replicas.get(&space))
+                .cloned();
+            if let (Some(target), Some(third)) = (target_replica, third_replica) {
+                break (target, third);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let removal = plinth_sync::membership::Change::Remove {
+        enrollment: source_enrollment,
+    };
+    tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            for replica in [&target_replica, &third_replica] {
+                if matches!(
+                    replica.propose(removal.clone()).await,
+                    Ok(plinth_sync::membership::Outcome::Removed(_)
+                        | plinth_sync::membership::Outcome::EnrollmentInactive)
+                ) {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(target_replica);
+    drop(third_replica);
+    target_worker.abort();
+    third_worker.abort();
+    let _ = target_worker.await;
+    let _ = third_worker.await;
+
     let patch =
         serde_json::from_value(serde_json::json!({"note": "edited with the creator offline"}))
             .unwrap();

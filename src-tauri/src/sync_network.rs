@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream},
     num::NonZeroU16,
@@ -1105,6 +1105,12 @@ impl Network {
     async fn sync_loop(self: Arc<Self>, db: DbPool, store: SyncPreview) {
         loop {
             if let Ok(peers) = store.with_store(|store| store.paired_devices()).await {
+                let spaces: BTreeSet<_> = peers.iter().map(|peer| peer.space_id.as_str()).collect();
+                for space in spaces {
+                    if let Err(error) = self.resume_permission_replica(&db, &store, space).await {
+                        eprintln!("resume permission replica for {space}: {error}");
+                    }
+                }
                 let mut tasks = tokio::task::JoinSet::new();
                 for peer in peers.into_iter().filter(|peer| peer.address.is_some()) {
                     if tasks.len() >= 8 {
@@ -1119,6 +1125,39 @@ impl Network {
             }
             tokio::time::sleep(SYNC_INTERVAL).await;
         }
+    }
+
+    async fn resume_permission_replica(
+        &self,
+        db: &DbPool,
+        store: &SyncPreview,
+        space: &str,
+    ) -> Result<(), AppError> {
+        if self
+            .permission_replicas
+            .lock()
+            .await
+            .as_ref()
+            .is_none_or(|replicas| replicas.contains_key(space))
+        {
+            return Ok(());
+        }
+        if sqlx::query_file!("queries/spaces/get_space_name.sql", space)
+            .fetch_optional(db)
+            .await?
+            .is_none()
+        {
+            return Ok(());
+        }
+        let log = store.membership_log(space.to_owned()).await?;
+        if log
+            .should_resume_replica(self.device_id)
+            .await
+            .map_err(network_error)?
+        {
+            self.permission_replica(store, space).await?;
+        }
+        Ok(())
     }
 
     async fn sync_peer(&self, db: &DbPool, store: &SyncPreview, peer: PairedDevice) {
