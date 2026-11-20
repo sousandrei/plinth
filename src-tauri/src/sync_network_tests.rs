@@ -431,6 +431,13 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .permission_replica(&source_store, &space)
         .await
         .unwrap();
+    let source_log = source_store.membership_log(space.clone()).await.unwrap();
+    assert!(
+        !source_log
+            .should_resume_replica(source.device_id)
+            .await
+            .unwrap()
+    );
     let third_dir = tempfile::tempdir().unwrap();
     let (third_db, third_store, third, third_listener) = profile(third_dir.path(), None).await;
     let invite = source
@@ -472,6 +479,18 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .unwrap();
     assert!(Arc::ptr_eq(&original_replica, &reused_replica));
     drop(original_replica);
+    drop(reused_replica);
+    assert!(
+        source_log
+            .should_resume_replica(source.device_id)
+            .await
+            .unwrap()
+    );
+    let source_sync = tokio::spawn(
+        source
+            .clone()
+            .sync_loop(source_db.clone(), source_store.clone()),
+    );
 
     let third_id = third.device_id;
     let peer_on_target = tokio::time::timeout(Duration::from_secs(20), async {
@@ -502,16 +521,12 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         third_db.clone(),
         third_store.clone(),
     ));
-    // Exercise the desktop permission listener with real Raft traffic. Automatic voter
-    // promotion is a separate operation from installing the desktop runtime.
-    reused_replica.promote_owners().await.unwrap();
-    drop(reused_replica);
     for (store, other) in [
         (&target_store, third.device_id),
         (&third_store, target.device_id),
     ] {
         let log = store.membership_log(space.clone()).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(20), async {
             while !log.has_committed_shared_voters().await.unwrap()
                 || !log.is_committed_voter(other).await.unwrap()
             {
@@ -521,6 +536,8 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .await
         .unwrap();
     }
+    source_sync.abort();
+    let _ = source_sync.await;
     automatic.abort();
     let _ = automatic.await;
     server.abort();

@@ -100,9 +100,10 @@ impl Drop for Listener {
 #[ignore = "requires localhost TCP"]
 async fn enrolled_owners_form_a_permission_quorum_over_authenticated_tcp() {
     let dir = tempfile::tempdir().unwrap();
-    let [host, left, right] =
-        ["host", "left", "right"].map(|name| TestDevice::new(dir.path(), name));
+    let [host, offline, left, right] =
+        ["host", "offline", "left", "right"].map(|name| TestDevice::new(dir.path(), name));
     let host_id = host.contact.device_id();
+    let offline_id = offline.contact.device_id();
     initialize_local_space(
         host.database.clone(),
         host.identity.clone(),
@@ -113,7 +114,7 @@ async fn enrolled_owners_form_a_permission_quorum_over_authenticated_tcp() {
     .await
     .unwrap();
     let mut host_log = host.log();
-    for device in [&left, &right] {
+    for device in [&offline, &left, &right] {
         let history = host_log
             .approve_pairing(
                 host.identity.clone(),
@@ -135,6 +136,7 @@ async fn enrolled_owners_form_a_permission_quorum_over_authenticated_tcp() {
             .await
             .unwrap();
     }
+    drop(offline.listener);
 
     // The older replica learns the third owner through the existing roster exchange.
     let mut left_log = left.log();
@@ -165,7 +167,15 @@ async fn enrolled_owners_form_a_permission_quorum_over_authenticated_tcp() {
         .current_leader(a.id, "original owner")
         .await
         .unwrap();
-    a.promote_owners().await.unwrap();
+    tokio::time::timeout(deadline, async {
+        while !a.log.has_committed_shared_voters().await.unwrap() {
+            a.promote_owners().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!a.log.is_committed_voter(offline_id).await.unwrap());
     let (index, _) = a.log.clone().applied_state().await.unwrap();
     for follower in [&b, &c] {
         follower

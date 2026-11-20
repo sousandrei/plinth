@@ -1117,6 +1117,7 @@ impl Network {
     async fn sync_loop(self: Arc<Self>, db: DbPool, store: SyncPreview) {
         loop {
             if let Ok(peers) = store.with_store(|store| store.paired_devices()).await {
+                let mut tasks = tokio::task::JoinSet::new();
                 let spaces: BTreeSet<_> = peers.iter().map(|peer| peer.space_id.as_str()).collect();
                 for space in spaces {
                     if let Err(error) = self.resume_permission_replica(&db, &store, space).await {
@@ -1129,14 +1130,24 @@ impl Network {
                         .as_ref()
                         .and_then(|replicas| replicas.get(space))
                         .cloned();
-                    if let Some(replica) = replica
-                        && let Ok(Some(roster)) = replica.shared_roster().await
-                        && let Err(error) = self.cache_roster(&store, space, &roster).await
-                    {
-                        eprintln!("cache permission roster for {space}: {error}");
+                    if let Some(replica) = replica {
+                        if let Ok(Some(roster)) = replica.shared_roster().await {
+                            if let Err(error) = self.cache_roster(&store, space, &roster).await {
+                                eprintln!("cache permission roster for {space}: {error}");
+                            }
+                        } else {
+                            let network = self.clone();
+                            let space = space.to_owned();
+                            tasks.spawn(async move {
+                                if let Ok(_write) = network.permission_writes.try_lock()
+                                    && let Err(error) = replica.promote_owners().await
+                                {
+                                    eprintln!("promote owner devices for {space}: {error}");
+                                }
+                            });
+                        }
                     }
                 }
-                let mut tasks = tokio::task::JoinSet::new();
                 for peer in peers.into_iter().filter(|peer| peer.address.is_some()) {
                     if tasks.len() >= 8 {
                         let _ = tasks.join_next().await;

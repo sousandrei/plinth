@@ -37,7 +37,12 @@ impl MembershipLog {
         else {
             return Ok(false);
         };
-        Ok(state.voters.nodes().count() > 1 && state.voters.nodes().any(|(node, _)| *node == id))
+        Ok((id == FIRST_VOTER
+            && membership.deletion_index().is_none()
+            && state.voters.voter_ids().eq([FIRST_VOTER])
+            && has_owner_quorum(&membership))
+            || (state.voters.nodes().count() > 1
+                && state.voters.nodes().any(|(node, _)| *node == id)))
     }
 
     pub async fn is_committed_voter(&self, device: DeviceId) -> transport::Result<bool> {
@@ -125,37 +130,62 @@ impl PermissionReplica {
         })
     }
 
-    /// Adds caught-up owners as voters in a single Raft membership change.
-    /// Offer this once there are three owner devices to avoid creating a
-    /// two-device quorum that fails when either device is offline.
+    /// Bootstrap a three-owner quorum once two other owners have caught up.
     pub async fn promote_owners(&self) -> transport::Result<()> {
-        let membership = self.active_membership().await?;
-        let voters: BTreeSet<_> = membership
-            .enrolled_owners()
-            .map(|enrollment| voter_id(&membership, enrollment).ok_or("invalid owner enrollment"))
-            .collect::<Result<_, _>>()?;
-        if voters.len() < 3 {
-            return Err(
-                "at least three enrolled owner devices are required to promote voters".into(),
-            );
-        }
-        let (_, configuration) = self.log.clone().applied_state().await?;
-        if configuration.membership().get_joint_config().as_slice() == std::slice::from_ref(&voters)
-        {
+        if self.node.current_leader().await != Some(self.id) {
             return Ok(());
         }
-        let current: BTreeSet<_> = configuration.voter_ids().collect();
         tokio::time::timeout(LOCAL_WRITE_TIMEOUT, async {
-            for id in voters
-                .difference(&current)
-                .copied()
-                .filter(|id| *id != self.id)
-            {
-                self.node
-                    .add_learner(id, BasicNode::default(), true)
-                    .await?;
-            }
-            self.node.change_membership(voters, false).await?;
+            let state = self.log.pairing_state().await?;
+            let Some(membership) = state.membership.filter(|membership| {
+                membership.deletion_index().is_none()
+                    && owner(membership, self.local.device) == Some(self.local)
+            }) else {
+                return Ok(());
+            };
+            let voters = match state.voters.membership().get_joint_config().as_slice() {
+                [initial, selected] if initial.iter().copied().eq([FIRST_VOTER]) => {
+                    selected.clone()
+                }
+                [initial]
+                    if initial.iter().copied().eq([FIRST_VOTER])
+                        && has_owner_quorum(&membership) =>
+                {
+                    let candidates: BTreeSet<_> = membership
+                        .enrolled_owners()
+                        .filter(|enrollment| enrollment.device != self.local.device)
+                        .filter(|enrollment| membership.peer_contact(enrollment.device).is_some())
+                        .filter_map(|enrollment| voter_id(&membership, enrollment))
+                        .collect();
+                    for &id in &candidates {
+                        if state.voters.membership().get_node(&id).is_none() {
+                            self.node
+                                .add_learner(id, BasicNode::default(), false)
+                                .await?;
+                        }
+                    }
+                    let state = self.log.pairing_state().await?;
+                    let metrics = self.node.metrics();
+                    let ready: BTreeSet<_> = metrics
+                        .borrow()
+                        .replication
+                        .iter()
+                        .flat_map(|replication| {
+                            candidates.iter().copied().filter(move |id| {
+                                replication.get(id).copied().flatten() >= state.last_applied
+                            })
+                        })
+                        .take(2)
+                        .chain([FIRST_VOTER])
+                        .collect();
+                    if ready.len() < 3 {
+                        return Ok(());
+                    }
+                    ready
+                }
+                _ => return Ok(()),
+            };
+            self.node.change_membership(voters, true).await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
         .await??;
@@ -304,6 +334,16 @@ impl PermissionReplica {
 
 fn is_shared_configuration(configuration: &Configuration) -> bool {
     matches!(configuration.membership().get_joint_config().as_slice(), [voters] if voters.len() > 1)
+}
+
+fn has_owner_quorum(membership: &Membership) -> bool {
+    membership
+        .enrolled_owners()
+        .filter(|enrollment| Some(*enrollment) != membership.founding_enrollment())
+        .filter(|enrollment| membership.peer_contact(enrollment.device).is_some())
+        .take(2)
+        .count()
+        == 2
 }
 
 pub(super) fn owner(membership: &Membership, device: DeviceId) -> Option<Enrollment> {
