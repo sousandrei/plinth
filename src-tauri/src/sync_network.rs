@@ -38,9 +38,7 @@ const CONFIRMATION_TTL: Duration = Duration::from_secs(90);
 const MAX_CODE_ATTEMPTS: u8 = 5;
 
 #[derive(Serialize, Deserialize)]
-struct Enrollment {
-    certificate: Vec<u8>,
-    name: String,
+struct JoiningDevice {
     label: String,
 }
 
@@ -48,7 +46,6 @@ struct Enrollment {
 struct Bootstrap {
     seed: SyncSeed,
     port: u16,
-    name: String,
     profile: Option<SharedProfile>,
 }
 
@@ -194,7 +191,7 @@ impl Network {
         })
         .await
         .map_err(join_error)??;
-        let name = format!("plinth-{}", &certificate_id(identity.certificate())[..12]);
+        let name = device_name(identity.certificate());
         let listener = bind(port).await?;
         let port = listener.local_addr().map_err(io_error)?.port();
         let inner = Arc::new(Self {
@@ -499,23 +496,19 @@ impl Network {
             label: self.label.clone(),
             same_user: offer.same_user,
         })?;
-        let (mut stream, request, code) = tokio::task::spawn_blocking(move || {
+        let (mut stream, certificate, request, code) = tokio::task::spawn_blocking(move || {
             let identity =
                 Identity::with_certificates(&directory, vec![]).map_err(network_error)?;
-            let (mut stream, binding) =
+            let (mut stream, certificate, binding) =
                 identity.accept_enrollment(socket).map_err(network_error)?;
             transport::write_frame(&mut stream, &host, transport::MAX_ENROLLMENT_REQUEST)
                 .map_err(io_error)?;
-            let request: Enrollment = decode(
+            let request: JoiningDevice = decode(
                 &transport::read_frame(&mut stream, transport::MAX_ENROLLMENT_REQUEST)
                     .map_err(io_error)?,
             )?;
-            if request.certificate == identity.certificate() {
-                return Err(AppError::Forbidden);
-            }
-            Identity::validate_certificate(&request.certificate).map_err(network_error)?;
             let code = pairing_code(&mut stream, &binding, true)?;
-            Ok((stream, request, code))
+            Ok::<_, AppError>((stream, certificate, request, code))
         })
         .await
         .map_err(join_error)??;
@@ -577,7 +570,6 @@ impl Network {
         let data = encode(&Bootstrap {
             seed,
             port: self.port,
-            name: self.name.clone(),
             profile,
         })?;
         if data.len() > transport::MAX_SPACE_SNAPSHOT {
@@ -587,8 +579,8 @@ impl Network {
         }
         let peer = PairedDevice {
             space_id: offer.space_id.clone(),
-            certificate: request.certificate,
-            name: device_name(&request.name)?,
+            name: device_name(&certificate),
+            certificate,
             address: None,
             display_name: Some(label),
         };
@@ -620,19 +612,14 @@ impl Network {
             candidates.truncate(16);
         }
         let identity = open_identity(self.directory.clone()).await?;
-        let request = encode(&Enrollment {
-            certificate: identity.certificate().to_vec(),
-            name: self.name.clone(),
+        let request = encode(&JoiningDevice {
             label: self.label.clone(),
         })?;
         let pending = tokio::task::spawn_blocking(move || {
             let mut error = AppError::Io("no pairing address available".into());
             for address in candidates {
-                match Identity::connect_enrollment(address) {
+                match identity.connect_enrollment(address) {
                     Ok((mut stream, certificate, binding)) => {
-                        if certificate == identity.certificate() {
-                            return Err(AppError::Forbidden);
-                        }
                         let label =
                             transport::read_frame(&mut stream, transport::MAX_ENROLLMENT_REQUEST)
                                 .map_err(io_error)?;
@@ -752,8 +739,8 @@ impl Network {
         let space_id = bootstrap.seed.space_id.clone();
         let peer = PairedDevice {
             space_id: space_id.clone(),
+            name: device_name(&certificate),
             certificate,
-            name: device_name(&bootstrap.name)?,
             address: Some(SocketAddr::new(ip, bootstrap.port).to_string()),
             display_name: Some(label),
         };
@@ -1063,14 +1050,8 @@ fn address_with_port(address: &str, port: u16) -> String {
     format!("{address}:{port}")
 }
 
-fn device_name(name: &str) -> Result<String, AppError> {
-    if name.is_empty()
-        || name.len() > 48
-        || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-    {
-        return Err(AppError::InvalidInput("invalid peer device name".into()));
-    }
-    Ok(name.to_owned())
+fn device_name(certificate: &[u8]) -> String {
+    format!("plinth-{}", &certificate_id(certificate)[..12])
 }
 
 fn certificate_id(certificate: &[u8]) -> String {

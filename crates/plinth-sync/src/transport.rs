@@ -22,7 +22,7 @@ const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const ALPN: &[u8] = b"plinth-sync/1";
 const PERMISSION_ALPN: &[u8] = b"plinth-permissions/1";
-const ENROLLMENT_ALPN: &[u8] = b"plinth-enrollment/2";
+const ENROLLMENT_ALPN: &[u8] = b"plinth-enrollment/3";
 pub const MAX_ENROLLMENT_REQUEST: usize = 8 * 1024;
 pub const MAX_SPACE_SNAPSHOT: usize = 128 * 1024 * 1024;
 
@@ -99,47 +99,60 @@ impl Identity {
         self.cert.as_ref()
     }
 
-    pub fn validate_certificate(certificate: &[u8]) -> Result<()> {
-        RootCertStore::empty().add(CertificateDer::from(certificate))?;
-        Ok(())
-    }
-
     pub fn accept_enrollment(
         &self,
         mut socket: TcpStream,
-    ) -> Result<(impl Read + Write + use<>, [u8; 32])> {
+    ) -> Result<(impl Read + Write + use<>, Vec<u8>, [u8; 32])> {
         timeouts(&socket)?;
         write_frame(&mut socket, self.certificate(), MAX_ENROLLMENT_REQUEST)?;
-        let mut config =
-            ServerConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
-                .with_safe_default_protocol_versions()?
-                .with_no_client_auth()
-                .with_single_cert(vec![self.cert.clone()], self.key.clone_key().into())?;
+        let certificate = read_frame(&mut socket, MAX_ENROLLMENT_REQUEST)?;
+        let cert = CertificateDer::from(certificate.as_slice());
+        if cert == self.cert {
+            return Err("cannot pair a device with itself".into());
+        }
+        let mut roots = RootCertStore::empty();
+        roots.add(cert.clone())?;
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier =
+            WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+                .build()?;
+        let mut config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(vec![self.cert.clone()], self.key.clone_key().into())?;
         config.alpn_protocols = vec![ENROLLMENT_ALPN.to_vec()];
         let mut conn = ServerConnection::new(Arc::new(config))?;
         conn.complete_io(&mut socket)?;
+        if conn.peer_certificates().and_then(|certs| certs.first()) != Some(&cert) {
+            return Err("pairing device presented a different certificate".into());
+        }
         check_protocol(conn.alpn_protocol(), ENROLLMENT_ALPN)?;
         let binding = conn.export_keying_material([0; 32], b"plinth pairing confirmation", None)?;
         enrollment_timeouts(&socket)?;
-        Ok((StreamOwned::new(conn, socket), binding))
+        Ok((StreamOwned::new(conn, socket), certificate, binding))
     }
 
-    // The offered certificate is checked against TLS, then verified by comparing
-    // a confirmation code bound to the resulting connection on both devices.
+    // TLS proves that each device holds its offered key. The confirmation code
+    // binds the user's approval to that specific connection.
     pub fn connect_enrollment(
+        &self,
         addr: SocketAddr,
     ) -> Result<(impl Read + Write + use<>, Vec<u8>, [u8; 32])> {
         let mut socket = TcpStream::connect_timeout(&addr, TIMEOUT)?;
         timeouts(&socket)?;
         let certificate = read_frame(&mut socket, MAX_ENROLLMENT_REQUEST)?;
         let cert = CertificateDer::from(certificate.as_slice());
+        if cert == self.cert {
+            return Err("cannot pair a device with itself".into());
+        }
         let mut roots = RootCertStore::empty();
         roots.add(cert.clone())?;
+        write_frame(&mut socket, self.certificate(), MAX_ENROLLMENT_REQUEST)?;
         let mut config =
             ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
                 .with_safe_default_protocol_versions()?
                 .with_root_certificates(roots)
-                .with_no_client_auth();
+                .with_client_auth_cert(vec![self.cert.clone()], self.key.clone_key().into())?;
         config.alpn_protocols = vec![ENROLLMENT_ALPN.to_vec()];
         let mut conn = ClientConnection::new(Arc::new(config), TLS_NAME.try_into()?)?;
         conn.complete_io(&mut socket)?;
@@ -443,14 +456,19 @@ mod tests {
     fn enrollment_derives_the_same_binding_on_both_peers() {
         let temp = tempfile::tempdir().unwrap();
         let host_dir = temp.path().join("host");
+        let client_dir = temp.path().join("client");
         Identity::init(&host_dir).unwrap();
+        Identity::init(&client_dir).unwrap();
         let host = Identity::with_certificates(&host_dir, vec![]).unwrap();
+        let client = Identity::with_certificates(&client_dir, vec![]).unwrap();
         let certificate = host.certificate().to_vec();
+        let client_certificate = client.certificate().to_vec();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
-            let (mut stream, binding) = host.accept_enrollment(socket).unwrap();
+            let (mut stream, certificate, binding) = host.accept_enrollment(socket).unwrap();
+            assert_eq!(certificate, client_certificate);
             assert_eq!(
                 read_frame(&mut stream, MAX_ENROLLMENT_REQUEST).unwrap(),
                 b"request"
@@ -458,7 +476,7 @@ mod tests {
             write_frame(&mut stream, b"seed", MAX_SPACE_SNAPSHOT).unwrap();
             binding
         });
-        let (mut client, received_cert, binding) = Identity::connect_enrollment(address).unwrap();
+        let (mut client, received_cert, binding) = client.connect_enrollment(address).unwrap();
         assert_eq!(received_cert, certificate);
         write_frame(&mut client, b"request", MAX_ENROLLMENT_REQUEST).unwrap();
         assert_eq!(
@@ -466,5 +484,41 @@ mod tests {
             b"seed"
         );
         assert_eq!(server.join().unwrap(), binding);
+    }
+
+    #[test]
+    #[ignore = "requires localhost TCP"]
+    fn enrollment_rejects_an_offered_certificate_without_its_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let host_dir = temp.path().join("host");
+        let client_dir = temp.path().join("client");
+        Identity::init(&host_dir).unwrap();
+        Identity::init(&client_dir).unwrap();
+        let host = Identity::with_certificates(&host_dir, vec![]).unwrap();
+        let client = Identity::with_certificates(&client_dir, vec![]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            assert!(host.accept_enrollment(socket).is_err());
+        });
+
+        let mut socket = TcpStream::connect(address).unwrap();
+        timeouts(&socket).unwrap();
+        let cert = read_frame(&mut socket, MAX_ENROLLMENT_REQUEST).unwrap();
+        write_frame(&mut socket, client.certificate(), MAX_ENROLLMENT_REQUEST).unwrap();
+        let mut roots = RootCertStore::empty();
+        roots.add(cert.into()).unwrap();
+        let mut config =
+            ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+        config.alpn_protocols = vec![ENROLLMENT_ALPN.to_vec()];
+        let mut conn =
+            ClientConnection::new(Arc::new(config), TLS_NAME.try_into().unwrap()).unwrap();
+        let _ = conn.complete_io(&mut socket);
+        server.join().unwrap();
     }
 }
