@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.6.0](https://github.com/sousandrei/plinth/compare/plinth-v1.5.1...plinth-v1.6.0) (2026-11-20)
+
+
+### Features
+
+* add authenticated sync enrollment transport ([0f00da1](https://github.com/sousandrei/plinth/commit/0f00da1eca6db15fc91a0b6c06cb65f8927209f8))
+* add encrypted peer connectivity demo ([8040711](https://github.com/sousandrei/plinth/commit/8040711c5a303d8d9a252da4747d3b40b63e046e))
+* add headless sync peer ([ca44ee3](https://github.com/sousandrei/plinth/commit/ca44ee305a9a376cb866fcc6e52d4db1b90bb373))
+* add space sharing to the sync preview ([3a82c03](https://github.com/sousandrei/plinth/commit/3a82c03b2e8aad4c15258e55e9e1afe6db0fa51e))
+* add transaction sync preview ([19b4023](https://github.com/sousandrei/plinth/commit/19b4023157d00444dc6a4d3230c9b0d65b077f86))
+* authenticate permission consensus traffic over tls ([31f40e9](https://github.com/sousandrei/plinth/commit/31f40e96c1ddc49559adfbf2178585b65dc4f773))
+* bootstrap shared spaces from seed files ([f5cf3ad](https://github.com/sousandrei/plinth/commit/f5cf3ad6c0734df85ba2cbdfe4fb8bb8ac2e6e34))
+* checkpoint sync storage in the background ([40fb72e](https://github.com/sousandrei/plinth/commit/40fb72e1f4f3146949fb3df04ec4f07983dfbbd3))
+* clean up local copies after confirmed space removals ([636486a](https://github.com/sousandrei/plinth/commit/636486a12a8a669157826bf98b5efbf69d4188f9))
+* commit shared device removals through the permission group ([31c1af8](https://github.com/sousandrei/plinth/commit/31c1af87273c22b7cb844a34ca56b1f4e927dfc1))
+* commit shared space deletions before local cleanup ([07dd35f](https://github.com/sousandrei/plinth/commit/07dd35fcb6d607ff3babe563543edae6cd458b79))
+* commit shared space permissions across owner devices ([9ef3686](https://github.com/sousandrei/plinth/commit/9ef3686332a11df6ed8716d74b50658c482bf064))
+* define ordered space membership changes ([d109f97](https://github.com/sousandrei/plinth/commit/d109f978ff752dae7c592a09130b4168bff48bb8))
+* deliver sync removal notices on reconnect ([6d1cf2c](https://github.com/sousandrei/plinth/commit/6d1cf2cdb17bead799a9f4c099c1fed3f440eb25))
+* discover nearby sync peers ([a6beb6a](https://github.com/sousandrei/plinth/commit/a6beb6adbd85fd82015b6f763eea5f08f796142f))
+* form the initial permission quorum automatically ([7952648](https://github.com/sousandrei/plinth/commit/7952648d31e8002c6b8d851ffa1ed0fb4034fcf0))
+* initialize permissions for locally created spaces ([86e5cea](https://github.com/sousandrei/plinth/commit/86e5cead32576a3392b377cf1335e740b1ff6705))
+* join shared spaces and sync paired devices ([cd1ba7b](https://github.com/sousandrei/plinth/commit/cd1ba7bb9a3eb515c50efa086a92d8cb6c756676))
+* migrate to burn from candle ([419f455](https://github.com/sousandrei/plinth/commit/419f455b20cdc2ca0a309f0db1c73c48899b7155))
+* pair nearby devices from onboarding ([060cfaa](https://github.com/sousandrei/plinth/commit/060cfaab611e82e005ed0a75f5461d0c0aeacdc2))
+* persist space permission consensus with openraft ([17dc50b](https://github.com/sousandrei/plinth/commit/17dc50b54bfb5a77768b6f2a827370ae4a11e2ff))
+* persist sync acknowledgments by device enrollment ([71c8d36](https://github.com/sousandrei/plinth/commit/71c8d366d4a24a72ab59dfa8568dc1f4e9bf7cac))
+* prototype peer sync ([06ff34f](https://github.com/sousandrei/plinth/commit/06ff34fdb0de57ee2259366ccf19674ba4901407))
+* record trusted peer contacts during pairing ([d0cd986](https://github.com/sousandrei/plinth/commit/d0cd986d939a611c45db22671165c9132b5a21d7))
+* resume desktop permission groups after restart ([581741f](https://github.com/sousandrei/plinth/commit/581741fa679fbc34fef0dedc32e4a36242dd9055))
+* route desktop pairing through live permission replicas ([8b4db0f](https://github.com/sousandrei/plinth/commit/8b4db0f9f2f447418c1b0584372a32579b8cc29c))
+* route shared invitations through the permission leader ([eead5b6](https://github.com/sousandrei/plinth/commit/eead5b601a85b333131406021c3e2f0afcd68be8))
+* share and join spaces in the desktop app ([45aed13](https://github.com/sousandrei/plinth/commit/45aed139f8c89a1b802f49b36a804ba09e42e2a0))
+* sync directly with peers learned from the space roster ([b76f339](https://github.com/sousandrei/plinth/commit/b76f3394b66b194605f70debd15d23ceeec35569))
+* sync new bank transactions and accounts ([84f9055](https://github.com/sousandrei/plinth/commit/84f9055971f5102599e6a0681d2baa3cc4288f82))
+* sync transaction edits between preview peers ([e496074](https://github.com/sousandrei/plinth/commit/e496074123425920f7deb1ef9280642c85738c96))
+* transfer committed permissions during pairing ([88a2464](https://github.com/sousandrei/plinth/commit/88a2464a674e69082ac5f8b133c9543de9fd45d7))
+
+
+### Bug Fixes
+
+* confirm pairing with the joining code alone ([f56c3b5](https://github.com/sousandrei/plinth/commit/f56c3b5bb159860aa5b3fbf86098de757875fa96))
+* identify nearby and paired devices by name ([e7bda08](https://github.com/sousandrei/plinth/commit/e7bda083741947ff808cefba294e25e36acb1e0e))
+* keep open tables steady during sync refresh ([21dee29](https://github.com/sousandrei/plinth/commit/21dee29a637388312ed607349a36961fbeae5a67))
+* refresh open views after incoming sync ([69e564c](https://github.com/sousandrei/plinth/commit/69e564ca08c09370ac8c4d9e004ed708f389aca9))
+* require entering the shared space joining code ([3565b38](https://github.com/sousandrei/plinth/commit/3565b38490b4683c9a799de495a82ffb33307d33))
+* show lan pairing addresses and declare macos local network access ([5f9555b](https://github.com/sousandrei/plinth/commit/5f9555ba54543e6cbdd4cdbb6555ddbcda46c60e))
+* verify device keys during pairing ([a7f85aa](https://github.com/sousandrei/plinth/commit/a7f85aa9b9302d8ec374e79f7946f2c93140020c))
+
 ## [1.5.1](https://github.com/sousandrei/plinth/compare/plinth-v1.5.0...plinth-v1.5.1) (2026-07-27)
 
 
