@@ -21,7 +21,7 @@ async fn profile(
             .await
             .unwrap();
     }
-    let (network, listener) = Network::open(directory, 0).await.unwrap();
+    let (network, listener) = Network::open(directory, 0, None).await.unwrap();
     (db, store, network, listener)
 }
 
@@ -558,8 +558,12 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     third.shutdown_permissions().await.unwrap();
     let target_port = target.port;
     let third_port = third.port;
-    let (target, target_listener) = Network::open(target_dir.path(), target_port).await.unwrap();
-    let (third, third_listener) = Network::open(third_dir.path(), third_port).await.unwrap();
+    let (target, target_listener) = Network::open(target_dir.path(), target_port, None)
+        .await
+        .unwrap();
+    let (third, third_listener) = Network::open(third_dir.path(), third_port, None)
+        .await
+        .unwrap();
     assert_eq!(target.port, target_port);
     assert_eq!(third.port, third_port);
 
@@ -835,6 +839,106 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         note(&fourth_db, &space).await,
         note(invite_db, &space).await
     );
+    let mut setup = fourth_db.begin().await.unwrap();
+    let retained_space =
+        spaces::create_space_for_user(user_id, "Personal", &mut setup, &fourth_store)
+            .await
+            .unwrap();
+    let orphan = uuid::Uuid::new_v4().to_string();
+    sqlx::query_file!(
+        "queries/users/create_user.sql",
+        orphan,
+        "Orphan",
+        date,
+        date
+    )
+    .execute(&mut *setup)
+    .await
+    .unwrap();
+    sqlx::query_file!(
+        "queries/spaces/add_space_member.sql",
+        space,
+        orphan,
+        "member",
+        date
+    )
+    .execute(&mut *setup)
+    .await
+    .unwrap();
+    setup.commit().await.unwrap();
+    let mut retained_peer = leader_peer.clone();
+    retained_peer.space_id.clone_from(&retained_space);
+    fourth_store
+        .with_store(move |store| store.pair_device(&retained_peer))
+        .await
+        .unwrap();
+    let peers = fourth_store
+        .with_store(|store| store.paired_devices())
+        .await
+        .unwrap();
+    fourth
+        .sweep_withdrawn_spaces(&fourth_db, &fourth_store, &peers)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query_file!("queries/spaces/get_space_name.sql", space)
+            .fetch_optional(&fourth_db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        sqlx::query_file!("queries/users/get_user.sql", orphan)
+            .fetch_optional(&fourth_db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        sqlx::query_file!("queries/users/get_user.sql", user_id)
+            .fetch_optional(&fourth_db)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        sqlx::query_file!("queries/spaces/get_space_name.sql", retained_space)
+            .fetch_optional(&fourth_db)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let remaining = fourth_store
+        .with_store(|store| store.paired_devices())
+        .await
+        .unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].space_id, retained_space);
+    assert_eq!(remaining[0].certificate, leader_peer.certificate);
+    let session = Session::new();
+    session.set(user_id.into(), Some(space.clone())).unwrap();
+    assert!(
+        spaces::reconcile_withdrawn_session(&session, &fourth_db, &space)
+            .await
+            .unwrap()
+    );
+    assert_eq!(session.require().unwrap().space_id, retained_space);
+    session.set(orphan, Some(space.clone())).unwrap();
+    assert!(
+        spaces::reconcile_withdrawn_session(&session, &fourth_db, &space)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        session.require_user(),
+        Err(AppError::Unauthorized)
+    ));
+    assert!(matches!(
+        fourth_store
+            .exchange_step(&fourth_db, PeerSession::new(space.clone()), None)
+            .await,
+        Err(AppError::Forbidden)
+    ));
     fourth_db.close().await;
     drop(target_replica);
     drop(third_replica);
@@ -865,6 +969,37 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         note(&third_db, &space).await,
         "edited with the creator offline"
     );
+
+    let local_space = space.clone();
+    let certificate = peer_on_target.certificate.clone();
+    target_store
+        .with_store(move |store| store.unpair_device(&local_space, &certificate))
+        .await
+        .unwrap();
+    let roster = target_store
+        .membership_log(space.clone())
+        .await
+        .unwrap()
+        .membership()
+        .await
+        .unwrap()
+        .unwrap();
+    target
+        .cache_roster(&target_store, &space, &roster)
+        .await
+        .unwrap();
+    assert!(
+        target_store
+            .with_store(|store| store.paired_devices())
+            .await
+            .unwrap()
+            .iter()
+            .all(|peer| certificate_fingerprint(&peer.certificate) != third_id)
+    );
+    target_store
+        .with_store(move |store| store.pair_device(&peer_on_target))
+        .await
+        .unwrap();
 
     let leader_db = if target_is_leader {
         &target_db
@@ -931,8 +1066,21 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         note(leader_db, &space).await,
         "edited with the creator offline"
     );
+    // Resume the sync-store cleanup after the finance transaction has already committed.
+    let mut interrupted = leader_db.acquire().await.unwrap();
+    assert!(
+        spaces::delete_withdrawn_space(&mut interrupted, &space)
+            .await
+            .unwrap()
+    );
+    drop(interrupted);
+    let peers = leader_store
+        .with_store(|store| store.paired_devices())
+        .await
+        .unwrap();
+    assert!(!peers.is_empty());
     leader
-        .delete_owned_space(leader_db, leader_store, &space, user_id)
+        .sweep_withdrawn_spaces(leader_db, leader_store, &peers)
         .await
         .unwrap();
     assert!(
@@ -943,31 +1091,40 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
             .is_none()
     );
 
-    let local_space = space.clone();
-    target_store
-        .with_store(move |store| store.unpair_device(&local_space, &peer_on_target.certificate))
-        .await
-        .unwrap();
-    let roster = target_store
-        .membership_log(space.clone())
-        .await
-        .unwrap()
-        .membership()
-        .await
-        .unwrap()
-        .unwrap();
-    target
-        .cache_roster(&target_store, &space, &roster)
-        .await
-        .unwrap();
     assert!(
-        target_store
+        leader_store
             .with_store(|store| store.paired_devices())
             .await
             .unwrap()
-            .iter()
-            .all(|peer| certificate_fingerprint(&peer.certificate) != third_id)
+            .is_empty()
     );
+    let voter_enrollment = forwarded_history
+        .device(invite_host.device_id)
+        .unwrap()
+        .enrollment;
+    let expected = leader_log
+        .withdrawal_for(leader.device_id, voter_enrollment)
+        .await
+        .unwrap();
+    assert!(expected.is_some());
+    let identity_path = invite_host.directory.clone();
+    let scope = space.clone();
+    let peer_addr = format!("127.0.0.1:{}", leader.port).parse().unwrap();
+    let proof = tokio::task::spawn_blocking(move || {
+        let identity =
+            Identity::with_certificates(&identity_path, vec![leader_peer.certificate.into()])
+                .unwrap();
+        let mut stream = identity.connect_withdrawal(peer_addr).unwrap();
+        transport::write_frame(&mut stream, scope.as_bytes(), 256).unwrap();
+        transport::write_frame(&mut stream, &voter_enrollment.generation.to_be_bytes(), 8).unwrap();
+        decode::<Option<Withdrawal>>(
+            &transport::read_frame(&mut stream, MAX_WITHDRAWAL_BYTES).unwrap(),
+        )
+        .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(proof, expected);
     target_server.abort();
     third_server.abort();
     target.shutdown_permissions().await.unwrap();

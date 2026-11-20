@@ -32,7 +32,7 @@ mod withdrawal;
 
 pub use pairing::PairingHistory;
 pub use replica::PermissionReplica;
-pub use withdrawal::Withdrawal;
+pub use withdrawal::{SpaceWithdrawal, Withdrawal};
 
 const FIRST_VOTER: u64 = 1;
 const LOCAL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);

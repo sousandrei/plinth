@@ -191,6 +191,11 @@ impl Membership {
         self.removals.get(&enrollment).copied()
     }
 
+    pub(crate) fn removed_device(&self, device: DeviceId) -> bool {
+        !self.devices.contains_key(&device)
+            && self.removals.keys().any(|entry| entry.device == device)
+    }
+
     pub fn apply(&mut self, index: u64, author: Enrollment, change: Change) -> Outcome {
         if index <= self.last_applied {
             return Outcome::AlreadyApplied;

@@ -16,7 +16,44 @@ struct WithdrawalEvidence {
     confirmed: Option<Withdrawal>,
 }
 
+pub struct SpaceWithdrawal {
+    pub retain_contacts: bool,
+}
+
 impl MembershipLog {
+    pub async fn local_withdrawal(
+        &self,
+        local: DeviceId,
+    ) -> transport::Result<Option<SpaceWithdrawal>> {
+        let withdrawal = self
+            .access(
+                ErrorSubject::StateMachine,
+                ErrorVerb::Read,
+                move |db, space| {
+                    let state = read_state(db, space)?;
+                    let Some(membership) = state.membership else {
+                        return Ok(None);
+                    };
+                    let enrolled = membership.device(local).map(|device| device.enrollment);
+                    let deletion = enrolled.is_some() && membership.deletion_index().is_some();
+                    let confirmed =
+                        read_meta::<WithdrawalEvidence>(db, space, RECEIVED_WITHDRAWAL)?
+                            .and_then(|evidence| evidence.confirmed)
+                            .is_some_and(|notice| Some(notice.enrollment) == enrolled);
+                    Ok(
+                        (deletion || membership.removed_device(local) || confirmed).then(|| {
+                            SpaceWithdrawal {
+                                retain_contacts: deletion
+                                    && voter(&membership, &state.voters, local).is_some(),
+                            }
+                        }),
+                    )
+                },
+            )
+            .await?;
+        Ok(withdrawal)
+    }
+
     pub async fn withdrawal_for(
         &self,
         local: DeviceId,

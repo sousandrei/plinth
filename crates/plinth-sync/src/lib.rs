@@ -81,6 +81,10 @@ impl Session {
         self.peer = peer;
         self
     }
+
+    pub fn space_id(&self) -> &str {
+        &self.space_id
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -126,6 +130,11 @@ impl Store {
                  heads BLOB NOT NULL,
                  last_seen INTEGER NOT NULL,
                  PRIMARY KEY (space_id, device_id)
+             );
+             CREATE TABLE IF NOT EXISTS withdrawal_contacts (
+                 space_id TEXT NOT NULL,
+                 certificate BLOB NOT NULL,
+                 PRIMARY KEY (space_id, certificate)
              );",
         )?;
 
@@ -223,6 +232,41 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn withdrawal_contacts(&self) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT space_id, certificate FROM withdrawal_contacts")?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn discard_space(&mut self, space: &str, retain_contacts: bool) -> Result<(), Error> {
+        let txn = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if retain_contacts {
+            txn.execute(
+                "INSERT OR IGNORE INTO withdrawal_contacts (space_id, certificate)
+                         SELECT space_id, certificate FROM paired_devices WHERE space_id = ?1",
+                [space],
+            )?;
+        } else {
+            txn.execute(
+                "DELETE FROM withdrawal_contacts WHERE space_id = ?1",
+                [space],
+            )?;
+        }
+        txn.execute("DELETE FROM paired_devices WHERE space_id = ?1", [space])?;
+        txn.execute("DELETE FROM documents WHERE space_id = ?1", [space])?;
+        txn.execute("DELETE FROM pending_edits WHERE space_id = ?1", [space])?;
+        txn.execute(
+            "DELETE FROM sync_peer_progress WHERE space_id = ?1",
+            [space],
+        )?;
+        txn.commit()?;
+        Ok(())
     }
 
     /// Save a single edit containing the fields that the user changed.

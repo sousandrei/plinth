@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { listen } from '@tauri-apps/api/event';
 import type { ReactNode } from 'react';
-import { createContext, useCallback, useContext } from 'react';
+import { createContext, useCallback, useContext, useEffect } from 'react';
 import { getSession, type SessionSnapshot } from '@/api/spaces';
 import type { User } from '@/types';
 
@@ -33,6 +34,23 @@ export const AuthProvider = ({
 
   const user = data?.user ?? null;
   const spaceId = data?.space_id ?? null;
+
+  useEffect(() => {
+    let disposed = false;
+    const listener = listen('sync://space-removed', () => {
+      if (disposed) return;
+      for (const queryKey of [QUERY_KEY, ['users'], ['my-spaces']]) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
+    });
+    return () => {
+      disposed = true;
+      void listener.then(
+        (unlisten) => unlisten(),
+        () => undefined,
+      );
+    };
+  }, [queryClient]);
 
   const setUser = useCallback(
     (next: User | null) => {

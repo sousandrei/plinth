@@ -21,7 +21,7 @@ use plinth_sync::{
     transport::{self, Identity, PeerProtocol},
 };
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::{net::TcpListener, sync::Semaphore, task::JoinHandle};
 
 use crate::{
@@ -79,6 +79,7 @@ struct PairingHost {
 
 struct ActiveInvitation {
     id: String,
+    space_id: String,
     owner: String,
     task: JoinHandle<()>,
 }
@@ -161,6 +162,7 @@ pub struct SyncNetwork {
 }
 
 struct Network {
+    app: Option<AppHandle>,
     directory: PathBuf,
     name: String,
     label: String,
@@ -180,8 +182,9 @@ impl SyncNetwork {
         directory: &Path,
         db: DbPool,
         store: SyncPreview,
+        app: AppHandle,
     ) -> Result<Self, AppError> {
-        let (inner, listener) = Network::open(directory, SYNC_PORT).await?;
+        let (inner, listener) = Network::open(directory, SYNC_PORT, Some(app)).await?;
         let workers = [
             tokio::spawn(inner.clone().listen(listener, db.clone(), store.clone())),
             tokio::spawn(inner.clone().sync_loop(db, store)),
@@ -211,7 +214,11 @@ impl SyncNetwork {
 }
 
 impl Network {
-    async fn open(directory: &Path, port: u16) -> Result<(Arc<Self>, TcpListener), AppError> {
+    async fn open(
+        directory: &Path,
+        port: u16,
+        app: Option<AppHandle>,
+    ) -> Result<(Arc<Self>, TcpListener), AppError> {
         let directory = directory.join("sync-device");
         let identity_dir = directory.clone();
         let identity = tokio::task::spawn_blocking(move || {
@@ -226,6 +233,7 @@ impl Network {
         let listener = bind(port).await?;
         let port = listener.local_addr().map_err(io_error)?.port();
         let inner = Arc::new(Self {
+            app,
             directory,
             label: local_device_label(&name),
             device_id: certificate_fingerprint(identity.certificate()),
@@ -436,7 +444,8 @@ impl Network {
         spaces::require_owner(space, owner, db).await?;
         let write = self.permission_writes.lock().await;
         let log = store.membership_log(space.to_owned()).await?;
-        if let Some(membership) = log.membership().await.map_err(network_error_box)? {
+        let membership = log.membership().await.map_err(network_error_box)?;
+        if let Some(membership) = &membership {
             if membership.owner_account() != owner {
                 return Err(AppError::Forbidden);
             }
@@ -463,7 +472,81 @@ impl Network {
             }
         }
         drop(write);
+        if membership.is_some() {
+            return if self.cleanup_withdrawn_space(db, store, space).await? {
+                Ok(())
+            } else {
+                Err(AppError::Forbidden)
+            };
+        }
         spaces::delete_local_space(db, space).await
+    }
+
+    async fn cleanup_withdrawn_space(
+        &self,
+        db: &DbPool,
+        store: &SyncPreview,
+        space: &str,
+    ) -> Result<bool, AppError> {
+        let log = store.membership_log(space.to_owned()).await?;
+        if log
+            .local_withdrawal(self.device_id)
+            .await
+            .map_err(network_error)?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let mut conn = db.acquire().await?;
+        // Joining holds this same finance lease while installing a new enrollment.
+        let Some(withdrawal) = log
+            .local_withdrawal(self.device_id)
+            .await
+            .map_err(network_error)?
+        else {
+            return Ok(false);
+        };
+        let removed = spaces::delete_withdrawn_space(&mut conn, space).await?;
+        let scope = space.to_owned();
+        let discarded = store
+            .with_store(move |store| store.discard_space(&scope, withdrawal.retain_contacts))
+            .await;
+        drop(conn);
+
+        if removed
+            && let Some(app) = &self.app
+            && let Err(error) = spaces::refresh_after_withdrawal(app, db, space).await
+        {
+            eprintln!("refresh session after removing {space}: {error}");
+        }
+        discarded?;
+        if let Some(invite) = self
+            .invite
+            .lock()
+            .map_err(|_| state_error())?
+            .take_if(|invite| invite.space_id == space)
+        {
+            invite.task.abort();
+            self.incoming
+                .lock()
+                .map_err(|_| state_error())?
+                .take_if(|pending| pending.invitation_id == invite.id);
+        }
+        if let Ok(mut status) = self.status.lock() {
+            status.retain(|(id, _), _| id != space);
+        }
+        if !withdrawal.retain_contacts {
+            let replica = self
+                .permission_replicas
+                .lock()
+                .await
+                .as_mut()
+                .and_then(|replicas| replicas.remove(space));
+            if let Some(replica) = replica {
+                replica.shutdown().await.map_err(network_error)?;
+            }
+        }
+        Ok(true)
     }
 
     async fn remove_device(
@@ -567,10 +650,16 @@ impl Network {
         user_id: String,
         same_user: bool,
     ) -> Result<SyncInvitation, AppError> {
-        store
-            .membership_log(space_id.clone())
-            .await?
-            .owner_can_pair(&user_id, self.device_id)
+        let log = store.membership_log(space_id.clone()).await?;
+        if log
+            .local_withdrawal(self.device_id)
+            .await
+            .map_err(network_error)?
+            .is_some()
+        {
+            return Err(AppError::Forbidden);
+        }
+        log.owner_can_pair(&user_id, self.device_id)
             .await
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         if let Some(previous) = self.invite.lock().map_err(|_| state_error())?.take() {
@@ -585,6 +674,7 @@ impl Network {
         let advertisement = discovery::advertise_managed(&id, address, &label).ok();
         let nearby_available = advertisement.is_some();
         let invitation_id = id.clone();
+        let invited_space = space_id.clone();
         let owner = user_id.clone();
         let network = self.clone();
         let task = tokio::spawn(async move {
@@ -623,6 +713,7 @@ impl Network {
         let mut guard = self.invite.lock().map_err(|_| state_error())?;
         if let Some(previous) = guard.replace(ActiveInvitation {
             id: id.clone(),
+            space_id: invited_space,
             owner,
             task,
         }) {
@@ -1115,8 +1206,14 @@ impl Network {
         store: &SyncPreview,
         socket: TcpStream,
     ) -> Result<(), AppError> {
-        let peers = store.with_store(|store| store.paired_devices()).await?;
-        let mut certificates: Vec<_> = peers.iter().map(|peer| peer.certificate.clone()).collect();
+        let (peers, archives) = store
+            .with_store(|store| Ok((store.paired_devices()?, store.withdrawal_contacts()?)))
+            .await?;
+        let mut certificates: Vec<_> = peers
+            .into_iter()
+            .map(|peer| peer.certificate)
+            .chain(archives.into_iter().map(|(_, certificate)| certificate))
+            .collect();
         certificates.sort_unstable();
         certificates.dedup();
         if certificates.is_empty() {
@@ -1154,7 +1251,11 @@ impl Network {
                     Ok(store
                         .paired_devices()?
                         .iter()
-                        .any(|peer| peer.space_id == scope && peer.certificate == peer_certificate))
+                        .any(|peer| peer.space_id == scope && peer.certificate == peer_certificate)
+                        || store
+                            .withdrawal_contacts()?
+                            .iter()
+                            .any(|(space, cert)| *space == scope && *cert == peer_certificate))
                 })
                 .await?
             {
@@ -1258,6 +1359,9 @@ impl Network {
     async fn sync_loop(self: Arc<Self>, db: DbPool, store: SyncPreview) {
         loop {
             if let Ok(peers) = store.with_store(|store| store.paired_devices()).await {
+                if let Err(error) = self.sweep_withdrawn_spaces(&db, &store, &peers).await {
+                    eprintln!("scan for withdrawn spaces: {error}");
+                }
                 let mut tasks = tokio::task::JoinSet::new();
                 let spaces: BTreeSet<_> = peers.iter().map(|peer| peer.space_id.as_str()).collect();
                 for space in spaces {
@@ -1302,6 +1406,28 @@ impl Network {
             }
             tokio::time::sleep(SYNC_INTERVAL).await;
         }
+    }
+
+    async fn sweep_withdrawn_spaces(
+        &self,
+        db: &DbPool,
+        store: &SyncPreview,
+        peers: &[PairedDevice],
+    ) -> Result<(), AppError> {
+        let rows = sqlx::query_file!("queries/spaces/list_space_ids.sql")
+            .fetch_all(db)
+            .await?;
+        let spaces: BTreeSet<_> = rows
+            .into_iter()
+            .map(|row| row.id)
+            .chain(peers.iter().map(|peer| peer.space_id.clone()))
+            .collect();
+        for space in spaces {
+            if let Err(error) = self.cleanup_withdrawn_space(db, store, &space).await {
+                eprintln!("clean up withdrawn space {space}: {error}");
+            }
+        }
+        Ok(())
     }
 
     async fn resume_permission_replica(

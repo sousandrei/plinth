@@ -1,8 +1,8 @@
 use std::{collections::HashSet, io::Write};
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, Sqlite, SqliteConnection};
-use tauri::{AppHandle, State};
+use sqlx::{Connection, Executor, Sqlite, SqliteConnection};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::{
@@ -408,6 +408,89 @@ pub(crate) async fn delete_local_space(db: &DbPool, space: &str) -> Result<(), A
         .await
         .map_err(|e| AppError::Db(format!("delete_space: {e}")))?;
     Ok(())
+}
+
+pub(crate) async fn delete_withdrawn_space(
+    conn: &mut SqliteConnection,
+    space: &str,
+) -> Result<bool, AppError> {
+    let mut tx = conn.begin().await?;
+    let users = sqlx::query_file!("queries/spaces/list_space_members.sql", space)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|member| member.user_id)
+        .collect::<Vec<_>>();
+    let deleted = sqlx::query_file!("queries/spaces/delete_space.sql", space)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+        != 0;
+    if !users.is_empty() {
+        let ids =
+            serde_json::to_string(&users).map_err(|error| AppError::Internal(error.to_string()))?;
+        sqlx::query_file!("queries/users/delete_orphaned_members.sql", ids)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(deleted)
+}
+
+pub(crate) async fn refresh_after_withdrawal(
+    app: &AppHandle,
+    db: &DbPool,
+    space: &str,
+) -> Result<(), AppError> {
+    let session = app.state::<Session>();
+    if reconcile_withdrawn_session(&session, db, space).await? {
+        let classifier = app.state::<ClassifierState>();
+        if let Ok(mut model) = classifier.lock() {
+            *model = None;
+        }
+        if let Ok(active) = session.require() {
+            let _ = load_active_classifier(app, db, &classifier, &active.space_id).await;
+        }
+    }
+    app.emit("sync://space-removed", ())
+        .map_err(|error| AppError::Internal(error.to_string()))
+}
+
+pub(crate) async fn reconcile_withdrawn_session(
+    session: &Session,
+    db: &DbPool,
+    space: &str,
+) -> Result<bool, AppError> {
+    if let Ok(current) = session.require_user()
+        && current
+            .space_id
+            .as_deref()
+            .is_none_or(|active| active == space)
+    {
+        let user = sqlx::query_file_as!(UserRecord, "queries/users/get_user.sql", current.user_id)
+            .fetch_optional(db)
+            .await?;
+        let next = if user.is_some() && current.space_id.is_some() {
+            sqlx::query_file!("queries/spaces/list_spaces_for_user.sql", current.user_id)
+                .fetch_optional(db)
+                .await?
+                .map(|row| row.id)
+        } else {
+            None
+        };
+        let mut guard = session.lock()?;
+        if guard.as_ref().is_some_and(|data| {
+            data.user_id == current.user_id && data.space_id == current.space_id
+        }) {
+            if user.is_none() {
+                *guard = None;
+            } else if let Some(data) = guard.as_mut() {
+                data.space_id = next;
+            }
+            return Ok(current.space_id.is_some());
+        }
+    }
+    Ok(false)
 }
 
 #[tauri::command]

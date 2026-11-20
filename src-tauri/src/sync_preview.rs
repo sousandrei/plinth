@@ -321,6 +321,13 @@ impl SyncPreview {
         incoming: Option<Vec<u8>>,
     ) -> Result<(PeerSession, Option<Vec<u8>>), AppError> {
         let mut conn = db.acquire().await?;
+        if sqlx::query_file!("queries/spaces/get_space_name.sql", session.space_id())
+            .fetch_optional(&mut *conn)
+            .await?
+            .is_none()
+        {
+            return Err(AppError::Forbidden);
+        }
         let result = self
             .with_store(move |store| {
                 if let Some(bytes) = incoming {

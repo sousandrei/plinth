@@ -117,15 +117,15 @@ pub fn run() {
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
 
+            let classifier_state: ClassifierState = Arc::new(Mutex::new(None));
+            app.manage(classifier_state);
+            app.manage(Session::new());
+
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async move { db::setup(&handle).await })?;
 
-            let classifier_state: ClassifierState = Arc::new(Mutex::new(None));
-            app.manage(classifier_state);
-
             app.manage(commands::training::TrainingHistory::default());
             app.manage(commands::training::CancelToken::default());
-            app.manage(Session::new());
 
             Ok(())
         })

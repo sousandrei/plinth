@@ -31,11 +31,18 @@ export const LoginPage = (): React.JSX.Element => {
 
   useEffect(() => {
     if (isLoading || !users) return;
-    if (initialized.current) return;
-    initialized.current = true;
-    if (users.length === 0) setStage('welcome');
-    else setStage('select');
-  }, [users, isLoading]);
+    if (!initialized.current || stage === 'welcome' || stage === 'select') {
+      initialized.current = true;
+      setStage(users.length === 0 ? 'welcome' : 'select');
+    } else if (
+      selectedUser &&
+      (stage === 'pin' || stage === 'space') &&
+      !users.some((user) => user.id === selectedUser.id)
+    ) {
+      setSelectedUser(null);
+      setStage(users.length === 0 ? 'welcome' : 'select');
+    }
+  }, [users, isLoading, selectedUser, stage]);
 
   const goToPin = (user: User) => {
     setDirection('forward');
