@@ -222,16 +222,42 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .unwrap();
     assert!(!source_user.has_pin);
     assert_eq!(note(&target_db, &space).await, "original");
-    assert!(
-        plinth_sync::consensus::MembershipLog::open(
-            target_dir.path().join("sync.sqlite"),
-            space.as_str(),
-        )
+    let source_history = source_store
+        .membership_log(space.clone())
+        .await
         .unwrap()
         .membership()
         .await
         .unwrap()
-        .is_none()
+        .unwrap();
+    let target_history = target_store
+        .membership_log(space.clone())
+        .await
+        .unwrap()
+        .membership()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(target_history.owner_account(), user_id);
+    assert_eq!(
+        source_history.device(source.device_id),
+        target_history.device(source.device_id)
+    );
+    let joined = target_history.device(target.device_id).unwrap();
+    assert_eq!(source_history.device(target.device_id), Some(joined));
+    assert_eq!(joined.role, Role::Owner);
+    assert!(
+        target
+            .clone()
+            .invite(
+                target_db.clone(),
+                target_store.clone(),
+                space.clone(),
+                user_id.into(),
+                true,
+            )
+            .await
+            .is_err()
     );
     let peers = source_store
         .with_store(|store| store.paired_devices())

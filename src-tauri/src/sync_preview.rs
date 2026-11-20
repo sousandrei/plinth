@@ -195,6 +195,18 @@ impl SyncPreview {
         .map_err(|error| AppError::Internal(format!("initialize space permissions: {error}")))
     }
 
+    pub(crate) async fn membership_log(
+        &self,
+        space_id: String,
+    ) -> Result<consensus::MembershipLog, AppError> {
+        let inner = self.0.as_ref().ok_or(AppError::Forbidden)?;
+        let path = inner.directory.join("sync.sqlite");
+        tokio::task::spawn_blocking(move || consensus::MembershipLog::open(path, space_id))
+            .await
+            .map_err(task_error)?
+            .map_err(|error| AppError::Db(format!("open space permission history: {error}")))
+    }
+
     pub(crate) fn revision(&self, space_id: &str) -> Result<u64, AppError> {
         let Some(inner) = &self.0 else {
             return Ok(0);

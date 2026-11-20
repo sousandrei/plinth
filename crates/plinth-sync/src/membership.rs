@@ -105,6 +105,15 @@ impl Membership {
         &self.owner_account
     }
 
+    pub(crate) fn founding_device(&self) -> Option<DeviceId> {
+        self.devices
+            .values()
+            .map(|device| device.enrollment)
+            .chain(self.removals.keys().copied())
+            .min_by_key(|enrollment| enrollment.generation)
+            .map(|enrollment| enrollment.device)
+    }
+
     pub fn device(&self, id: DeviceId) -> Option<Device> {
         self.devices.get(&id).copied()
     }

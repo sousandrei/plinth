@@ -25,7 +25,13 @@ use crate::{
     transport,
 };
 
+mod pairing;
 pub mod rpc;
+
+pub use pairing::PairingHistory;
+
+const FIRST_VOTER: u64 = 1;
+const LOCAL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod cluster_tests;
@@ -58,9 +64,6 @@ pub async fn initialize_local_space(
     owner_account: String,
     owner_device: DeviceId,
 ) -> transport::Result<()> {
-    const FIRST_VOTER: u64 = 1;
-    const TIMEOUT: Duration = Duration::from_secs(5);
-
     let network = rpc::PermissionNetwork::new(identity_dir, space_id.clone(), |_| None);
     let store =
         tokio::task::spawn_blocking(move || MembershipLog::open(sync_db, space_id)).await??;
@@ -76,9 +79,9 @@ pub async fn initialize_local_space(
         if node.is_initialized().await? {
             return Err("space already has a permission history".into());
         }
-        tokio::time::timeout(TIMEOUT, async {
+        tokio::time::timeout(LOCAL_WRITE_TIMEOUT, async {
             node.initialize(BTreeSet::from([FIRST_VOTER])).await?;
-            node.wait(Some(TIMEOUT))
+            node.wait(Some(LOCAL_WRITE_TIMEOUT))
                 .current_leader(FIRST_VOTER, "new space owner")
                 .await?;
             let response = node

@@ -7,7 +7,10 @@ use std::{
 };
 
 use plinth_sync::{
-    PairedDevice, Session as PeerSession, discovery,
+    PairedDevice, Session as PeerSession,
+    consensus::PairingHistory,
+    discovery,
+    membership::{DeviceId, Role},
     transport::{self, Identity},
 };
 use serde::{Deserialize, Serialize};
@@ -40,6 +43,8 @@ const MAX_CODE_ATTEMPTS: u8 = 5;
 #[derive(Serialize, Deserialize)]
 struct JoiningDevice {
     label: String,
+    #[serde(default)]
+    supports_permissions: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -47,6 +52,8 @@ struct Bootstrap {
     seed: SyncSeed,
     port: u16,
     profile: Option<SharedProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    permissions: Option<PairingHistory>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -148,6 +155,8 @@ struct Network {
     directory: PathBuf,
     name: String,
     label: String,
+    device_id: DeviceId,
+    permission_writes: Arc<tokio::sync::Mutex<()>>,
     port: u16,
     invite: Mutex<Option<ActiveInvitation>>,
     incoming: Mutex<Option<IncomingPairing>>,
@@ -197,6 +206,8 @@ impl Network {
         let inner = Arc::new(Self {
             directory,
             label: local_device_label(&name),
+            device_id: device_fingerprint(identity.certificate()),
+            permission_writes: Arc::default(),
             name,
             port,
             invite: Mutex::new(None),
@@ -416,6 +427,12 @@ impl Network {
         user_id: String,
         same_user: bool,
     ) -> Result<SyncInvitation, AppError> {
+        store
+            .membership_log(space_id.clone())
+            .await?
+            .owner_can_pair(&user_id, self.device_id)
+            .await
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         if let Some(previous) = self.invite.lock().map_err(|_| state_error())?.take() {
             previous.task.abort();
         }
@@ -492,6 +509,11 @@ impl Network {
     ) -> Result<bool, AppError> {
         let directory = self.directory.clone();
         let remote_addr = socket.peer_addr().map_err(io_error)?;
+        let mut log = store.membership_log(offer.space_id.clone()).await?;
+        let managed = log
+            .owner_can_pair(&offer.user_id, self.device_id)
+            .await
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let host = encode(&PairingHost {
             label: self.label.clone(),
             same_user: offer.same_user,
@@ -512,6 +534,11 @@ impl Network {
         })
         .await
         .map_err(join_error)??;
+        if managed && !request.supports_permissions {
+            return Err(AppError::InvalidInput(
+                "Update Plinth on the joining device before pairing.".into(),
+            ));
+        }
         let timeout = offer
             .deadline
             .saturating_duration_since(Instant::now())
@@ -567,10 +594,30 @@ impl Network {
         } else {
             None
         };
+        let directory = self.directory.clone();
+        let owner = offer.user_id.clone();
+        let device_id = self.device_id;
+        let joining_device = device_fingerprint(&certificate);
+        let role = if offer.same_user {
+            Role::Owner
+        } else {
+            Role::Member
+        };
+        let permission_writes = self.permission_writes.clone();
+        // Complete the committed write even if the invitation closes mid-approval.
+        let permissions = tokio::spawn(async move {
+            let _guard = permission_writes.lock().await;
+            log.approve_pairing(directory, &owner, device_id, joining_device, role)
+                .await
+        })
+        .await
+        .map_err(join_error)?
+        .map_err(network_error)?;
         let data = encode(&Bootstrap {
             seed,
             port: self.port,
             profile,
+            permissions,
         })?;
         if data.len() > transport::MAX_SPACE_SNAPSHOT {
             return Err(AppError::InvalidInput(
@@ -614,6 +661,7 @@ impl Network {
         let identity = open_identity(self.directory.clone()).await?;
         let request = encode(&JoiningDevice {
             label: self.label.clone(),
+            supports_permissions: true,
         })?;
         let pending = tokio::task::spawn_blocking(move || {
             let mut error = AppError::Io("no pairing address available".into());
@@ -729,7 +777,13 @@ impl Network {
             }
             let data = transport::read_frame(&mut stream, transport::MAX_SPACE_SNAPSHOT)
                 .map_err(io_error)?;
-            Ok((ip, decode::<Bootstrap>(&data)?, certificate, request.device))
+            let bootstrap: Bootstrap = decode(&data)?;
+            if bootstrap.profile.is_some() != request.same_user {
+                return Err(AppError::InvalidInput(
+                    "pairing account changed during the invitation".into(),
+                ));
+            }
+            Ok((ip, bootstrap, certificate, request.device))
         })
         .await
         .map_err(join_error)??;
@@ -737,6 +791,7 @@ impl Network {
             return Err(AppError::InvalidInput("missing peer sync port".into()));
         }
         let space_id = bootstrap.seed.space_id.clone();
+        let host = device_fingerprint(&certificate);
         let peer = PairedDevice {
             space_id: space_id.clone(),
             name: device_name(&certificate),
@@ -745,6 +800,7 @@ impl Network {
             display_name: Some(label),
         };
         let mut install = db.begin_with("BEGIN IMMEDIATE").await?;
+        let shared_account = bootstrap.profile.as_ref().map(|profile| profile.id.clone());
         let (user_id, new) = match (user, bootstrap.profile) {
             (JoinUser::Existing(id), None) => (id, false),
             (JoinUser::Existing(id), Some(profile)) if id == profile.id => (id, false),
@@ -768,6 +824,17 @@ impl Network {
             _ => return Err(AppError::Unauthorized),
         };
         spaces::write_sync_seed(&mut install, &user_id, bootstrap.seed).await?;
+        store
+            .membership_log(space_id.clone())
+            .await?
+            .receive_pairing_history(
+                bootstrap.permissions,
+                host,
+                self.device_id,
+                shared_account.as_deref(),
+            )
+            .await
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         store
             .with_store(move |store| store.pair_device(&peer))
             .await?;
@@ -1055,11 +1122,15 @@ fn device_name(certificate: &[u8]) -> String {
 }
 
 fn certificate_id(certificate: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(certificate)
+    device_fingerprint(certificate)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn device_fingerprint(certificate: &[u8]) -> DeviceId {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(certificate).into()
 }
 
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, AppError> {
