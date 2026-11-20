@@ -247,7 +247,10 @@ fn queued_edits_keep_their_order_across_a_checkpoint() {
             )
             .unwrap();
     }
-    store.checkpoint(SPACE).unwrap();
+    store.checkpoint_all().unwrap();
+    let after_checkpoint = store.db.total_changes();
+    store.checkpoint_all().unwrap();
+    assert_eq!(store.db.total_changes(), after_checkpoint);
 
     let first = store.next_pending_edit().unwrap().unwrap();
     assert_eq!(first.fields["category"], json!("Groceries"));

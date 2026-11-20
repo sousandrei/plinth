@@ -17,6 +17,12 @@ pub async fn setup(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
     let preview = SyncPreview::open(data_dir.clone()).await?;
     let pool = init(&data_dir.join("plinth.db"), &preview).await?;
     let network = SyncNetwork::start(&data_dir, pool.clone(), preview.clone()).await?;
+    let maintenance = preview.clone();
+    tokio::spawn(async move {
+        if let Err(error) = maintenance.with_store(|store| store.checkpoint_all()).await {
+            eprintln!("sync startup checkpoint: {error}");
+        }
+    });
     app.manage(preview);
     app.manage(pool);
     app.manage(network);

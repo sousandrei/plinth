@@ -4,6 +4,8 @@ use std::{
     io::{self, Write},
     net::{SocketAddr, TcpListener},
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 
 use plinth_sync::{
@@ -29,7 +31,8 @@ fn serve(
         .write(true)
         .open(dir.join("peer.lock"))?;
     lock.try_lock()?;
-    let mut store = Store::open(dir.join("sync.sqlite"))?;
+    let database = dir.join("sync.sqlite");
+    let mut store = Store::open(&database)?;
     let listener = TcpListener::bind(bind)?;
     let address = listener.local_addr()?;
     let _advertisement = name
@@ -37,6 +40,22 @@ fn serve(
         .transpose()?;
     println!("READY {address}");
     io::stdout().flush()?;
+
+    if let Err(error) = thread::Builder::new()
+        .name("sync-checkpoint".into())
+        .spawn(move || {
+            loop {
+                if let Err(error) =
+                    Store::open(&database).and_then(|mut store| store.checkpoint_all())
+                {
+                    eprintln!("sync checkpoint: {error}");
+                }
+                thread::sleep(Duration::from_secs(24 * 60 * 60));
+            }
+        })
+    {
+        eprintln!("start sync checkpoint worker: {error}");
+    }
 
     loop {
         let (socket, remote) = match listener.accept() {

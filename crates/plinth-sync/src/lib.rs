@@ -383,6 +383,22 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+
+    /// Consolidate fragmented documents without changing their sync history.
+    pub fn checkpoint_all(&mut self) -> Result<(), Error> {
+        let spaces = {
+            let mut statement = self
+                .db
+                .prepare("SELECT space_id FROM documents GROUP BY space_id HAVING count(*) > 1")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for space in spaces {
+            self.checkpoint(&space)?;
+        }
+        Ok(())
+    }
 }
 
 fn enqueue(db: &Connection, space_id: &str, record_id: &str, fields: &Fields) -> Result<(), Error> {
