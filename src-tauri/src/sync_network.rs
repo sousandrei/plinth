@@ -13,7 +13,7 @@ use std::{
 
 use plinth_sync::{
     PairedDevice, Session as PeerSession,
-    consensus::{PairingHistory, PermissionReplica},
+    consensus::{PairingHistory, PermissionReplica, Withdrawal},
     discovery,
     membership::{
         DeviceId, Enrollment, Membership, Outcome, PeerContact, Role, certificate_fingerprint,
@@ -45,6 +45,7 @@ const INVITE_PORT: u16 = 37420;
 const CONFIRMATION_TTL: Duration = Duration::from_secs(90);
 const MAX_CODE_ATTEMPTS: u8 = 5;
 const MAX_ROSTER_BYTES: usize = 8 * 1024 * 1024;
+const MAX_WITHDRAWAL_BYTES: usize = 4096;
 
 #[derive(Serialize, Deserialize)]
 struct JoiningDevice {
@@ -1139,7 +1140,10 @@ impl Network {
             })
             .await
             .map_err(join_error)??;
-        if protocol == PeerProtocol::Permissions {
+        if matches!(
+            protocol,
+            PeerProtocol::Permissions | PeerProtocol::Withdrawal
+        ) {
             let _call = self.permission_calls.read().await;
             let device = certificate_fingerprint(&certificate);
             let scope = space_id.clone();
@@ -1155,6 +1159,11 @@ impl Network {
                 .await?
             {
                 return Err(AppError::Forbidden);
+            }
+            if protocol == PeerProtocol::Withdrawal {
+                return self
+                    .serve_withdrawal(store, &space_id, device, stream)
+                    .await;
             }
             if !store
                 .membership_log(space_id.clone())
@@ -1214,15 +1223,18 @@ impl Network {
         if !exists {
             return Err(AppError::Forbidden);
         }
-        let membership = store
-            .membership_log(space_id.to_owned())
-            .await?
-            .membership()
-            .await
-            .map_err(network_error_box)?;
+        let log = store.membership_log(space_id.to_owned()).await?;
+        let membership = log.membership().await.map_err(network_error_box)?;
         let enrollment = if let Some(membership) = membership {
             let device = certificate_fingerprint(certificate);
-            if !membership.permits_sync(self.device_id) || !membership.permits_sync(device) {
+            if !membership.permits_sync(self.device_id)
+                || !membership.permits_sync(device)
+                || log
+                    .received_withdrawal(self.device_id)
+                    .await
+                    .map_err(network_error)?
+                    .is_some()
+            {
                 return Err(AppError::Forbidden);
             }
             Some(
@@ -1338,17 +1350,120 @@ impl Network {
         let mut result = self
             .dial(db, store, &peer, address.clone(), enrollment)
             .await;
+        if result.is_err()
+            && enrollment.is_some()
+            && self
+                .request_withdrawal(store, &peer, &address)
+                .await
+                .unwrap_or(false)
+        {
+            return;
+        }
         let nearby = format!("mdns:{}", peer.name);
         if result.is_err() && address != nearby {
             address = nearby;
             result = self
                 .dial(db, store, &peer, address.clone(), enrollment)
                 .await;
+            if result.is_err()
+                && enrollment.is_some()
+                && self
+                    .request_withdrawal(store, &peer, &address)
+                    .await
+                    .unwrap_or(false)
+            {
+                return;
+            }
         }
         if result.is_ok() {
             let _ = self.refresh_roster(store, &peer, address).await;
         }
         self.record_status(&peer, &result);
+    }
+
+    async fn serve_withdrawal(
+        &self,
+        store: &SyncPreview,
+        space: &str,
+        device: DeviceId,
+        mut stream: impl Read + Write + Send + 'static,
+    ) -> Result<(), AppError> {
+        let (mut stream, generation) = tokio::task::spawn_blocking(move || {
+            let bytes = transport::read_frame(&mut stream, 8).map_err(io_error)?;
+            let generation = bytes
+                .try_into()
+                .map(u64::from_be_bytes)
+                .map_err(|_| AppError::InvalidInput("invalid enrollment generation".into()))?;
+            Ok::<_, AppError>((stream, generation))
+        })
+        .await
+        .map_err(join_error)??;
+        let notice = store
+            .membership_log(space.to_owned())
+            .await?
+            .withdrawal_for(self.device_id, Enrollment { device, generation })
+            .await
+            .map_err(network_error)?;
+        let payload = encode(&notice)?;
+        tokio::task::spawn_blocking(move || {
+            transport::write_frame(&mut stream, &payload, MAX_WITHDRAWAL_BYTES).map_err(io_error)
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn request_withdrawal(
+        &self,
+        store: &SyncPreview,
+        peer: &PairedDevice,
+        address: &str,
+    ) -> Result<bool, AppError> {
+        let log = store.membership_log(peer.space_id.clone()).await?;
+        let sender = certificate_fingerprint(&peer.certificate);
+        if !log
+            .is_committed_voter(sender)
+            .await
+            .map_err(network_error)?
+        {
+            return Ok(false);
+        }
+        let Some(local) = log
+            .membership()
+            .await
+            .map_err(network_error_box)?
+            .and_then(|membership| membership.device(self.device_id))
+        else {
+            return Ok(false);
+        };
+        let directory = self.directory.clone();
+        let certificate = peer.certificate.clone();
+        let space = peer.space_id.clone();
+        let addresses = resolve_peer(address.to_owned()).await?;
+        let notice = tokio::task::spawn_blocking(move || {
+            let identity = Identity::with_certificates(&directory, vec![certificate.into()])
+                .map_err(network_error)?;
+            let mut stream = addresses
+                .into_iter()
+                .find_map(|address| identity.connect_withdrawal(address).ok())
+                .ok_or_else(|| {
+                    AppError::Io("could not connect to the space's voting device".into())
+                })?;
+            transport::write_frame(&mut stream, space.as_bytes(), 256).map_err(io_error)?;
+            transport::write_frame(&mut stream, &local.enrollment.generation.to_be_bytes(), 8)
+                .map_err(io_error)?;
+            decode::<Option<Withdrawal>>(
+                &transport::read_frame(&mut stream, MAX_WITHDRAWAL_BYTES).map_err(io_error)?,
+            )
+        })
+        .await
+        .map_err(join_error)??;
+        if let Some(notice) = notice {
+            return log
+                .record_withdrawal(self.device_id, sender, notice)
+                .await
+                .map_err(network_error);
+        }
+        Ok(false)
     }
 
     async fn serve_roster(

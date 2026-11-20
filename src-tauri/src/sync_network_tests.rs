@@ -773,6 +773,68 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
             .await,
         Err(AppError::Forbidden)
     ));
+    let fourth_log = fourth_store.membership_log(space.clone()).await.unwrap();
+    let fourth_peers = space_devices(&fourth_store, &space).await.unwrap();
+    let inviter_peer = fourth_peers
+        .iter()
+        .find(|peer| certificate_fingerprint(&peer.certificate) == invite_host.device_id)
+        .unwrap();
+    let first_report = invite_store
+        .membership_log(space.clone())
+        .await
+        .unwrap()
+        .withdrawal_for(invite_host.device_id, enrollment)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !fourth_log
+            .record_withdrawal(fourth.device_id, source.device_id, first_report.clone())
+            .await
+            .unwrap()
+    );
+    let inviter_address = format!("127.0.0.1:{}", invite_host.port);
+    for _ in 0..2 {
+        assert!(
+            !fourth
+                .request_withdrawal(&fourth_store, inviter_peer, &inviter_address)
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        fourth_log
+            .received_withdrawal(fourth.device_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let leader_peer = fourth_peers
+        .into_iter()
+        .find(|peer| certificate_fingerprint(&peer.certificate) == leader.device_id)
+        .unwrap();
+    fourth
+        .sync_peer(&fourth_db, &fourth_store, leader_peer.clone())
+        .await;
+    drop(fourth_log);
+    let saved = fourth_store
+        .membership_log(space.clone())
+        .await
+        .unwrap()
+        .received_withdrawal(fourth.device_id)
+        .await
+        .unwrap();
+    assert_eq!(saved, Some(first_report));
+    assert!(matches!(
+        fourth
+            .current_peer(&fourth_db, &fourth_store, &space, &leader_peer.certificate)
+            .await,
+        Err(AppError::Forbidden)
+    ));
+    assert_eq!(
+        note(&fourth_db, &space).await,
+        note(invite_db, &space).await
+    );
     fourth_db.close().await;
     drop(target_replica);
     drop(third_replica);
