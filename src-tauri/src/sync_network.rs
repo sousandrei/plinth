@@ -12,7 +12,7 @@ use plinth_sync::{
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
-use tauri::{AppHandle, Emitter, State};
+use tauri::State;
 use tokio::{
     net::TcpListener,
     sync::{Semaphore, oneshot},
@@ -155,7 +155,6 @@ struct Network {
     incoming: Mutex<Option<IncomingPairing>>,
     outgoing: Mutex<Option<OutgoingPairing>>,
     status: Mutex<std::collections::HashMap<(String, String), DeviceStatus>>,
-    app: Option<AppHandle>,
 }
 
 impl SyncNetwork {
@@ -163,9 +162,8 @@ impl SyncNetwork {
         directory: &Path,
         db: DbPool,
         store: SyncPreview,
-        app: AppHandle,
     ) -> Result<Self, AppError> {
-        let (inner, listener) = Network::open(directory, SYNC_PORT, Some(app)).await?;
+        let (inner, listener) = Network::open(directory, SYNC_PORT).await?;
         let workers = [
             tokio::spawn(inner.clone().listen(listener, db.clone(), store.clone())),
             tokio::spawn(inner.clone().sync_loop(db, store)),
@@ -184,11 +182,7 @@ impl SyncNetwork {
 }
 
 impl Network {
-    async fn open(
-        directory: &Path,
-        port: u16,
-        app: Option<AppHandle>,
-    ) -> Result<(Arc<Self>, TcpListener), AppError> {
+    async fn open(directory: &Path, port: u16) -> Result<(Arc<Self>, TcpListener), AppError> {
         let directory = directory.join("sync-device");
         let identity_dir = directory.clone();
         let identity = tokio::task::spawn_blocking(move || {
@@ -210,7 +204,6 @@ impl Network {
             incoming: Mutex::new(None),
             outgoing: Mutex::new(None),
             status: Mutex::default(),
-            app,
         });
         Ok((inner, listener))
     }
@@ -596,7 +589,6 @@ impl Network {
         })
         .await
         .map_err(join_error)??;
-        self.changed(&offer.space_id);
         Ok(true)
     }
 
@@ -773,7 +765,6 @@ impl Network {
             .with_store(move |store| store.pair_device(&peer))
             .await?;
         install.commit().await?;
-        self.changed(&space_id);
         Ok((space_id, new.then_some(user_id)))
     }
 
@@ -837,12 +828,10 @@ impl Network {
         let store = store.clone();
         let runtime = tokio::runtime::Handle::current();
         let space = space_id.clone();
-        let revision = store.revision();
-        let store_for_exchange = store.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut session = PeerSession::new(&space);
             transport::respond(&mut stream, &space, |incoming| {
-                let (next, outgoing) = runtime.block_on(store_for_exchange.exchange_step(
+                let (next, outgoing) = runtime.block_on(store.exchange_step(
                     &db,
                     std::mem::replace(&mut session, PeerSession::new(&space)),
                     incoming.map(<[u8]>::to_vec),
@@ -855,9 +844,6 @@ impl Network {
         .await
         .map_err(join_error)?;
         self.record_status(&peer, &result);
-        if store.revision() != revision {
-            self.changed(&space_id);
-        }
         result
     }
 
@@ -910,7 +896,6 @@ impl Network {
             return;
         };
         let Some(address) = &peer.address else { return };
-        let revision = store.revision();
         let mut result = self.dial(db, store, &peer, address.clone()).await;
         if result.is_err() {
             result = self
@@ -918,9 +903,6 @@ impl Network {
                 .await;
         }
         self.record_status(&peer, &result);
-        if store.revision() != revision {
-            self.changed(&peer.space_id);
-        }
     }
 
     async fn dial(
@@ -960,12 +942,6 @@ impl Network {
                 }
                 Err(error) => state.error = Some(error.to_string()),
             }
-        }
-    }
-
-    fn changed(&self, space_id: &str) {
-        if let Some(app) = &self.app {
-            let _ = app.emit("sync-space-updated", space_id);
         }
     }
 }

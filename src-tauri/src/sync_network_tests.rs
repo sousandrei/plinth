@@ -20,7 +20,7 @@ async fn profile(
             .await
             .unwrap();
     }
-    let (network, listener) = Network::open(directory, 0, None).await.unwrap();
+    let (network, listener) = Network::open(directory, 0).await.unwrap();
     (db, store, network, listener)
 }
 
@@ -257,18 +257,21 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .stage_batch(space.clone(), creation)
         .await
         .unwrap();
+    let before = target_store.revision(&space).unwrap();
     let automatic = tokio::spawn(
         target
             .clone()
             .sync_loop(target_db.clone(), target_store.clone()),
     );
     tokio::time::timeout(Duration::from_secs(15), async {
-        while note(&target_db, &space).await != "edited offline" {
+        while target_store.revision(&space).unwrap() == before {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
     .unwrap();
+    assert_eq!(note(&target_db, &space).await, "edited offline");
+    assert_eq!(target_store.revision("unrelated-space").unwrap(), 0);
     let imported = sqlx::query_file!(
         "queries/transactions/get_transaction_edit_fields.sql",
         r#"["new-bank-transaction"]"#,

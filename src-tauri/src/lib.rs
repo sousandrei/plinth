@@ -157,6 +157,7 @@ pub fn run() {
             commands::transactions::bulk_approve_transactions,
             commands::transactions::bulk_categorize_transactions,
             sync_preview::sync_preview_exchange,
+            sync_preview::sync_space_revision,
             sync_preview::discover_sync_peers,
             sync_network::create_sync_invitation,
             sync_network::begin_sync_pairing,

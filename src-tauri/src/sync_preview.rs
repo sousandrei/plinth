@@ -1,12 +1,10 @@
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -29,7 +27,7 @@ struct PreviewStore {
     _profile_lock: File,
     directory: PathBuf,
     store: Mutex<Option<Store>>,
-    revision: AtomicU64,
+    revisions: Mutex<HashMap<String, u64>>,
 }
 
 pub(crate) enum PeerConnection {
@@ -42,6 +40,18 @@ pub struct NearbySyncPeer {
     pub name: String,
     pub display_name: String,
     pub addresses: Vec<SocketAddr>,
+}
+
+#[tauri::command]
+pub fn sync_space_revision(
+    space_id: String,
+    session: State<'_, Session>,
+    preview: State<'_, SyncPreview>,
+) -> Result<u64, AppError> {
+    if session.require()?.space_id != space_id {
+        return Err(AppError::Forbidden);
+    }
+    preview.revision(&space_id)
 }
 
 #[tauri::command]
@@ -147,7 +157,7 @@ impl SyncPreview {
                 _profile_lock: profile_lock,
                 directory,
                 store: Mutex::new(Some(store)),
-                revision: AtomicU64::new(0),
+                revisions: Mutex::default(),
             }))))
         })
         .await
@@ -158,10 +168,12 @@ impl SyncPreview {
         self.0.is_some()
     }
 
-    pub(crate) fn revision(&self) -> u64 {
-        self.0
-            .as_ref()
-            .map_or(0, |inner| inner.revision.load(Ordering::Relaxed))
+    pub(crate) fn revision(&self, space_id: &str) -> Result<u64, AppError> {
+        let Some(inner) = &self.0 else {
+            return Ok(0);
+        };
+        let revisions = inner.revisions.lock().map_err(|_| poisoned_store())?;
+        Ok(revisions.get(space_id).copied().unwrap_or_default())
     }
 
     #[cfg(test)]
@@ -193,10 +205,12 @@ impl SyncPreview {
     pub(crate) async fn replay(&self, conn: &mut SqliteConnection) -> Result<(), AppError> {
         while let Some(edit) = self.with_store(|store| store.next_pending_edit()).await? {
             sync_import::project(&mut *conn, &edit).await?;
-            self.with_store(move |store| store.complete_edit(edit.sequence))
+            let sequence = edit.sequence;
+            self.with_store(move |store| store.complete_edit(sequence))
                 .await?;
             if let Some(inner) = &self.0 {
-                inner.revision.fetch_add(1, Ordering::Relaxed);
+                let mut revisions = inner.revisions.lock().map_err(|_| poisoned_store())?;
+                *revisions.entry(edit.space_id).or_default() += 1;
             }
         }
         Ok(())

@@ -11,6 +11,9 @@ import type {
 export const discoverSyncPeers = (): Promise<NearbySyncPeer[]> =>
   invoke<NearbySyncPeer[]>('discover_sync_peers');
 
+export const getSyncSpaceRevision = (spaceId: string): Promise<number> =>
+  invoke<number>('sync_space_revision', { spaceId });
+
 export const createSyncInvitation = (
   spaceId: string,
   sameUser: boolean,
