@@ -32,9 +32,11 @@ const createInvitation = fn(() => ({
 const beginPairing = fn(() => ({
   id: 'outgoing',
   device: 'Living room PC',
-  code,
   same_user: false,
 }));
+const verifyCode = fn(({ code: entered }: { code: string }) => {
+  if (entered !== code) throw new Error('Incorrect joining code.');
+});
 const respond = fn();
 const joinSpace = fn().mockName('join_shared_space');
 const activateSpace = fn().mockName('set_active_space');
@@ -56,6 +58,10 @@ const setupSpaces = () => {
 const meta = {
   title: 'Spaces/Sharing',
   component: SpacesPage,
+  beforeEach: () => {
+    verifyCode.mockClear();
+    setMock('verify_sync_pairing_code', verifyCode);
+  },
   render: () => (
     <AuthProvider>
       <SpacesPage />
@@ -108,7 +114,9 @@ export const ShareAndJoin: Story = {
       code,
       same_user: true,
     });
-    await expect(await body.findByText(code)).toBeVisible();
+    await expect(
+      await body.findByText(code, {}, { timeout: 3000 }),
+    ).toBeVisible();
     await expect(createInvitation).toHaveBeenCalledWith({
       spaceId: household.id,
       sameUser: true,
@@ -128,13 +136,27 @@ export const ShareAndJoin: Story = {
     await userEvent.click(
       await body.findByRole('button', { name: 'Living room PC' }),
     );
-    await expect(await body.findByText(code)).toBeVisible();
+    const firstDigit = await body.findByRole('textbox', { name: 'Digit 1' });
+    await expect(body.queryByText(code)).not.toBeInTheDocument();
+    await userEvent.click(firstDigit);
+    await userEvent.paste('000000');
+    await expect(
+      await body.findByText('Error: Incorrect joining code.'),
+    ).toBeVisible();
+    await expect(
+      body.queryByRole('button', { name: 'Join space' }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(firstDigit);
+    await userEvent.paste(code);
+    await expect(await body.findByText(/Code accepted/)).toBeVisible();
+    await expect(verifyCode).toHaveBeenCalledWith({
+      requestId: 'outgoing',
+      code,
+    });
     await expect(beginPairing).toHaveBeenCalledWith({
       address: 'mdns:join-household',
     });
-    await userEvent.click(
-      body.getByRole('button', { name: 'Code matches, join' }),
-    );
+    await userEvent.click(body.getByRole('button', { name: 'Join space' }));
     await waitFor(() =>
       expect(body.getByText('Shared space joined')).toBeVisible(),
     );
@@ -176,7 +198,9 @@ export const DiscoveryUnavailable: Story = {
       '192.168.1.20:37420',
     );
     await userEvent.click(body.getByRole('button', { name: 'Connect' }));
-    await expect(await body.findByText(code)).toBeVisible();
+    await expect(
+      await body.findByRole('textbox', { name: 'Digit 1' }),
+    ).toBeVisible();
     await expect(beginPairing).toHaveBeenCalledWith({
       address: '192.168.1.20:37420',
     });
@@ -203,7 +227,6 @@ export const JoinFromWelcome: Story = {
     setMock('begin_sync_pairing', {
       id: 'outgoing',
       device: 'Living room PC',
-      code,
       same_user: true,
     });
     joinSpace.mockReset().mockReturnValue(joined.id);
@@ -218,13 +241,15 @@ export const JoinFromWelcome: Story = {
     await userEvent.click(
       await body.findByRole('button', { name: 'Living room PC' }),
     );
-    await expect(await body.findByText(code)).toBeVisible();
+    await userEvent.click(
+      await body.findByRole('textbox', { name: 'Digit 1' }),
+    );
+    await userEvent.paste(code);
+    await expect(await body.findByText(/Code accepted/)).toBeVisible();
     await expect(body.queryByLabelText('Your name')).not.toBeInTheDocument();
     await userEvent.type(body.getByLabelText('PIN for this device'), '1234');
     await userEvent.type(body.getByLabelText('Confirm PIN'), '1234');
-    await userEvent.click(
-      body.getByRole('button', { name: 'Code matches, join' }),
-    );
+    await userEvent.click(body.getByRole('button', { name: 'Join space' }));
     await waitFor(() =>
       expect(joinSpace).toHaveBeenCalledWith({
         requestId: 'outgoing',

@@ -119,8 +119,26 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .await
         .unwrap();
         assert!(pairing.same_user);
-        assert_eq!(pairing.code.len(), 6);
-        assert_eq!(pairing.code, request.code);
+        assert_eq!(request.code.len(), 6);
+        assert!(
+            serde_json::to_value(&pairing)
+                .unwrap()
+                .get("code")
+                .is_none()
+        );
+        assert!(
+            target
+                .join(&target_db, &target_store, new_user(), &pairing.id)
+                .await
+                .is_err()
+        );
+        let wrong_code = if request.code == "000000" {
+            "000001"
+        } else {
+            "000000"
+        };
+        assert!(target.verify_join_code(&pairing.id, wrong_code).is_err());
+        target.verify_join_code(&pairing.id, &request.code).unwrap();
         assert!(
             source_store
                 .with_store(|store| store.paired_devices())

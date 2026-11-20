@@ -160,6 +160,7 @@ pub fn run() {
             sync_preview::discover_sync_peers,
             sync_network::create_sync_invitation,
             sync_network::begin_sync_pairing,
+            sync_network::verify_sync_pairing_code,
             sync_network::cancel_sync_invitation,
             sync_network::sync_invitation_request,
             sync_network::respond_sync_pairing,

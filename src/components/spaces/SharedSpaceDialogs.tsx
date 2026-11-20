@@ -10,7 +10,9 @@ import {
   getPairingRequest,
   joinSharedSpace,
   respondSyncPairing,
+  verifySyncPairingCode,
 } from '@/api/sync';
+import { PinInput } from '@/components/login/PinInput';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
@@ -62,7 +64,10 @@ export const ShareSpaceDialog = ({
             <p role="status">Approved. Finish joining on the other device.</p>
           ) : pending ? (
             <>
-              <p>Does this code match the one on {pending.device}?</p>
+              <p>
+                Enter this code on {pending.device}, then approve here once that
+                device accepts it.
+              </p>
               <p className="font-mono text-2xl tracking-widest">
                 {pending.code}
               </p>
@@ -160,11 +165,16 @@ export const JoinSharedSpaceDialog = ({
   const [confirmation, setConfirmation] = useState('');
   const [installedSpace, setInstalledSpace] = useState<string>();
   const begin = useMutation({ mutationFn: beginSyncPairing });
+  const verify = useMutation({
+    mutationFn: ({ id, code }: { id: string; code: string }) =>
+      verifySyncPairingCode(id, code),
+  });
   const pairing = begin.data;
   const needsPin = needsProfile || pairing?.same_user;
   const needsName = needsProfile && !pairing?.same_user;
   const ready = Boolean(
     pairing &&
+      verify.isSuccess &&
       (!needsPin ||
         (pin.length === 4 &&
           pin === confirmation &&
@@ -213,12 +223,13 @@ export const JoinSharedSpaceDialog = ({
   const reset = () => {
     if (pairing) void cancelSyncPairing(pairing.id).catch(() => undefined);
     join.reset();
+    verify.reset();
     begin.reset();
     setPin('');
     setConfirmation('');
   };
   const close = () => {
-    if (begin.isPending || join.isPending) return;
+    if (begin.isPending || verify.isPending || join.isPending) return;
     reset();
     if (installedSpace) void query.invalidateQueries({ queryKey: ['session'] });
     onClose();
@@ -239,13 +250,26 @@ export const JoinSharedSpaceDialog = ({
                 if ((ready || installedSpace) && !join.isPending) join.mutate();
               }}
             >
-              {!installedSpace && (
+              {!installedSpace && !verify.isSuccess && (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="mb-3 text-sm">
+                    Enter the six-digit code shown on {pairing.device}.
+                  </legend>
+                  <PinInput
+                    length={6}
+                    visible
+                    disabled={verify.isPending}
+                    error={verify.isError ? String(verify.error) : undefined}
+                    onComplete={(code) =>
+                      verify.mutate({ id: pairing.id, code })
+                    }
+                  />
+                </fieldset>
+              )}
+              {!installedSpace && verify.isSuccess && (
                 <>
-                  <p>
-                    Check that this code matches the one on {pairing.device}.
-                  </p>
-                  <p className="font-mono text-2xl tracking-widest">
-                    {pairing.code}
+                  <p role="status">
+                    Code accepted. Approve the request on {pairing.device}.
                   </p>
                   {needsName && (
                     <label
@@ -320,22 +344,24 @@ export const JoinSharedSpaceDialog = ({
                   <Button
                     type="button"
                     variant="secondary"
-                    disabled={join.isPending}
+                    disabled={verify.isPending || join.isPending}
                     onClick={reset}
                   >
                     Back
                   </Button>
                 )}
-                <Button
-                  type="submit"
-                  disabled={join.isPending || (!ready && !installedSpace)}
-                >
-                  {join.isPending
-                    ? 'Joining…'
-                    : installedSpace
-                      ? 'Open space'
-                      : 'Code matches, join'}
-                </Button>
+                {(verify.isSuccess || installedSpace) && (
+                  <Button
+                    type="submit"
+                    disabled={join.isPending || (!ready && !installedSpace)}
+                  >
+                    {join.isPending
+                      ? 'Joining…'
+                      : installedSpace
+                        ? 'Open space'
+                        : 'Join space'}
+                  </Button>
+                )}
               </div>
             </form>
           ) : (

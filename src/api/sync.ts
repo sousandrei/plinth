@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  JoinPairing,
   JoinProfile,
   NearbySyncPeer,
   SyncDevice,
@@ -16,8 +17,14 @@ export const createSyncInvitation = (
 ): Promise<SyncInvitation> =>
   invoke<SyncInvitation>('create_sync_invitation', { spaceId, sameUser });
 
-export const beginSyncPairing = (address: string): Promise<SyncPairing> =>
-  invoke<SyncPairing>('begin_sync_pairing', { address });
+export const beginSyncPairing = (address: string): Promise<JoinPairing> =>
+  invoke<JoinPairing>('begin_sync_pairing', { address });
+
+export const verifySyncPairingCode = (
+  requestId: string,
+  code: string,
+): Promise<void> =>
+  invoke<void>('verify_sync_pairing_code', { requestId, code });
 
 export const cancelSyncInvitation = (invitationId: string): Promise<void> =>
   invoke<void>('cancel_sync_invitation', { invitationId });

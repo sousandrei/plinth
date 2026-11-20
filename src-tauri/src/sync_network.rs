@@ -35,6 +35,7 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const SYNC_PORT: u16 = 37419;
 const INVITE_PORT: u16 = 37420;
 const CONFIRMATION_TTL: Duration = Duration::from_secs(90);
+const MAX_CODE_ATTEMPTS: u8 = 5;
 
 #[derive(Serialize, Deserialize)]
 struct Enrollment {
@@ -94,6 +95,13 @@ pub struct SyncPairing {
     pub same_user: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinPairing {
+    pub id: String,
+    pub device: String,
+    pub same_user: bool,
+}
+
 struct IncomingPairing {
     invitation_id: String,
     owner: String,
@@ -105,7 +113,9 @@ trait EnrollmentIo: Read + Write + Send {}
 impl<T: Read + Write + Send> EnrollmentIo for T {}
 
 struct OutgoingPairing {
-    request: SyncPairing,
+    request: JoinPairing,
+    code: Option<String>,
+    failed_codes: u8,
     stream: Box<dyn EnrollmentIo>,
     certificate: Vec<u8>,
     ip: IpAddr,
@@ -238,8 +248,17 @@ pub async fn create_sync_invitation(
 pub async fn begin_sync_pairing(
     address: String,
     network: State<'_, SyncNetwork>,
-) -> Result<SyncPairing, AppError> {
+) -> Result<JoinPairing, AppError> {
     network.inner.begin_join(address.trim()).await
+}
+
+#[tauri::command]
+pub async fn verify_sync_pairing_code(
+    request_id: String,
+    code: String,
+    network: State<'_, SyncNetwork>,
+) -> Result<(), AppError> {
+    network.inner.verify_join_code(&request_id, &code)
 }
 
 #[tauri::command]
@@ -581,7 +600,7 @@ impl Network {
         Ok(true)
     }
 
-    async fn begin_join(&self, address: &str) -> Result<SyncPairing, AppError> {
+    async fn begin_join(&self, address: &str) -> Result<JoinPairing, AppError> {
         if address.is_empty() {
             return Err(AppError::InvalidInput("select an inviting device".into()));
         }
@@ -611,7 +630,7 @@ impl Network {
                         )
                         .map_err(io_error)?;
                         let code = pairing_code(&mut stream, &binding, false)?;
-                        let request = SyncPairing {
+                        let request = JoinPairing {
                             id: uuid::Uuid::new_v4().to_string(),
                             device: host
                                 .label
@@ -619,11 +638,12 @@ impl Network {
                                 .filter(|c| !c.is_control())
                                 .take(48)
                                 .collect(),
-                            code,
                             same_user: host.same_user,
                         };
                         return Ok(OutgoingPairing {
                             request,
+                            code: Some(code),
+                            failed_codes: 0,
                             stream: Box::new(stream),
                             certificate,
                             ip: address.ip(),
@@ -642,6 +662,30 @@ impl Network {
         Ok(request)
     }
 
+    fn verify_join_code(&self, request_id: &str, code: &str) -> Result<(), AppError> {
+        let mut slot = self.outgoing.lock().map_err(|_| state_error())?;
+        let pending = slot
+            .as_mut()
+            .filter(|pending| pending.request.id == request_id && Instant::now() < pending.deadline)
+            .ok_or_else(|| AppError::NotFound("pairing request has ended".into()))?;
+        let Some(expected) = pending.code.as_ref() else {
+            return Ok(());
+        };
+        if bool::from(expected.as_bytes().ct_eq(code.as_bytes())) {
+            pending.code = None;
+            return Ok(());
+        }
+        pending.failed_codes += 1;
+        if pending.failed_codes >= MAX_CODE_ATTEMPTS {
+            slot.take();
+            return Err(AppError::InvalidInput(
+                "Too many incorrect codes. Ask the host to reject this request, then try again."
+                    .into(),
+            ));
+        }
+        Err(AppError::InvalidInput("Incorrect joining code.".into()))
+    }
+
     async fn join(
         &self,
         db: &DbPool,
@@ -657,11 +701,14 @@ impl Network {
             {
                 return Err(AppError::NotFound("pairing request has ended".into()));
             }
-            let same_user = slot
-                .as_ref()
-                .is_some_and(|pending| pending.request.same_user);
+            let pending = slot.as_ref().ok_or_else(state_error)?;
+            if pending.code.is_some() {
+                return Err(AppError::InvalidInput(
+                    "Enter the joining code first.".into(),
+                ));
+            }
             if let JoinUser::New(profile, _) = &user {
-                profile.validate(same_user)?;
+                profile.validate(pending.request.same_user)?;
             }
             slot.take().ok_or_else(state_error)?
         };

@@ -34,11 +34,14 @@ export interface SyncInvitation {
   nearby_available: boolean;
 }
 
-export interface SyncPairing {
+export interface JoinPairing {
   id: string;
   device: string;
-  code: string;
   same_user: boolean;
+}
+
+export interface SyncPairing extends JoinPairing {
+  code: string;
 }
 
 export interface JoinProfile {
