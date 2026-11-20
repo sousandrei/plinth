@@ -50,6 +50,7 @@ pub enum Change {
     Enroll { device: DeviceId, role: Role },
     EnrollPeer { contact: PeerContact, role: Role },
     Remove { enrollment: Enrollment },
+    DeleteSpace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +62,8 @@ pub enum Outcome {
     Enrolled(Enrollment),
     ContactUpdated(Enrollment),
     Removed(Enrollment),
+    SpaceDeleted,
+    SpaceAlreadyDeleted,
     AuthorNotOwner,
     AlreadyEnrolled,
     EnrollmentInactive,
@@ -73,6 +76,8 @@ pub enum Outcome {
 pub struct Membership {
     owner_account: String,
     last_applied: u64,
+    #[serde(default)]
+    deletion_index: Option<u64>,
     #[serde(with = "entries")]
     devices: BTreeMap<DeviceId, Device>,
     #[serde(with = "entries")]
@@ -117,6 +122,7 @@ impl Membership {
         Self {
             owner_account,
             last_applied: committed_index,
+            deletion_index: None,
             devices: BTreeMap::from([(first_device, owner)]),
             removals: BTreeMap::new(),
             contacts: BTreeMap::new(),
@@ -127,13 +133,32 @@ impl Membership {
         &self.owner_account
     }
 
+    pub fn deletion_index(&self) -> Option<u64> {
+        self.deletion_index
+    }
+
+    pub fn permits_sync(&self, device: DeviceId) -> bool {
+        self.deletion_index.is_none() && self.device(device).is_some()
+    }
+
     pub(crate) fn founding_device(&self) -> Option<DeviceId> {
+        self.founding_enrollment()
+            .map(|enrollment| enrollment.device)
+    }
+
+    pub(crate) fn founding_enrollment(&self) -> Option<Enrollment> {
         self.devices
             .values()
             .map(|device| device.enrollment)
             .chain(self.removals.keys().copied())
             .min_by_key(|enrollment| enrollment.generation)
-            .map(|enrollment| enrollment.device)
+    }
+
+    pub(crate) fn enrolled_owners(&self) -> impl Iterator<Item = Enrollment> + '_ {
+        self.devices
+            .values()
+            .filter(|device| device.role == Role::Owner)
+            .map(|device| device.enrollment)
     }
 
     pub fn device(&self, id: DeviceId) -> Option<Device> {
@@ -178,6 +203,9 @@ impl Membership {
         {
             return Outcome::AuthorNotOwner;
         }
+        if self.deletion_index.is_some() {
+            return Outcome::SpaceAlreadyDeleted;
+        }
 
         match change {
             Change::Enroll { device, role } => self.enroll(index, device, role, None),
@@ -204,6 +232,10 @@ impl Membership {
                 self.contacts.remove(&enrollment.device);
                 self.removals.insert(enrollment, index);
                 Outcome::Removed(enrollment)
+            }
+            Change::DeleteSpace => {
+                self.deletion_index = Some(index);
+                Outcome::SpaceDeleted
             }
         }
     }

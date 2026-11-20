@@ -984,6 +984,18 @@ impl Network {
         if !exists {
             return Err(AppError::Forbidden);
         }
+        let membership = store
+            .membership_log(space_id.to_owned())
+            .await?
+            .membership()
+            .await
+            .map_err(network_error_box)?;
+        if let Some(membership) = membership
+            && (!membership.permits_sync(self.device_id)
+                || !membership.permits_sync(certificate_fingerprint(certificate)))
+        {
+            return Err(AppError::Forbidden);
+        }
         store
             .with_store(|store| store.paired_devices())
             .await?

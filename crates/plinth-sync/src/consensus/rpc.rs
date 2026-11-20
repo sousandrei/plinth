@@ -1,9 +1,11 @@
 //! Mutually authenticated, per-space Raft RPCs.
 
 use std::{
+    future::{Future, ready},
     io::{self, Read, Write},
     net::SocketAddr,
     path::PathBuf,
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -59,13 +61,15 @@ pub struct VoterEndpoint {
     pub certificate: Vec<u8>,
 }
 
+type EndpointLookup = Pin<Box<dyn Future<Output = Option<VoterEndpoint>> + Send>>;
+
 /// Resolves addresses independently from authorization. The certificate must
 /// come from the space's trusted voter directory, never from discovery.
 #[derive(Clone)]
 pub struct PermissionNetwork {
     identity_dir: Arc<PathBuf>,
     space_id: Arc<str>,
-    endpoint: Arc<dyn Fn(u64) -> Option<VoterEndpoint> + Send + Sync>,
+    endpoint: Arc<dyn Fn(u64) -> EndpointLookup + Send + Sync>,
 }
 
 impl PermissionNetwork {
@@ -74,10 +78,23 @@ impl PermissionNetwork {
         space_id: impl Into<Arc<str>>,
         endpoint: impl Fn(u64) -> Option<VoterEndpoint> + Send + Sync + 'static,
     ) -> Self {
+        Self::with_async_lookup(identity_dir, space_id, move |target| {
+            ready(endpoint(target))
+        })
+    }
+
+    pub(crate) fn with_async_lookup<F>(
+        identity_dir: PathBuf,
+        space_id: impl Into<Arc<str>>,
+        endpoint: impl Fn(u64) -> F + Send + Sync + 'static,
+    ) -> Self
+    where
+        F: Future<Output = Option<VoterEndpoint>> + Send + 'static,
+    {
         Self {
             identity_dir: Arc::new(identity_dir),
             space_id: space_id.into(),
-            endpoint: Arc::new(endpoint),
+            endpoint: Arc::new(move |target| Box::pin(endpoint(target))),
         }
     }
 }
@@ -91,8 +108,10 @@ impl PermissionConnection {
     async fn exchange(&self, request: Request, timeout: Duration) -> transport::Result<Response> {
         let network = self.network.clone();
         let target = self.target;
+        let endpoint = (network.endpoint)(target)
+            .await
+            .ok_or("missing voter endpoint")?;
         tokio::task::spawn_blocking(move || {
-            let endpoint = (network.endpoint)(target).ok_or("missing voter endpoint")?;
             let identity = Identity::with_certificates(
                 &network.identity_dir,
                 vec![endpoint.certificate.into()],

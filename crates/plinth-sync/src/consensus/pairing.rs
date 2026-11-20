@@ -20,6 +20,9 @@ impl MembershipLog {
                 Err("space permission history is incomplete".into())
             };
         };
+        if membership.deletion_index().is_some() {
+            return Err("this space was deleted".into());
+        }
         if !state.voters.voter_ids().eq([FIRST_VOTER])
             || membership.owner_account() != owner_account
             || !is_founder(&membership, local_device)
@@ -237,6 +240,7 @@ impl MembershipLog {
         if host == local_device
             || !snapshot.meta.last_membership.voter_ids().eq([FIRST_VOTER])
             || !is_founder(incoming, host)
+            || incoming.deletion_index().is_some()
             || !incoming
                 .device(local_device)
                 .is_some_and(|device| device.role == expected_role)
