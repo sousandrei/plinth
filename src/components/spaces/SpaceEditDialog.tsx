@@ -333,7 +333,7 @@ export const SpaceEditDialog = ({
             />
             <DialogContent
               title="Delete Space"
-              description="Permanently deletes all accounts, transactions, and categories in this space."
+              description="Permanently deletes this space and its accounts, transactions, and categories. For a shared space, this applies to every paired device."
             >
               <div className="flex justify-end gap-2 pt-3 border-t border-border-subtle">
                 <DialogClose

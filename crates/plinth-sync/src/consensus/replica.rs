@@ -230,7 +230,7 @@ impl PermissionReplica {
             return Err("this device already has a different role in this space".into());
         }
         let outcome = self
-            .commit_device_change(MembershipRequest::Change {
+            .commit_change(MembershipRequest::Change {
                 author: self.local,
                 change: Change::EnrollPeer {
                     contact: joining_contact.clone(),
@@ -269,14 +269,31 @@ impl PermissionReplica {
         if self.local.device == enrollment.device {
             return Err("cannot remove this device from itself".into());
         }
-        self.commit_device_change(MembershipRequest::RevokeDevice {
+        self.commit_change(MembershipRequest::RevokeDevice {
             author: self.local,
             enrollment,
         })
         .await
     }
 
-    async fn commit_device_change(&self, request: MembershipRequest) -> transport::Result<Outcome> {
+    pub async fn delete_space(&self, owner_account: &str) -> transport::Result<Outcome> {
+        let membership = self.active_membership().await?;
+        if membership.owner_account() != owner_account
+            || !self.log.is_committed_voter(self.local.device).await?
+        {
+            return Err("delete the space from a voting owner device".into());
+        }
+        if membership.deletion_index().is_some() {
+            return Ok(Outcome::SpaceAlreadyDeleted);
+        }
+        self.commit_change(MembershipRequest::Change {
+            author: self.local,
+            change: Change::DeleteSpace,
+        })
+        .await
+    }
+
+    async fn commit_change(&self, request: MembershipRequest) -> transport::Result<Outcome> {
         tokio::time::timeout(LOCAL_WRITE_TIMEOUT, async {
             let (index, outcome) = loop {
                 if let Some(leader) = self.node.current_leader().await {
@@ -301,7 +318,7 @@ impl PermissionReplica {
             };
             self.node
                 .wait(Some(LOCAL_WRITE_TIMEOUT))
-                .applied_index_at_least(Some(index), "committed device change")
+                .applied_index_at_least(Some(index), "committed permission change")
                 .await?;
             Ok(outcome)
         })

@@ -63,9 +63,11 @@ impl Session {
         Ok(())
     }
 
-    pub fn clear_space(&self) -> Result<(), AppError> {
+    pub fn clear_space(&self, space_id: &str) -> Result<(), AppError> {
         let mut guard = self.lock()?;
-        if let Some(ref mut data) = *guard {
+        if let Some(ref mut data) = *guard
+            && data.space_id.as_deref() == Some(space_id)
+        {
             data.space_id = None;
         }
         Ok(())

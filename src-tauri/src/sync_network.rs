@@ -188,6 +188,16 @@ impl SyncNetwork {
         Ok(Self { inner, workers })
     }
 
+    pub(crate) async fn delete_owned_space(
+        &self,
+        db: &DbPool,
+        store: &SyncPreview,
+        space: &str,
+        owner: &str,
+    ) -> Result<(), AppError> {
+        self.inner.delete_owned_space(db, store, space, owner).await
+    }
+
     pub(crate) async fn stop(&self) -> Result<(), AppError> {
         self.workers.iter().for_each(JoinHandle::abort);
         if let Ok(mut invitation) = self.inner.invite.lock()
@@ -415,6 +425,46 @@ async fn space_devices(store: &SyncPreview, space: &str) -> Result<Vec<PairedDev
 }
 
 impl Network {
+    async fn delete_owned_space(
+        &self,
+        db: &DbPool,
+        store: &SyncPreview,
+        space: &str,
+        owner: &str,
+    ) -> Result<(), AppError> {
+        spaces::require_owner(space, owner, db).await?;
+        let write = self.permission_writes.lock().await;
+        let log = store.membership_log(space.to_owned()).await?;
+        if let Some(membership) = log.membership().await.map_err(network_error_box)? {
+            if membership.owner_account() != owner {
+                return Err(AppError::Forbidden);
+            }
+            if membership.deletion_index().is_none() {
+                if !log
+                    .is_committed_voter(self.device_id)
+                    .await
+                    .map_err(network_error)?
+                {
+                    return Err(AppError::InvalidInput(
+                        "delete the space from a voting owner device".into(),
+                    ));
+                }
+                let replica = self.permission_replica(store, space).await?;
+                match replica.delete_space(owner).await.map_err(network_error)? {
+                    Outcome::SpaceDeleted | Outcome::SpaceAlreadyDeleted => {}
+                    Outcome::AuthorNotOwner => return Err(AppError::Forbidden),
+                    outcome => {
+                        return Err(AppError::InvalidInput(format!(
+                            "could not delete space: {outcome:?}"
+                        )));
+                    }
+                }
+            }
+        }
+        drop(write);
+        spaces::delete_local_space(db, space).await
+    }
+
     async fn remove_device(
         &self,
         store: &SyncPreview,

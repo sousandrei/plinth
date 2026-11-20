@@ -49,6 +49,9 @@ enum Request {
         generation: u64,
         enrollment: Enrollment,
     },
+    DeleteSpace {
+        generation: u64,
+    },
 }
 
 impl Request {
@@ -57,7 +60,7 @@ impl Request {
             Self::Append(request) => Some(&request.vote),
             Self::Snapshot(request) => Some(&request.vote),
             Self::Vote(request) => Some(&request.vote),
-            Self::Enroll { .. } | Self::Remove { .. } => None,
+            Self::Enroll { .. } | Self::Remove { .. } | Self::DeleteSpace { .. } => None,
         }
     }
 }
@@ -105,6 +108,12 @@ impl PermissionNetwork {
             MembershipRequest::RevokeDevice { author, enrollment } => Request::Remove {
                 generation: author.generation,
                 enrollment,
+            },
+            MembershipRequest::Change {
+                author,
+                change: Change::DeleteSpace,
+            } => Request::DeleteSpace {
+                generation: author.generation,
             },
             _ => return Err("unsupported forwarded permission change".into()),
         };
@@ -301,6 +310,21 @@ pub fn respond(
                 Response::Applied(
                     commit_forwarded(raft, MembershipRequest::RevokeDevice { author, enrollment })
                         .await,
+                )
+            }
+            Request::DeleteSpace { generation } => {
+                let author = authenticated_enrollment
+                    .filter(|author| author.generation == generation)
+                    .ok_or("space deletion does not match the authenticated enrollment")?;
+                Response::Applied(
+                    commit_forwarded(
+                        raft,
+                        MembershipRequest::Change {
+                            author,
+                            change: Change::DeleteSpace,
+                        },
+                    )
+                    .await,
                 )
             }
         };

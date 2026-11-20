@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     ClassifierState, Session, commands::training::load_active_classifier, db::DbPool,
-    error::AppError, sync_preview::SyncPreview,
+    error::AppError, sync_network::SyncNetwork, sync_preview::SyncPreview,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
@@ -383,7 +383,7 @@ pub async fn leave_space(
     .await
     .map_err(|e| AppError::Db(format!("leave_space: {e}")))?;
 
-    session.clear_space()?;
+    session.clear_space(&data.space_id)?;
     Ok(())
 }
 
@@ -391,16 +391,22 @@ pub async fn leave_space(
 pub async fn delete_space(
     session: State<'_, Session>,
     db: State<'_, DbPool>,
+    store: State<'_, SyncPreview>,
+    network: State<'_, SyncNetwork>,
 ) -> Result<(), AppError> {
     let data = session.require()?;
-    require_owner(&data.space_id, &data.user_id, db.inner()).await?;
+    network
+        .delete_owned_space(db.inner(), store.inner(), &data.space_id, &data.user_id)
+        .await?;
+    session.clear_space(&data.space_id)?;
+    Ok(())
+}
 
-    sqlx::query_file!("queries/spaces/delete_space.sql", data.space_id)
-        .execute(db.inner())
+pub(crate) async fn delete_local_space(db: &DbPool, space: &str) -> Result<(), AppError> {
+    sqlx::query_file!("queries/spaces/delete_space.sql", space)
+        .execute(db)
         .await
         .map_err(|e| AppError::Db(format!("delete_space: {e}")))?;
-
-    session.clear_space()?;
     Ok(())
 }
 

@@ -206,8 +206,10 @@ async fn enrolled_owners_form_a_permission_quorum_over_authenticated_tcp() {
     let membership = promoted.log.membership().await.unwrap().unwrap();
     assert!(membership.permits_sync(b.local.device));
     assert!(!membership.permits_sync(a.local.device));
+    let follower = if promoted.id == b.id { &c } else { &b };
+    assert!(follower.delete_space("different account").await.is_err());
     assert_eq!(
-        promoted.propose(Change::DeleteSpace).await.unwrap(),
+        follower.delete_space("account").await.unwrap(),
         Outcome::SpaceDeleted
     );
     let (index, _) = promoted.log.clone().applied_state().await.unwrap();

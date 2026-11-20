@@ -804,6 +804,83 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         "edited with the creator offline"
     );
 
+    let leader_db = if target_is_leader {
+        &target_db
+    } else {
+        &third_db
+    };
+    let leader_log = leader_store.membership_log(space.clone()).await.unwrap();
+    let partition = invite_host.permission_calls.write().await;
+    assert!(matches!(
+        leader.delete_owned_space(leader_db, leader_store, &space, user_id).await,
+        Err(AppError::Io(message)) if message.contains("could not confirm the change")
+    ));
+    assert!(
+        leader_log
+            .membership()
+            .await
+            .unwrap()
+            .unwrap()
+            .deletion_index()
+            .is_none()
+    );
+    assert_eq!(
+        note(leader_db, &space).await,
+        "edited with the creator offline"
+    );
+    drop(partition);
+
+    invite_host
+        .delete_owned_space(invite_db, invite_store, &space, user_id)
+        .await
+        .unwrap();
+    let deletion_index = invite_store
+        .membership_log(space.clone())
+        .await
+        .unwrap()
+        .membership()
+        .await
+        .unwrap()
+        .unwrap()
+        .deletion_index();
+    assert!(deletion_index.is_some());
+    assert!(
+        sqlx::query_file!("queries/spaces/get_space_name.sql", space)
+            .fetch_optional(invite_db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while leader_log
+            .membership()
+            .await
+            .unwrap()
+            .unwrap()
+            .deletion_index()
+            != deletion_index
+        {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        note(leader_db, &space).await,
+        "edited with the creator offline"
+    );
+    leader
+        .delete_owned_space(leader_db, leader_store, &space, user_id)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query_file!("queries/spaces/get_space_name.sql", space)
+            .fetch_optional(leader_db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
     let local_space = space.clone();
     target_store
         .with_store(move |store| store.unpair_device(&local_space, &peer_on_target.certificate))
