@@ -11,9 +11,11 @@ use automerge::{
     sync::{Message, State, SyncDoc},
     transaction::Transactable,
 };
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::Value;
 use thiserror::Error;
+
+use membership::Enrollment;
 
 pub mod consensus;
 pub mod discovery;
@@ -62,6 +64,7 @@ pub enum Error {
 pub struct Session {
     space_id: String,
     state: State,
+    peer: Option<Enrollment>,
 }
 
 impl Session {
@@ -69,8 +72,21 @@ impl Session {
         Self {
             space_id: space_id.into(),
             state: State::new(),
+            peer: None,
         }
     }
+
+    /// Associate this connection with an enrollment authenticated by the caller.
+    pub fn with_peer(mut self, peer: Option<Enrollment>) -> Self {
+        self.peer = peer;
+        self
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct PeerProgress {
+    pub heads: Vec<ChangeHash>,
+    pub last_seen: i64,
 }
 
 pub struct Store {
@@ -102,6 +118,14 @@ impl Store {
                  name TEXT NOT NULL,
                  address TEXT,
                  PRIMARY KEY (space_id, certificate)
+             );
+             CREATE TABLE IF NOT EXISTS sync_peer_progress (
+                 space_id TEXT NOT NULL,
+                 device_id BLOB NOT NULL,
+                 generation BLOB NOT NULL,
+                 heads BLOB NOT NULL,
+                 last_seen INTEGER NOT NULL,
+                 PRIMARY KEY (space_id, device_id)
              );",
         )?;
 
@@ -301,6 +325,29 @@ impl Store {
         project(&load(&self.db, space_id)?)
     }
 
+    pub fn peer_progress(
+        &self,
+        space_id: &str,
+        peer: Enrollment,
+    ) -> Result<Option<PeerProgress>, Error> {
+        let row: Option<(Vec<u8>, i64)> = self
+            .db
+            .query_row(
+                "SELECT heads, last_seen FROM sync_peer_progress
+             WHERE space_id = ?1 AND device_id = ?2 AND generation = ?3",
+                params![space_id, peer.device, peer.generation.to_be_bytes()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(heads, last_seen)| {
+            Ok(PeerProgress {
+                heads: serde_json::from_slice(&heads)?,
+                last_seen,
+            })
+        })
+        .transpose()
+    }
+
     pub fn next_message(&self, session: &mut Session) -> Result<Option<Vec<u8>>, Error> {
         let mut doc = load(&self.db, &session.space_id)?;
         Ok(doc
@@ -331,6 +378,7 @@ impl Store {
         validate: Option<fn(&Fields) -> bool>,
     ) -> Result<(), Error> {
         let message = Message::decode(bytes).map_err(|err| Error::Message(err.to_string()))?;
+        let progress = session.peer.map(|peer| (peer, message.heads.clone()));
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -360,6 +408,35 @@ impl Store {
                 }
             }
             append_delta(&tx, &session.space_id, &mut doc, &before)?;
+        }
+
+        if let Some((peer, mut heads)) = progress {
+            heads.sort_unstable();
+            heads.dedup();
+            // A restored peer can report older heads. Never count unidentified
+            // heads as confirmation of previously acknowledged changes.
+            if heads
+                .iter()
+                .any(|hash| doc.get_change_by_hash(hash).is_none())
+            {
+                heads.clear();
+            }
+            tx.execute(
+                "INSERT INTO sync_peer_progress (space_id, device_id, generation, heads, last_seen)
+                 VALUES (?1, ?2, ?3, ?4, unixepoch())
+                 ON CONFLICT (space_id, device_id) DO UPDATE
+                 SET generation = excluded.generation, heads = excluded.heads,
+                     last_seen = MAX(last_seen, excluded.last_seen)
+                 WHERE generation < excluded.generation
+                    OR (generation = excluded.generation
+                        AND (heads <> excluded.heads OR last_seen < excluded.last_seen))",
+                params![
+                    session.space_id,
+                    peer.device,
+                    peer.generation.to_be_bytes(),
+                    serde_json::to_vec(&heads)?
+                ],
+            )?;
         }
 
         tx.commit()?;

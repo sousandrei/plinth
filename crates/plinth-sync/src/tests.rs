@@ -264,3 +264,74 @@ fn queued_edits_keep_their_order_across_a_checkpoint() {
     assert!(store.next_pending_edit().unwrap().is_none());
     assert_field(&store, "category", "Household");
 }
+
+#[test]
+fn peer_progress_is_durable_and_scoped_to_an_enrollment() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sync.sqlite");
+    let mut local = Store::open(&path).unwrap();
+    let mut remote = Store::open(":memory:").unwrap();
+    edit(&mut local, 20, "category", "Groceries");
+    exchange(&mut local, &mut remote);
+    let peer = Enrollment {
+        device: [1; 32],
+        generation: 4,
+    };
+    let mut session = Session::new(SPACE).with_peer(Some(peer));
+    let advertised = remote
+        .next_message(&mut Session::new(SPACE))
+        .unwrap()
+        .unwrap();
+    let mut expected = Message::decode(&advertised).unwrap().heads;
+    expected.sort_unstable();
+    assert!(!expected.is_empty());
+    local
+        .db
+        .execute_batch(
+            "CREATE TEMP TRIGGER reject_progress BEFORE INSERT ON sync_peer_progress
+         BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END;",
+        )
+        .unwrap();
+    assert!(local.receive(&mut session, &advertised).is_err());
+    assert!(local.peer_progress(SPACE, peer).unwrap().is_none());
+    local
+        .db
+        .execute("DROP TRIGGER reject_progress", [])
+        .unwrap();
+    local.receive(&mut session, &advertised).unwrap();
+    local.checkpoint_all().unwrap();
+    drop(local);
+
+    let mut local = Store::open(&path).unwrap();
+    let progress = local.peer_progress(SPACE, peer).unwrap().unwrap();
+    assert_eq!(progress.heads, expected);
+    assert!(progress.last_seen > 0);
+    assert!(
+        local
+            .peer_progress("another-space", peer)
+            .unwrap()
+            .is_none()
+    );
+    let new_enrollment = Enrollment {
+        generation: 5,
+        ..peer
+    };
+    assert!(
+        local
+            .peer_progress(SPACE, new_enrollment)
+            .unwrap()
+            .is_none()
+    );
+    let mut new_session = Session::new(SPACE).with_peer(Some(new_enrollment));
+    local.receive(&mut new_session, &advertised).unwrap();
+    local.receive(&mut session, &advertised).unwrap();
+    assert!(local.peer_progress(SPACE, peer).unwrap().is_none());
+    assert_eq!(
+        local
+            .peer_progress(SPACE, new_enrollment)
+            .unwrap()
+            .unwrap()
+            .heads,
+        expected
+    );
+}

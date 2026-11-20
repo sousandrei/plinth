@@ -14,7 +14,7 @@ use plinth_sync::{
     PairedDevice, Session as PeerSession,
     consensus::PairingHistory,
     discovery,
-    membership::{DeviceId, Membership, PeerContact, Role, certificate_fingerprint},
+    membership::{DeviceId, Enrollment, Membership, PeerContact, Role, certificate_fingerprint},
     transport::{self, Identity, PeerProtocol},
 };
 use serde::{Deserialize, Serialize};
@@ -941,7 +941,7 @@ impl Network {
             })
             .await
             .map_err(join_error)??;
-        let peer = self
+        let (peer, enrollment) = self
             .current_peer(db, store, &space_id, &certificate)
             .await?;
         if protocol == PeerProtocol::Roster {
@@ -952,7 +952,7 @@ impl Network {
         let runtime = tokio::runtime::Handle::current();
         let space = space_id.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let mut session = PeerSession::new(&space);
+            let mut session = PeerSession::new(&space).with_peer(enrollment);
             transport::respond(&mut stream, &space, |incoming| {
                 let (next, outgoing) = runtime.block_on(store.exchange_step(
                     &db,
@@ -976,7 +976,7 @@ impl Network {
         store: &SyncPreview,
         space_id: &str,
         certificate: &[u8],
-    ) -> Result<PairedDevice, AppError> {
+    ) -> Result<(PairedDevice, Option<Enrollment>), AppError> {
         let exists = sqlx::query_file!("queries/spaces/get_space_name.sql", space_id)
             .fetch_optional(db)
             .await?
@@ -990,17 +990,26 @@ impl Network {
             .membership()
             .await
             .map_err(network_error_box)?;
-        if let Some(membership) = membership
-            && (!membership.permits_sync(self.device_id)
-                || !membership.permits_sync(certificate_fingerprint(certificate)))
-        {
-            return Err(AppError::Forbidden);
-        }
+        let enrollment = if let Some(membership) = membership {
+            let device = certificate_fingerprint(certificate);
+            if !membership.permits_sync(self.device_id) || !membership.permits_sync(device) {
+                return Err(AppError::Forbidden);
+            }
+            Some(
+                membership
+                    .device(device)
+                    .ok_or(AppError::Forbidden)?
+                    .enrollment,
+            )
+        } else {
+            None
+        };
         store
             .with_store(|store| store.paired_devices())
             .await?
             .into_iter()
             .find(|peer| peer.space_id == space_id && peer.certificate == certificate)
+            .map(|peer| (peer, enrollment))
             .ok_or(AppError::Forbidden)
     }
 
@@ -1024,7 +1033,7 @@ impl Network {
     }
 
     async fn sync_peer(&self, db: &DbPool, store: &SyncPreview, peer: PairedDevice) {
-        let Ok(peer) = self
+        let Ok((peer, enrollment)) = self
             .current_peer(db, store, &peer.space_id, &peer.certificate)
             .await
         else {
@@ -1033,11 +1042,15 @@ impl Network {
         let Some(mut address) = peer.address.clone() else {
             return;
         };
-        let mut result = self.dial(db, store, &peer, address.clone()).await;
+        let mut result = self
+            .dial(db, store, &peer, address.clone(), enrollment)
+            .await;
         let nearby = format!("mdns:{}", peer.name);
         if result.is_err() && address != nearby {
             address = nearby;
-            result = self.dial(db, store, &peer, address.clone()).await;
+            result = self
+                .dial(db, store, &peer, address.clone(), enrollment)
+                .await;
         }
         if result.is_ok() {
             let _ = self.refresh_roster(store, &peer, address).await;
@@ -1160,6 +1173,7 @@ impl Network {
         store: &SyncPreview,
         peer: &PairedDevice,
         address: String,
+        enrollment: Option<Enrollment>,
     ) -> Result<(), AppError> {
         let addresses = resolve_peer(address).await?;
         let directory = self.directory.clone();
@@ -1169,13 +1183,12 @@ impl Network {
         })
         .await
         .map_err(join_error)??;
+        let connection = match enrollment {
+            Some(peer) => PeerConnection::ConnectPaired(addresses, peer),
+            None => PeerConnection::Connect(addresses),
+        };
         store
-            .exchange_peer(
-                db,
-                peer.space_id.clone(),
-                identity,
-                PeerConnection::Connect(addresses),
-            )
+            .exchange_peer(db, peer.space_id.clone(), identity, connection)
             .await
     }
 

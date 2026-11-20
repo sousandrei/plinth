@@ -318,6 +318,7 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
                 &target_store,
                 &wrong_scope,
                 wrong_scope.address.clone().unwrap(),
+                None,
             )
             .await
             .is_err()
@@ -418,6 +419,14 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
     })
     .await
     .unwrap();
+    let roster_space = space.clone();
+    let source_enrollment = target_history.device(source.device_id).unwrap().enrollment;
+    let progress = target_store
+        .with_store(move |store| store.peer_progress(&roster_space, source_enrollment))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!progress.heads.is_empty());
     let third_dir = tempfile::tempdir().unwrap();
     let (third_db, third_store, third, _third_listener) = profile(third_dir.path(), None).await;
     let invite = source
@@ -497,7 +506,7 @@ async fn joins_a_shared_space_and_syncs_later_edits_automatically() {
         .unwrap();
     let address = target_peer.address.clone().unwrap();
     third
-        .dial(&third_db, &third_store, &target_peer, address)
+        .dial(&third_db, &third_store, &target_peer, address, None)
         .await
         .unwrap();
     assert_eq!(

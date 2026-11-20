@@ -8,7 +8,9 @@ use std::{
     time::Duration,
 };
 
-use plinth_sync::{Fields, Session as PeerSession, Store, consensus, discovery, transport};
+use plinth_sync::{
+    Fields, Session as PeerSession, Store, consensus, discovery, membership::Enrollment, transport,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 use tauri::State;
@@ -32,6 +34,7 @@ struct PreviewStore {
 
 pub(crate) enum PeerConnection {
     Connect(Vec<SocketAddr>),
+    ConnectPaired(Vec<SocketAddr>, Enrollment),
     Accept(TcpStream),
 }
 
@@ -278,17 +281,24 @@ impl SyncPreview {
         let db = db.clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            let (mut stream, initiator): (Box<dyn ReadWrite>, _) = match connection {
+            let (mut stream, initiator, peer): (Box<dyn ReadWrite>, _, _) = match connection {
                 PeerConnection::Accept(socket) => (
                     Box::new(identity.accept(socket).map_err(peer_error)?),
                     false,
+                    None,
                 ),
                 PeerConnection::Connect(addresses) => (
                     Box::new(identity.connect_any(addresses).map_err(peer_error)?),
                     true,
+                    None,
+                ),
+                PeerConnection::ConnectPaired(addresses, peer) => (
+                    Box::new(identity.connect_any(addresses).map_err(peer_error)?),
+                    true,
+                    Some(peer),
                 ),
             };
-            let mut session = PeerSession::new(&space_id);
+            let mut session = PeerSession::new(&space_id).with_peer(peer);
             transport::exchange(&mut stream, &space_id, initiator, |incoming| {
                 let (returned_session, outgoing) = runtime.block_on(preview.exchange_step(
                     &db,
